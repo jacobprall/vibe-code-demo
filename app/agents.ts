@@ -80,33 +80,43 @@ export const curator: Agent = {
 	// exec, no write_file: the only bytes this agent can create are images
 	// that asset__fetch approved.
 	tools: [...assetTools, ...readTools],
-	maxTurns: 30,
+	// One asset__collect call, then the JSON. The old one-subject-at-a-time
+	// loop cost two round trips per image and nothing else.
+	maxTurns: 8,
 	plan: "standard",
 	prompt: md`
 		You are the photo researcher. Find real, openly licensed photographs for
-		the app being built and download them into its storefront.
+		the app being built and download them into it.
 
-		Work one subject at a time. Search with asset__search, pick the
-		candidate that actually looks like the subject at a usable size, then
-		download it with asset__fetch to the public assets directory named in
-		your instructions. Name files after their subject, lowercase and
-		hyphenated: assets/walnut-dining-chair.jpg.
+		Call asset__collect ONCE with every subject in your instructions and the
+		assets directory you were given. It searches Wikimedia Commons for each
+		subject in parallel, picks the largest usable photograph, and downloads
+		them all. Do not call asset__search or asset__fetch per subject — that is
+		far slower and gets you the same pictures.
 
-		Only Wikimedia Commons is reachable, and only images are accepted. If a
-		subject returns nothing usable, move on rather than substituting
-		something unrelated — a wrong photograph is worse than one fewer.
+		asset__collect returns what actually landed and what it skipped. Report
+		only what landed. If it skipped a subject, leave it out rather than
+		substituting something unrelated — a wrong photograph is worse than one
+		fewer. Retry an individual subject with asset__search plus asset__fetch
+		only if you have a specific reason to think a different search term would
+		do better.
 
-		Collect at most ${airoConfig.assets.maxCount} images. Every image must
-		carry the credit line asset__search gave you; the site publishes it.
+		Your judgment goes into two things: the alt text, which should describe
+		what is actually in the photograph for someone who cannot see it, and the
+		decision to drop a subject that came back wrong.
 
-		Respond ONLY with JSON describing what you actually downloaded:
+		Every image must carry the credit line asset__collect gave you; the site
+		publishes it. Paths in your response are relative to the parent of the
+		assets directory, e.g. assets/walnut-dining-chair.jpg.
+
+		Respond ONLY with JSON describing what actually downloaded:
 		{
 		  "assets": [
 		    {
 		      "path": "assets/walnut-dining-chair.jpg",
 		      "subject": "walnut dining chair",
 		      "alt": "descriptive alt text for screen readers",
-		      "credit": "credit line from asset__search"
+		      "credit": "credit line from asset__collect"
 		    }
 		  ]
 		}
@@ -126,14 +136,23 @@ export const builder: Agent = {
 		Build the entire application from scratch — you choose the stack,
 		the directory layout, and the toolchain.
 
+		Work fast. Every tool call is a round trip, so batch aggressively:
+		write several files in one sandbox__exec using heredocs rather than one
+		sandbox__write_file per file, and chain shell commands with && instead
+		of calling exec repeatedly. Reach for sandbox__write_file only for a
+		single large file where a heredoc would be awkward. Do not read a file
+		back to confirm a write succeeded — a failed write reports itself.
+
 		Rules:
 		- Write real content — real product names, materials, prices, and copy.
 		  No lorem ipsum, no "Coming soon", no remote image URLs. Prefer inline
 		  SVG and CSS gradients for decoration. The result should look like
 		  something a person shipped on purpose.
-		- If images have been downloaded into a public assets directory, an
-		  assets manifest file will be mentioned in your instructions. Use
-		  those images and publish the credits. Never invent an image path.
+		- Photographs, when the instructions list any, are already downloaded
+		  into the app's assets/ directory. Use those exact paths, move or copy
+		  them wherever your build needs them, and publish every credit line.
+		  Never invent an image path, and never reference one the instructions
+		  did not give you.
 		- Every web_service must serve a health endpoint that responds without
 		  depending on a database, so Render's health check passes before
 		  traffic arrives.
@@ -149,7 +168,7 @@ export const builder: Agent = {
 		      {
 		        "name": "descriptive-service-name",
 		        "kind": "static_site" | "web_service",
-		        "rootDir": "directory relative to the app root",
+		        "rootDir": "subdirectory INSIDE the app directory, or \".\" if the service is the app directory itself. Never repeat the app directory path here.",
 		        "runtime": "node" | "static",
 		        "buildCommand": "the command to install deps and build",
 		        "startCommand": "the command to start the server (web_service only)",
@@ -216,6 +235,8 @@ export const deployManager: Agent = {
 export interface AgentTaskInput {
 	message: string;
 	sandboxId?: string;
+	/** Workflow-owned. Relative paths in tool calls resolve against this. */
+	workDir?: string;
 }
 
 /** JSON Schema for each agent's structured output, keyed by agent id. */
@@ -240,6 +261,7 @@ export function agentTask(agent: Agent) {
 				tools: agent.tools,
 				renderTools: agent.renderTools,
 				sandbox: input.sandboxId ? connectSandbox(input.sandboxId) : undefined,
+				workDir: input.workDir,
 				outputSchema: OUTPUT_SCHEMAS[agent.id],
 			});
 

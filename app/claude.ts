@@ -6,7 +6,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import type { ModelTier } from "../airo.config.js";
+import { airoConfig, type ModelTier } from "../airo.config.js";
 import { requireEnv } from "./config.js";
 import { checkToolCall, RENDER_MCP_SERVER } from "./policy.js";
 import { renderMcpUrl } from "./render.js";
@@ -65,6 +65,8 @@ export interface RunClaudeOptions {
 	tools?: readonly Tool[];
 	renderTools?: readonly string[];
 	sandbox?: Sandbox;
+	/** Directory relative paths resolve against. Defaults to the checkout. */
+	workDir?: string;
 	signal?: AbortSignal;
 	/** When set, the SDK enforces structured JSON output matching this schema. */
 	outputSchema?: Record<string, unknown>;
@@ -118,19 +120,20 @@ export async function runClaude(opts: RunClaudeOptions): Promise<ClaudeRun> {
 	}
 
 	const sandbox = opts.sandbox;
+	const workDir = opts.workDir ?? airoConfig.repoDir;
 	if (sandbox && tools.length > 0) {
 		servers[MCP_SERVER] = createSdkMcpServer({
 			name: MCP_SERVER,
 			alwaysLoad: true,
 			tools: tools.map((tool) =>
-				sdkTool(
-					tool.name,
-					tool.description,
-					tool.inputSchema,
-					async (args) =>
-						toContentBlocks(
-							await tool.invoke(args, { sandbox, signal: opts.signal }),
-						),
+				sdkTool(tool.name, tool.description, tool.inputSchema, async (args) =>
+					toContentBlocks(
+						await tool.invoke(args, {
+							sandbox,
+							workDir,
+							signal: opts.signal,
+						}),
+					),
 				),
 			),
 		});

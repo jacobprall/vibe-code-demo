@@ -6,7 +6,14 @@ export const PATH_TOOLS = new Set([
 	"sandbox__write_file",
 	"sandbox__list_dir",
 	"asset__fetch",
+	"asset__collect",
 ]);
+
+/** Tools whose `cwd` is a path; their `command` and `diff` are not. */
+export const CWD_TOOLS = new Set(["sandbox__exec", "sandbox__apply_patch"]);
+
+/** Scratch space an agent may use for things that are not part of the app. */
+const SCRATCH_DIR = "/tmp";
 
 /**
  * Render MCP tools an agent may call. The architect needs to see what already
@@ -101,6 +108,11 @@ export function checkToolCall(
 		if (violation) return `Blocked path escape in ${name}: ${violation}`;
 	}
 
+	if (CWD_TOOLS.has(name) && typeof input.cwd === "string") {
+		const violation = pathEscape({ cwd: input.cwd });
+		if (violation) return `Blocked path escape in ${name}: ${violation}`;
+	}
+
 	const serialized = JSON.stringify(input);
 	for (const rule of RULES) {
 		if (rule.pattern.test(serialized)) {
@@ -132,6 +144,63 @@ export function pathEscape(input: Record<string, unknown>): string | null {
 		}
 	}
 	return null;
+}
+
+export type ResolvedPath = { path: string } | { error: string };
+
+/**
+ * Turn an agent-supplied path into an absolute one inside the checkout.
+ *
+ * A relative path is resolved against `workDir`, which workflow code owns —
+ * never against whatever directory the exec API happens to start in. Without
+ * this, `mkdir -p my-app` from an agent lands outside the clone, the run
+ * builds a complete application nobody can commit, and nothing reports a
+ * failure until the push finds an empty directory.
+ */
+export function resolveSandboxPath(
+	workDir: string,
+	path: string,
+): ResolvedPath {
+	if (!path.trim()) return { error: "Path is empty." };
+
+	const absolute = path.startsWith("/")
+		? normalizePosix(path)
+		: normalizePosix(`${workDir}/${path}`);
+
+	if (
+		isInside(airoConfig.repoDir, absolute) ||
+		isInside(SCRATCH_DIR, absolute)
+	) {
+		return { path: absolute };
+	}
+	return {
+		error: `"${path}" resolves to ${absolute}, outside the checkout (${airoConfig.repoDir}).`,
+	};
+}
+
+/** Lexical resolution of `.` and `..`. The sandbox has no symlinks we follow. */
+function normalizePosix(path: string): string {
+	const absolute = path.startsWith("/");
+	const parts: string[] = [];
+
+	for (const segment of path.split("/")) {
+		if (!segment || segment === ".") continue;
+		if (segment !== "..") {
+			parts.push(segment);
+			continue;
+		}
+		if (parts.length > 0 && parts[parts.length - 1] !== "..") {
+			parts.pop();
+		} else if (!absolute) {
+			parts.push("..");
+		}
+	}
+
+	return `${absolute ? "/" : ""}${parts.join("/")}`;
+}
+
+function isInside(root: string, candidate: string): boolean {
+	return candidate === root || candidate.startsWith(`${root}/`);
 }
 
 const SECRET_PATTERNS = [

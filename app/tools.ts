@@ -1,6 +1,7 @@
 /** The tools an agent can be granted, and the Tool contract itself. */
 import { z } from "zod";
 import { airoConfig } from "../airo.config.js";
+import { type ResolvedPath, resolveSandboxPath } from "./policy.js";
 import { type Sandbox, shellEscape } from "./sandbox.js";
 
 export const MAX_OUTPUT_CHARS = 50_000;
@@ -14,6 +15,12 @@ export type InferShape<T extends ZodShape> = z.output<z.ZodObject<T>>;
 export interface ToolContext {
 	/** Bound by workflow code. A tool can never choose its own sandbox. */
 	readonly sandbox: Sandbox;
+	/**
+	 * Also bound by workflow code: the directory every relative path an agent
+	 * gives is resolved against. The exec API starts in `/`, so without this a
+	 * relative path lands outside the checkout.
+	 */
+	readonly workDir: string;
 	readonly signal?: AbortSignal;
 }
 
@@ -34,10 +41,19 @@ export function truncate(value: string, limit = MAX_OUTPUT_CHARS): string {
 	return `${value.slice(0, limit)}\n... (truncated, ${value.length - limit} chars omitted)`;
 }
 
+/** A rejected path, as the tool result the model sees. */
+function pathError(error: string): ToolResult {
+	return { content: error, isError: true };
+}
+
 /* ── Files ────────────────────────────────────────────────────────────── */
 
 const readFileSchema = {
-	path: z.string().describe("File path within the sandbox."),
+	path: z
+		.string()
+		.describe(
+			"File path. Relative paths are resolved against the app directory.",
+		),
 };
 
 export const sandboxReadFile: Tool<typeof readFileSchema> = {
@@ -45,13 +61,20 @@ export const sandboxReadFile: Tool<typeof readFileSchema> = {
 	description: "Read a UTF-8 file from the sandbox. Returns its contents.",
 	inputSchema: readFileSchema,
 	async invoke(input, ctx): Promise<ToolResult> {
-		const content = await ctx.sandbox.readFile(input.path);
+		const target = resolveSandboxPath(ctx.workDir, input.path);
+		if ("error" in target) return pathError(target.error);
+
+		const content = await ctx.sandbox.readFile(target.path);
 		return { content: truncate(content, MAX_READ_CHARS) };
 	},
 };
 
 const writeFileSchema = {
-	path: z.string().describe("File path within the sandbox."),
+	path: z
+		.string()
+		.describe(
+			"File path. Relative paths are resolved against the app directory.",
+		),
 	content: z.string().describe("Full file contents to write."),
 };
 
@@ -61,24 +84,33 @@ export const sandboxWriteFile: Tool<typeof writeFileSchema> = {
 		"Create or overwrite a UTF-8 file in the sandbox. Parent directories are created automatically.",
 	inputSchema: writeFileSchema,
 	async invoke(input, ctx): Promise<ToolResult> {
-		await ctx.sandbox.writeFile(input.path, input.content);
+		const target = resolveSandboxPath(ctx.workDir, input.path);
+		if ("error" in target) return pathError(target.error);
+
+		await ctx.sandbox.writeFile(target.path, input.content);
 		return {
-			content: `Wrote ${Buffer.byteLength(input.content, "utf-8")} bytes to ${input.path}`,
+			content: `Wrote ${Buffer.byteLength(input.content, "utf-8")} bytes to ${target.path}`,
 		};
 	},
 };
 
 const listDirSchema = {
-	path: z.string().optional().describe("Directory path. Defaults to '.'."),
+	path: z
+		.string()
+		.optional()
+		.describe("Directory path. Defaults to the app directory."),
 };
 
 export const sandboxListDir: Tool<typeof listDirSchema> = {
 	name: "sandbox__list_dir",
 	description:
-		"List entries in a directory. Directories are suffixed with '/'. Defaults to the sandbox root.",
+		"List entries in a directory. Directories are suffixed with '/'. Defaults to the app directory.",
 	inputSchema: listDirSchema,
 	async invoke(input, ctx): Promise<ToolResult> {
-		const entries = await ctx.sandbox.listDir(input.path || ".");
+		const target = resolveSandboxPath(ctx.workDir, input.path || ".");
+		if ("error" in target) return pathError(target.error);
+
+		const entries = await ctx.sandbox.listDir(target.path);
 		return { content: entries.join("\n") || "(empty directory)" };
 	},
 };
@@ -90,7 +122,7 @@ const searchSchema = {
 	path: z
 		.string()
 		.optional()
-		.describe("Directory or file to search. Defaults to '.'."),
+		.describe("Directory or file to search. Defaults to the app directory."),
 	include: z
 		.string()
 		.optional()
@@ -103,9 +135,12 @@ export const sandboxSearch: Tool<typeof searchSchema> = {
 		"Search file contents using ripgrep. Returns matching lines with file paths and line numbers.",
 	inputSchema: searchSchema,
 	async invoke(input, ctx): Promise<ToolResult> {
+		const target = resolveSandboxPath(ctx.workDir, input.path || ".");
+		if ("error" in target) return pathError(target.error);
+
 		const args = ["rg", "--line-number", "--no-heading"];
 		if (input.include) args.push("--glob", input.include);
-		args.push("--", input.pattern, input.path || ".");
+		args.push("--", input.pattern, target.path);
 
 		const { output, exitCode } = await ctx.sandbox.run(
 			args.map(shellEscape).join(" "),
@@ -125,19 +160,26 @@ export const sandboxSearch: Tool<typeof searchSchema> = {
 
 const execSchema = {
 	command: z.string().describe("The shell command to execute."),
-	cwd: z.string().optional().describe("Working directory. Optional."),
+	cwd: z
+		.string()
+		.optional()
+		.describe("Working directory. Defaults to the app directory."),
 };
 
 export const sandboxExec: Tool<typeof execSchema> = {
 	name: "sandbox__exec",
 	description:
-		"Execute a shell command in the sandbox. Returns combined stdout/stderr and the exit code. " +
+		"Execute a shell command in the sandbox, from the app directory unless cwd says otherwise. " +
+		"Returns combined stdout/stderr and the exit code. " +
 		"A non-zero exit code is normal output (e.g. failing tests), not a tool error.",
 	inputSchema: execSchema,
 	async invoke(input, ctx): Promise<ToolResult> {
-		const command = input.cwd
-			? `cd ${shellEscape(input.cwd)} && ${input.command}`
-			: input.command;
+		// Always cd first. The exec API starts in `/`, so a command built from
+		// relative paths would otherwise write outside the checkout.
+		const cwd = resolveSandboxPath(ctx.workDir, input.cwd ?? ".");
+		if ("error" in cwd) return pathError(cwd.error);
+
+		const command = `cd ${shellEscape(cwd.path)} && ${input.command}`;
 		const { output, exitCode } = await ctx.sandbox.run(command, {
 			signal: ctx.signal,
 		});
@@ -154,7 +196,9 @@ const applyPatchSchema = {
 	cwd: z
 		.string()
 		.optional()
-		.describe("Working directory for the patch. Optional."),
+		.describe(
+			"Working directory for the patch. Defaults to the app directory.",
+		),
 };
 
 let patchCounter = 0;
@@ -165,12 +209,14 @@ export const sandboxApplyPatch: Tool<typeof applyPatchSchema> = {
 		"Apply a unified diff (git apply format) to files in the sandbox. Prefer this for multi-file edits.",
 	inputSchema: applyPatchSchema,
 	async invoke(input, ctx): Promise<ToolResult> {
+		const cwd = resolveSandboxPath(ctx.workDir, input.cwd ?? ".");
+		if ("error" in cwd) return pathError(cwd.error);
+
 		const patchPath = `/tmp/.airo-${Date.now()}-${++patchCounter}.patch`;
 		await ctx.sandbox.upload(patchPath, input.diff);
 
-		const cd = input.cwd ? `cd ${shellEscape(input.cwd)} && ` : "";
 		const { output, exitCode } = await ctx.sandbox.run(
-			`${cd}git apply --whitespace=nowarn ${patchPath} && rm ${patchPath}`,
+			`cd ${shellEscape(cwd.path)} && git apply --whitespace=nowarn ${patchPath} && rm ${patchPath}`,
 			{ signal: ctx.signal },
 		);
 		if (exitCode !== 0) {
@@ -206,31 +252,15 @@ export const assetSearch: Tool<typeof assetSearchSchema> = {
 		"image URLs with dimensions and the credit line each one must be published with.",
 	inputSchema: assetSearchSchema,
 	async invoke(input): Promise<ToolResult> {
-		const params = new URLSearchParams({
-			action: "query",
-			format: "json",
-			formatversion: "2",
-			generator: "search",
-			gsrsearch: `filetype:bitmap ${input.query}`,
-			gsrnamespace: "6",
-			gsrlimit: String(input.limit ?? 6),
-			prop: "imageinfo",
-			iiprop: "url|size|extmetadata",
-			iiurlwidth: "1400",
-		});
-
-		const response = await fetch(`${COMMONS_API}?${params}`, {
-			headers: { "user-agent": "airo-factory/0.1 (Render demo)" },
-			signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
-		});
-		if (!response.ok) {
+		let candidates: CommonsCandidate[];
+		try {
+			candidates = await searchCommons(input.query, input.limit ?? 6);
+		} catch (error) {
 			return {
-				content: `Commons search failed with ${response.status}`,
+				content: `Commons search failed: ${error instanceof Error ? error.message : String(error)}`,
 				isError: true,
 			};
 		}
-
-		const candidates = parseCommons(await response.json());
 		return candidates.length > 0
 			? { content: JSON.stringify(candidates, null, 2) }
 			: { content: `No openly licensed images found for "${input.query}".` };
@@ -241,15 +271,45 @@ const assetFetchSchema = {
 	url: z.string().describe("An image URL returned by asset__search."),
 	path: z
 		.string()
-		.describe("Absolute destination path inside the app's public directory."),
+		.describe(
+			"Destination path inside the app's assets directory. Relative paths " +
+				"are resolved against the app directory.",
+		),
 };
 
 /**
- * A download may only land in a storefront's public asset directory, and only
- * under an image name. Without this, a tool whose whole job is writing bytes
- * from the internet could overwrite a Blueprint or another user's app.
+ * A download may only land in an `assets/` directory inside the checkout, and
+ * only under an image name. Without this, a tool whose whole job is writing
+ * bytes from the internet could overwrite a Blueprint or another user's app.
+ *
+ * The builder chooses its own layout, so this cannot pin a framework's
+ * convention — it pins the two things that matter: inside the repo, and under
+ * a directory named `assets`.
  */
-const ASSET_DESTINATION = /\/web\/public\/assets\/[A-Za-z0-9._-]+\.(?:jpg|jpeg|png|webp)$/;
+const ASSET_DESTINATION =
+	/\/assets\/[A-Za-z0-9._-]+\.(?:jpg|jpeg|png|webp)$/;
+
+/** Resolves against workDir first, so `assets/chair.jpg` lands in the app. */
+function assetDestination(workDir: string, path: string): ResolvedPath {
+	const target = resolveSandboxPath(workDir, path);
+	if ("error" in target) {
+		return {
+			error: `Destination must be inside the checkout. ${target.error}`,
+		};
+	}
+	if (!target.path.startsWith(`${airoConfig.repoDir}/`)) {
+		return {
+			error: `Destination must be inside the checkout (${airoConfig.repoDir}).`,
+		};
+	}
+	if (!ASSET_DESTINATION.test(target.path)) {
+		return {
+			error:
+				"Destination must be a .jpg/.png/.webp file inside an assets/ directory.",
+		};
+	}
+	return target;
+}
 
 export const assetFetch: Tool<typeof assetFetchSchema> = {
 	name: "asset__fetch",
@@ -258,14 +318,8 @@ export const assetFetch: Tool<typeof assetFetchSchema> = {
 		"factory's allowed hosts are reachable, and only images are accepted.",
 	inputSchema: assetFetchSchema,
 	async invoke(input, ctx): Promise<ToolResult> {
-		if (!ASSET_DESTINATION.test(input.path)) {
-			return {
-				content:
-					"Destination must be an image file under a storefront's " +
-					"web/public/assets directory.",
-				isError: true,
-			};
-		}
+		const destination = assetDestination(ctx.workDir, input.path);
+		if ("error" in destination) return pathError(destination.error);
 
 		let url: URL;
 		try {
@@ -307,10 +361,223 @@ export const assetFetch: Tool<typeof assetFetchSchema> = {
 			};
 		}
 
-		await ctx.sandbox.writeFile(input.path, bytes);
-		return { content: `Saved ${bytes.byteLength} bytes to ${input.path}` };
+		await ctx.sandbox.writeFile(destination.path, bytes);
+		return {
+			content: `Saved ${bytes.byteLength} bytes to ${destination.path}`,
+		};
 	},
 };
+
+/* ── Batch collection ─────────────────────────────────────────────────── */
+
+const assetCollectSchema = {
+	subjects: z
+		.array(z.string().min(3).max(120))
+		.min(1)
+		.max(8)
+		.describe("Every subject to photograph, all at once."),
+	destDir: z
+		.string()
+		.describe(
+			"The assets directory to download into. Must end in /assets. Relative " +
+				"paths are resolved against the app directory.",
+		),
+};
+
+/**
+ * Search and download every subject in one call.
+ *
+ * The curator used to do this one subject at a time, which cost two model
+ * round trips per image. Selection is a heuristic here — the largest candidate
+ * above a usable size — because "which of these six photos looks right" is not
+ * worth a round trip for placeholder imagery. The agent still owns naming and
+ * alt text, which is where its judgment actually shows.
+ */
+export const assetCollect: Tool<typeof assetCollectSchema> = {
+	name: "asset__collect",
+	description:
+		"Search Wikimedia Commons for every subject and download the best match for each, " +
+		"all in one call. Returns what landed, with the credit line each image must be " +
+		"published with. Prefer this over calling asset__search and asset__fetch per subject.",
+	inputSchema: assetCollectSchema,
+	async invoke(input, ctx): Promise<ToolResult> {
+		const resolved = resolveSandboxPath(
+			ctx.workDir,
+			input.destDir.replace(/\/+$/, ""),
+		);
+		if ("error" in resolved) {
+			return pathError(
+				`destDir must be inside the checkout. ${resolved.error}`,
+			);
+		}
+		const destDir = resolved.path;
+		if (!destDir.startsWith(`${airoConfig.repoDir}/`)) {
+			return pathError(
+				`destDir must be inside the checkout (${airoConfig.repoDir}).`,
+			);
+		}
+		if (!destDir.endsWith("/assets")) {
+			return pathError("destDir must end in /assets.");
+		}
+
+		const budget = Math.min(input.subjects.length, airoConfig.assets.maxCount);
+		const subjects = input.subjects.slice(0, budget);
+
+		// Every subject in parallel — this is the whole point of the tool.
+		const results = await Promise.all(
+			subjects.map((subject) => collectOne(subject, destDir, ctx)),
+		);
+
+		const collected = results.filter((r) => r.path);
+		const skipped = results.filter((r) => !r.path);
+
+		if (collected.length === 0) {
+			return {
+				content: `No usable images found. ${skipped.map((s) => `${s.subject}: ${s.reason}`).join("; ")}`,
+				isError: true,
+			};
+		}
+
+		return {
+			content: JSON.stringify(
+				{
+					collected: collected.map((r) => ({
+						subject: r.subject,
+						path: r.path,
+						credit: r.credit,
+						width: r.width,
+						height: r.height,
+					})),
+					skipped: skipped.map((r) => ({
+						subject: r.subject,
+						reason: r.reason,
+					})),
+				},
+				null,
+				2,
+			),
+		};
+	},
+};
+
+interface CollectResult {
+	subject: string;
+	path?: string;
+	credit?: string;
+	width?: number;
+	height?: number;
+	reason?: string;
+}
+
+/** Minimum usable dimension. Thumbnails below this look bad at hero size. */
+const MIN_ASSET_WIDTH = 600;
+
+async function collectOne(
+	subject: string,
+	destDir: string,
+	ctx: ToolContext,
+): Promise<CollectResult> {
+	let candidates: CommonsCandidate[];
+	try {
+		candidates = await searchCommons(subject, 8);
+	} catch (error) {
+		return {
+			subject,
+			reason: `search failed: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+
+	const usable = candidates
+		.filter((c) => c.width >= MIN_ASSET_WIDTH)
+		.sort((a, b) => b.width * b.height - a.width * a.height);
+	const pick = usable[0] ?? candidates[0];
+	if (!pick) return { subject, reason: "no results" };
+
+	const path = `${destDir}/${slugify(subject)}${extensionOf(pick.url)}`;
+	try {
+		const bytes = await downloadImage(pick.url);
+		await ctx.sandbox.writeFile(path, bytes);
+		return {
+			subject,
+			path,
+			credit: pick.credit,
+			width: pick.width,
+			height: pick.height,
+		};
+	} catch (error) {
+		return {
+			subject,
+			reason: `download failed: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+}
+
+/** Fetch and validate one image, or throw with a reportable reason. */
+async function downloadImage(rawUrl: string): Promise<Buffer> {
+	const url = new URL(rawUrl);
+	if (url.protocol !== "https:") throw new Error("not https");
+	if (!airoConfig.assets.allowedHosts.includes(url.hostname)) {
+		throw new Error(`host not allowed: ${url.hostname}`);
+	}
+
+	const response = await fetch(url, {
+		headers: { "user-agent": "airo-factory/0.1 (Render demo)" },
+		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+	});
+	if (!response.ok) throw new Error(`HTTP ${response.status}`);
+	if (!(response.headers.get("content-type") ?? "").startsWith("image/")) {
+		throw new Error("not an image");
+	}
+
+	const bytes = Buffer.from(await response.arrayBuffer());
+	if (bytes.byteLength > airoConfig.assets.maxBytes) {
+		throw new Error(`${bytes.byteLength} bytes exceeds the limit`);
+	}
+	return bytes;
+}
+
+function slugify(subject: string): string {
+	return (
+		subject
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-|-$/g, "")
+			.slice(0, 60) || "image"
+	);
+}
+
+function extensionOf(url: string): string {
+	const match = url.match(/\.(jpe?g|png|webp)(?:\?|$)/i);
+	return match ? `.${match[1].toLowerCase()}` : ".jpg";
+}
+
+/* ── Commons ──────────────────────────────────────────────────────────── */
+
+/** Query Commons and return parsed candidates. Shared by both asset tools. */
+async function searchCommons(
+	query: string,
+	limit: number,
+): Promise<CommonsCandidate[]> {
+	const params = new URLSearchParams({
+		action: "query",
+		format: "json",
+		formatversion: "2",
+		generator: "search",
+		gsrsearch: `filetype:bitmap ${query}`,
+		gsrnamespace: "6",
+		gsrlimit: String(limit),
+		prop: "imageinfo",
+		iiprop: "url|size|extmetadata",
+		iiurlwidth: "1400",
+	});
+
+	const response = await fetch(`${COMMONS_API}?${params}`, {
+		headers: { "user-agent": "airo-factory/0.1 (Render demo)" },
+		signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+	});
+	if (!response.ok) throw new Error(`Commons responded ${response.status}`);
+	return parseCommons(await response.json());
+}
 
 interface CommonsCandidate {
 	title: string;
@@ -376,6 +643,15 @@ export const writeTools: readonly Tool[] = [
 	sandboxApplyPatch,
 ];
 
-export const assetTools: readonly Tool[] = [assetSearch, assetFetch];
+/**
+ * asset__collect first — it is the one the curator should reach for. The
+ * per-subject pair stays available for the case the batch tool skipped
+ * something and the agent wants to retry it by hand.
+ */
+export const assetTools: readonly Tool[] = [
+	assetCollect,
+	assetSearch,
+	assetFetch,
+];
 
 export const allTools: readonly Tool[] = [...readTools, ...writeTools];

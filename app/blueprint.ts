@@ -139,9 +139,7 @@ function singleServiceBlock(
 	const lines: string[] = [];
 	const isStatic = service.kind === "static_site";
 
-	// Normalize rootDir: "." means the app root itself, not a subdirectory.
-	const serviceDir =
-		service.rootDir === "." ? root : `${root}/${service.rootDir}`;
+	const serviceDir = joinServiceDir(root, service.rootDir);
 
 	lines.push(
 		"  - type: web",
@@ -228,6 +226,18 @@ function databaseBlocks(manifest: Manifest, names: ResourceNames): string[] {
 		`    postgresMajorVersion: "${airoConfig.render.postgresMajorVersion}"`,
 		"    ipAllowList: []",
 	];
+}
+
+/**
+ * Join a manifest-declared rootDir onto the app's repo-relative path. The
+ * manifest is agent-authored, so tolerate "." meaning the app directory
+ * itself and a rootDir that already repeats the app path.
+ */
+function joinServiceDir(root: string, rootDir: string): string {
+	const cleaned = rootDir.replace(/^\.\/+/, "").replace(/\/+$/, "");
+	if (!cleaned || cleaned === ".") return root;
+	if (root.endsWith(`/${cleaned}`) || root === cleaned) return root;
+	return `${root}/${cleaned}`;
 }
 
 function oneLine(value: string): string {
