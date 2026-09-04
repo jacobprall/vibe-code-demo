@@ -19,6 +19,7 @@ import {
 	type BuildOutput,
 	type Manifest,
 	appSpecSchema,
+	type AssetManifest,
 	assetManifestSchema,
 	buildOutputSchema,
 	type DeployPlan,
@@ -116,11 +117,17 @@ async function run(
 			airoConfig.branch,
 		);
 		const appDir = appPath(user, appName);
+		// Every agent path resolves against this, so it has to exist first.
+		await sandbox.mustRun(
+			`mkdir -p ${shellEscape(appDir)}`,
+			"Create app directory",
+		);
 
 		// ── Imagery ─────────────────────────────────────────────────────
 		await setRunStage(runId, "curating");
 		const assetManifest = await agentJson(
-			(message) => curatorTask({ message, sandboxId: sandbox.id }),
+			(message) =>
+				curatorTask({ message, sandboxId: sandbox.id, workDir: appDir }),
 			assetManifestSchema,
 			curatorMessage(plan, appDir),
 			"curator",
@@ -134,7 +141,7 @@ async function run(
 			plan,
 			prompt,
 			runId,
-			assetManifest: JSON.stringify(assetManifest, null, 2),
+			assets: assetManifest,
 		});
 		if (!built.passed) {
 			return { status: "build_failed", summary: built.failures.slice(0, 2_000) };
@@ -218,11 +225,12 @@ async function buildAndVerify(opts: {
 	plan: DeployPlan;
 	prompt: string;
 	runId: string;
-	assetManifest: string;
+	assets: AssetManifest;
 }): Promise<BuildOutcome> {
 	let buildOutput = await runBuilder(
 		opts.sandbox,
-		builderMessage(opts.prompt, opts.plan, opts.appDir, opts.assetManifest),
+		opts.appDir,
+		builderMessage(opts.prompt, opts.plan, opts.appDir, opts.assets),
 		"builder",
 	);
 
@@ -264,6 +272,7 @@ async function buildAndVerify(opts: {
 		await setRunStage(opts.runId, "building");
 		buildOutput = await runBuilder(
 			opts.sandbox,
+			opts.appDir,
 			`Verification failed. Fix exactly what this output names:\n\n${failures.join("\n\n")}`,
 			`builder-fix-${round + 1}`,
 		);
@@ -275,6 +284,18 @@ async function buildAndVerify(opts: {
 		manifest: buildOutput.manifest,
 		failures: "Verification never completed.",
 	};
+}
+
+/**
+ * Join a manifest-declared subdirectory onto a base path. The manifest is
+ * agent-authored, so tolerate the two things models get wrong: "." or "./"
+ * meaning "this directory", and repeating the base path they were given.
+ */
+function resolveServiceDir(base: string, relative: string): string {
+	const cleaned = relative.replace(/^\.\/+/, "").replace(/\/+$/, "");
+	if (!cleaned || cleaned === ".") return base;
+	if (base.endsWith(`/${cleaned}`)) return base;
+	return `${base}/${cleaned}`;
 }
 
 /**
@@ -291,8 +312,19 @@ async function verify(
 ): Promise<string[]> {
 	const failures: string[] = [];
 
+	// Only what is inside the app directory can be committed, so an empty one
+	// is a build failure however good the model's summary sounds.
+	const contents = await sandbox.run(`ls -A ${shellEscape(appDir)}`);
+	if (contents.exitCode !== 0 || contents.output.trim() === "") {
+		return [
+			`Nothing was written to the app directory ${appDir}. ` +
+				"Build the application there — relative paths already resolve to it — " +
+				"and do not write anywhere else.",
+		];
+	}
+
 	for (const service of manifest.services) {
-		const serviceDir = `${appDir}/${service.rootDir}`;
+		const serviceDir = resolveServiceDir(appDir, service.rootDir);
 
 		// Run the build command.
 		const build = await runVerification(sandbox, serviceDir, [
@@ -306,7 +338,10 @@ async function verify(
 		}
 
 		if (service.kind === "static_site" && service.staticPublishPath) {
-			const publishDir = `${serviceDir}/${service.staticPublishPath}`;
+			const publishDir = resolveServiceDir(
+				serviceDir,
+				service.staticPublishPath,
+			);
 			const index = await sandbox.run(
 				`cat ${shellEscape(`${publishDir}/index.html`)}`,
 			);
@@ -385,11 +420,13 @@ async function checkServiceBoots(
 
 function runBuilder(
 	sandbox: Sandbox,
+	appDir: string,
 	message: string,
 	stage: string,
 ): Promise<BuildOutput> {
 	return agentJson(
-		(text) => buildTask({ message: text, sandboxId: sandbox.id }),
+		(text) =>
+			buildTask({ message: text, sandboxId: sandbox.id, workDir: appDir }),
 		buildOutputSchema,
 		message,
 		stage,
@@ -573,6 +610,7 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 
 		const buildOutput = await runBuilder(
 			ctx.sandbox,
+			ctx.appDir,
 			[
 				"The app built and passed verification in the sandbox, but Render's deploy failed.",
 				"The deploy manager diagnosed these issues:",
@@ -672,25 +710,31 @@ function curatorMessage(plan: DeployPlan, appDir: string): string {
 		`App: ${plan.appName}`,
 		`What it is: ${plan.summary}`,
 		"",
-		`Download images into: ${appDir}/public/assets`,
-		"Report each path relative to that directory's parent, e.g. assets/walnut-chair.jpg.",
+		`Call asset__collect once with destDir: ${assetsDir(appDir)}`,
+		"and every subject below. Report paths as assets/<file>.",
 		"",
 		"Subjects to find:",
 		...plan.assetQueries.map((query) => `- ${query}`),
 	].join("\n");
 }
 
+/** Where the curator downloads to. The builder is told to use these. */
+function assetsDir(appDir: string): string {
+	return `${appDir}/assets`;
+}
+
 function builderMessage(
 	prompt: string,
 	plan: DeployPlan,
 	appDir: string,
-	assetManifest: string,
+	assets: AssetManifest,
 ): string {
 	return [
 		`Product prompt:\n${prompt}`,
 		"",
 		`App directory: ${appDir}`,
-		"Build the entire application from scratch in this directory.",
+		"Build the entire application from scratch in this directory. Commands and",
+		"relative paths already start here; only what is in this directory ships.",
 		"",
 		`Approved plan:\n${plan.summary}`,
 		`Infrastructure: ${plan.tiers.map((t) => `${t.kind} (${t.reason})`).join(", ")}`,
@@ -700,9 +744,25 @@ function builderMessage(
 		`Voice: ${plan.brief.voice}`,
 		"",
 		`Content direction:\n${plan.brief.content}`,
-		`Data model:\n${plan.brief.dataModel}`,
+		...(plan.brief.dataModel ? [`Data model:\n${plan.brief.dataModel}`] : []),
 		"",
-		`Asset manifest (images already downloaded):\n${assetManifest}`,
+		assetLines(assets),
+	].join("\n");
+}
+
+/**
+ * One line per photograph rather than the pretty-printed manifest. This text
+ * rides along on every builder turn, so keeping it tight is worth it.
+ */
+function assetLines(assets: AssetManifest): string {
+	if (assets.assets.length === 0) {
+		return "Photographs: none available. Use inline SVG and CSS for all imagery.";
+	}
+	return [
+		`Photographs already in ${"assets/"} (path | alt | credit to publish):`,
+		...assets.assets.map(
+			(asset) => `- ${asset.path} | ${asset.alt} | ${asset.credit}`,
+		),
 	].join("\n");
 }
 

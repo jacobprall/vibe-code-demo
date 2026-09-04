@@ -3,6 +3,7 @@ import {
 	checkManifestCommands,
 	checkToolCall,
 	redactSecrets,
+	resolveSandboxPath,
 } from "../app/policy.js";
 
 const exec = (command: string) => checkToolCall("sandbox__exec", { command });
@@ -57,6 +58,16 @@ describe("checkToolCall", () => {
 		expect(checkToolCall("sandbox__list_dir", { path: "/etc" })).toContain("Blocked");
 	});
 
+	it("blocks a cwd outside the checkout without reading the command", () => {
+		expect(
+			checkToolCall("sandbox__exec", { command: "ls", cwd: "/root" }),
+		).toContain("outside the checkout");
+		// Absolute paths in the command itself are normal (/usr/bin, /tmp).
+		expect(
+			checkToolCall("sandbox__exec", { command: "/usr/bin/env node -v" }),
+		).toBeNull();
+	});
+
 	// asset__fetch takes a URL as well as a path; the URL is not a path.
 	it("checks the destination path of an asset fetch without rejecting its URL", () => {
 		expect(
@@ -71,6 +82,42 @@ describe("checkToolCall", () => {
 				path: "/etc/cron.d/payload",
 			}),
 		).toContain("Blocked");
+	});
+});
+
+/**
+ * The whole reason this exists: the sandbox exec API starts in `/`, so an
+ * unresolved relative path builds an application nobody can commit.
+ */
+describe("resolveSandboxPath", () => {
+	const APP_DIR = "/home/user/apps/apps/demo/shop";
+	const resolved = (path: string) => resolveSandboxPath(APP_DIR, path);
+
+	it.each([
+		["web/index.html", `${APP_DIR}/web/index.html`],
+		[".", APP_DIR],
+		["./api/../web", `${APP_DIR}/web`],
+		[`${APP_DIR}/api`, `${APP_DIR}/api`],
+		["/home/user/apps/render.yaml", "/home/user/apps/render.yaml"],
+		["/tmp/scratch.json", "/tmp/scratch.json"],
+	])("resolves %s", (input, expected) => {
+		expect(resolved(input)).toEqual({ path: expected });
+	});
+
+	// Six segments deep, so six `..` reach the filesystem root. Fewer than that
+	// stays inside the checkout, which is allowed.
+	it.each([
+		"/root",
+		"/etc/passwd",
+		"../../../../../../root/app",
+		"/home/user/appsx",
+	])("rejects %s", (input) => {
+		const result = resolved(input);
+		expect("error" in result && result.error).toContain("outside the checkout");
+	});
+
+	it("rejects an empty path", () => {
+		expect(resolved("  ")).toEqual({ error: "Path is empty." });
 	});
 });
 

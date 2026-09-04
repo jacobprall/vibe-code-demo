@@ -130,7 +130,11 @@ Do not weaken these without an explicit security-model change:
   `RENDER_READ_ONLY_TOOLS`. `checkToolCall` denies every other Render tool, so
   the allowlist is enforced twice.
 - The curator gets downloads and reads, never exec or write. Only the builder
-  gets write and exec.
+ gets write and exec.
+- Every agent-supplied path is resolved against the workflow-owned `workDir`
+ on `ToolContext` and must land inside the checkout. `sandbox__exec` always
+ `cd`s there first: the exec API starts in `/`, so an unresolved relative path
+ builds an application outside the clone that no commit can ever see.
 - `asset__fetch` accepts HTTPS only, allowlisted hosts only, `image/*` only,
   under the size cap, and only into a storefront's `web/public/assets`.
 - `sandboxId` comes from workflow code, never from the model.
