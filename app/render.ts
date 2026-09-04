@@ -481,10 +481,35 @@ function toolPayload(tool: string, result: unknown): unknown {
 
 	const text = textOf(record);
 	if (!text) return null;
+	return parseToolText(text) ?? text;
+}
+
+/**
+ * Parse the JSON value a tool's text block leads with, or null.
+ *
+ * Paginated tools append their cursor after the JSON — `list_deploys` returns
+ * `[{...}]\n\n cursor: <opaque>` — so a strict parse fails and every caller
+ * silently sees a string instead of records. That cost a run a fifteen-minute
+ * deploy timeout on a deploy that went live in thirteen seconds. Nothing here
+ * paginates, so the cursor is dropped rather than returned.
+ */
+export function parseToolText(text: string): unknown {
 	try {
 		return JSON.parse(text);
 	} catch {
-		return text;
+		// Fall through to the leading JSON value.
+	}
+
+	const start = text.search(/[[{]/);
+	if (start === -1) return null;
+
+	const end = text.lastIndexOf(text[start] === "[" ? "]" : "}");
+	if (end <= start) return null;
+
+	try {
+		return JSON.parse(text.slice(start, end + 1));
+	} catch {
+		return null;
 	}
 }
 

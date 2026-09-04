@@ -148,6 +148,13 @@ export async function commitAll(
 }
 
 /**
+ * Rewrites the files a rebase must recompute rather than merge, and returns
+ * the repository-relative paths it owns. Anything else still conflicting is
+ * a real conflict and aborts the rebase.
+ */
+export type RebaseResolver = () => Promise<readonly string[]>;
+
+/**
  * Push to the shared branch, rebasing if another run got there first, then
  * confirm the remote holds the commit we verified. Render deploys from this
  * branch, so a mismatch here would mean deploying something unverified.
@@ -157,6 +164,7 @@ export async function pushVerified(
 	token: string,
 	remoteUrl: string,
 	branch: string,
+	resolveRebase?: RebaseResolver,
 ): Promise<string> {
 	const ref = `refs/heads/${branch}`;
 
@@ -186,9 +194,7 @@ export async function pushVerified(
 			branch,
 		]);
 		if (rebase.exitCode !== 0) {
-			throw new Error(
-				`Rebase onto ${branch} failed: ${rebase.output.slice(0, 500)}`,
-			);
+			await finishRebase(sandbox, branch, rebase.output, resolveRebase);
 		}
 	}
 
@@ -206,6 +212,65 @@ export async function pushVerified(
 		throw new Error("Pushed branch SHA does not match the local commit");
 	}
 	return head;
+}
+
+/**
+ * A rebase stopped on a conflict. Generated files are recomputed rather than
+ * merged: the repository-root Blueprint holds every app the factory has built,
+ * so two concurrent runs rewrite the same lines and git can never resolve it
+ * — the loser used to fail after building and verifying an app successfully.
+ */
+async function finishRebase(
+	sandbox: Sandbox,
+	branch: string,
+	output: string,
+	resolve?: RebaseResolver,
+): Promise<void> {
+	const abort = async (reason: string): Promise<never> => {
+		await sandbox
+			.run(`git -C ${shellEscape(REPO_DIR)} rebase --abort`)
+			.catch(() => {});
+		throw new Error(reason);
+	};
+
+	if (!resolve) {
+		return abort(`Rebase onto ${branch} failed: ${output.slice(0, 500)}`);
+	}
+
+	const conflicted = await conflictedPaths(sandbox);
+	if (conflicted.length === 0) {
+		return abort(`Rebase onto ${branch} failed: ${output.slice(0, 500)}`);
+	}
+
+	const regenerated = new Set(await resolve());
+	const unresolved = conflicted.filter((path) => !regenerated.has(path));
+	if (unresolved.length > 0) {
+		return abort(
+			`Rebase onto ${branch} conflicted outside generated files: ${unresolved.join(", ")}`,
+		);
+	}
+
+	await git(sandbox, "add -A", "Stage regenerated files");
+	// GIT_EDITOR: --continue reuses the original message, but git still opens an
+	// editor for it, and there is no terminal here.
+	const done = await sandbox.run(
+		`GIT_EDITOR=true git -c core.hooksPath=/dev/null -C ${shellEscape(REPO_DIR)} rebase --continue`,
+	);
+	if (done.exitCode !== 0) {
+		return abort(`Rebase onto ${branch} could not continue: ${done.output.slice(0, 500)}`);
+	}
+}
+
+async function conflictedPaths(sandbox: Sandbox): Promise<string[]> {
+	const listed = await git(
+		sandbox,
+		"diff --name-only --diff-filter=U",
+		"List conflicted paths",
+	);
+	return listed
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean);
 }
 
 /** Run commands in a directory and summarize failures. */
