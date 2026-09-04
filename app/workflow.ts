@@ -164,7 +164,9 @@ async function run(
 		if (!sha) {
 			return { status: "build_failed", summary: "The run produced no files." };
 		}
-		await pushVerified(sandbox, token, remoteUrl, airoConfig.branch);
+		await pushVerified(sandbox, token, remoteUrl, airoConfig.branch, () =>
+			writeRootBlueprint(sandbox),
+		);
 
 		// ── Deploy ──────────────────────────────────────────────────────
 		await setRunStage(runId, "deploying");
@@ -475,11 +477,23 @@ async function writeBlueprints(
 	await sandbox.writeFile(`${appDir}/render.yaml`, appBlueprint(spec));
 	await sandbox.writeFile(`${appDir}/README.md`, appReadme(spec, repoUrl));
 
+	await writeRootBlueprint(sandbox);
+}
+
+/**
+ * Regenerate the repository-root Blueprint from every app's airo.json.
+ *
+ * Derived state, never merged: a concurrent run appends its own app to the
+ * same file, so this is also what resolves a rebase conflict on it. Returns
+ * the paths it owns, which is the contract pushVerified's resolver expects.
+ */
+async function writeRootBlueprint(sandbox: Sandbox): Promise<string[]> {
 	const specs = await readAllSpecs(sandbox);
 	await sandbox.writeFile(
 		`${airoConfig.repoDir}/${airoConfig.blueprintPath}`,
 		rootBlueprint(specs),
 	);
+	return [airoConfig.blueprintPath];
 }
 
 async function readAllSpecs(sandbox: Sandbox): Promise<AppSpec[]> {
@@ -676,6 +690,7 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 			ctx.token,
 			ctx.remoteUrl,
 			airoConfig.branch,
+			() => writeRootBlueprint(ctx.sandbox),
 		);
 	}
 

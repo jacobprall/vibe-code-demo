@@ -26,6 +26,8 @@ export interface AiroConfig {
 		allowedHosts: string[];
 		maxBytes: number;
 		maxCount: number;
+		/** Width Commons renders thumbnails to. Caps bytes on a landing page. */
+		imageWidth: number;
 	};
 	/** Runs the gateway will let run at once. Sandboxes and models cost money. */
 	maxConcurrentRuns: number;
@@ -47,9 +49,15 @@ export const airoConfig: AiroConfig = {
 		postgresMajorVersion: "18",
 	},
 	assets: {
-		allowedHosts: ["upload.wikimedia.org"],
-		maxBytes: 5 * 1024 * 1024,
+		// Commons serves thumbnails from both hosts, mixed within one response.
+		// Without thumb.wikimedia.org, whichever subjects land on it fail with
+		// "host not allowed" and the run quietly ships fewer photographs.
+		allowedHosts: ["upload.wikimedia.org", "thumb.wikimedia.org"],
+		// A landing page photograph, not an archive master. Commons will happily
+		// serve a 1400px-wide portrait at 1.8 MB.
+		maxBytes: 2 * 1024 * 1024,
 		maxCount: 12,
+		imageWidth: 1200,
 	},
 	maxConcurrentRuns: 3,
 	models: {

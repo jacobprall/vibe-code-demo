@@ -7,8 +7,49 @@ import {
 	findDeploys,
 	findLogMessages,
 	findServiceUrl,
+	parseToolText,
 	serviceRecords,
 } from "../app/render.js";
+
+/**
+ * Paginated tools append their cursor after the JSON. A strict parse fails, the
+ * payload degrades to a string, and every finder silently returns nothing —
+ * which once cost a run a 15-minute deploy timeout on a deploy that went live
+ * in 13 seconds.
+ */
+describe("parseToolText", () => {
+	const listDeploys =
+		'[{"id":"dep-dadelk1t0dsc7389veo0","status":"live","trigger":"blueprint_sync"}]\n\n cursor: Tfgyh_mGGfZsazF0MGRzYzczODl2ZW8w';
+
+	it("parses a payload with a cursor line appended", () => {
+		expect(parseToolText(listDeploys)).toEqual([
+			{
+				id: "dep-dadelk1t0dsc7389veo0",
+				status: "live",
+				trigger: "blueprint_sync",
+			},
+		]);
+	});
+
+	it("keeps the deploy visible to findDeploys", () => {
+		expect(findDeploys(parseToolText(listDeploys))).toEqual([
+			{ id: "dep-dadelk1t0dsc7389veo0", status: "live" },
+		]);
+	});
+
+	it("parses clean JSON unchanged", () => {
+		expect(parseToolText('{"ok":true}')).toEqual({ ok: true });
+	});
+
+	it("returns null for text carrying no JSON", () => {
+		expect(parseToolText("service srv-1: unauthorized")).toBeNull();
+		expect(parseToolText("")).toBeNull();
+	});
+
+	it("returns null rather than half a value when the JSON is truncated", () => {
+		expect(parseToolText('[{"id":"dep-1","status":"li')).toBeNull();
+	});
+});
 
 describe("serviceRecords", () => {
 	it("reads services out of a cursor-wrapped list", () => {

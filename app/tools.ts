@@ -475,8 +475,36 @@ interface CollectResult {
 	reason?: string;
 }
 
-/** Minimum usable dimension. Thumbnails below this look bad at hero size. */
-const MIN_ASSET_WIDTH = 600;
+/**
+ * Minimum width of the file behind the thumbnail. Measuring the thumbnail
+ * instead is useless — Commons renders every one to the requested box, so a
+ * 450px original comes back the same width as a 4000px one, upscaled.
+ */
+const MIN_SOURCE_WIDTH = 600;
+
+/**
+ * Pick one candidate: a real photograph, wide rather than tall, best source
+ * available.
+ *
+ * Sorting by thumbnail area used to win, and since every thumbnail is capped
+ * to the same width, that meant "tallest" — which selected portraits, the
+ * largest files, and the worst shapes for a hero image.
+ */
+export function bestCandidate(
+	candidates: readonly CommonsCandidate[],
+): CommonsCandidate | undefined {
+	const realEnough = candidates.filter(
+		(candidate) => candidate.sourceWidth >= MIN_SOURCE_WIDTH,
+	);
+	const pool = realEnough.length > 0 ? realEnough : candidates;
+	const landscape = pool.filter(
+		(candidate) => candidate.sourceWidth >= candidate.sourceHeight,
+	);
+
+	return [...(landscape.length > 0 ? landscape : pool)].sort(
+		(a, b) => b.sourceWidth * b.sourceHeight - a.sourceWidth * a.sourceHeight,
+	)[0];
+}
 
 async function collectOne(
 	subject: string,
@@ -493,10 +521,7 @@ async function collectOne(
 		};
 	}
 
-	const usable = candidates
-		.filter((c) => c.width >= MIN_ASSET_WIDTH)
-		.sort((a, b) => b.width * b.height - a.width * a.height);
-	const pick = usable[0] ?? candidates[0];
+	const pick = bestCandidate(candidates);
 	if (!pick) return { subject, reason: "no results" };
 
 	const path = `${destDir}/${slugify(subject)}${extensionOf(pick.url)}`;
@@ -640,7 +665,10 @@ async function searchCommons(
 		gsrlimit: String(limit),
 		prop: "imageinfo",
 		iiprop: "url|size|extmetadata",
-		iiurlwidth: "1400",
+		// Width only. Passing iiurlheight as well moves the thumbnails to
+		// thumb.wikimedia.org, which is not an allowed host — bestCandidate
+		// keeps the tall originals out instead.
+		iiurlwidth: String(airoConfig.assets.imageWidth),
 	});
 
 	// Relaxing a query multiplies the requests a run makes, and every subject
@@ -658,11 +686,15 @@ async function searchCommons(
 	}
 }
 
-interface CommonsCandidate {
+export interface CommonsCandidate {
 	title: string;
 	url: string;
+	/** Dimensions of the thumbnail that will land on disk. */
 	width: number;
 	height: number;
+	/** Dimensions of the file behind it, which is what quality depends on. */
+	sourceWidth: number;
+	sourceHeight: number;
 	credit: string;
 }
 
@@ -676,24 +708,28 @@ function parseCommons(payload: unknown): CommonsCandidate[] {
 			title?: string;
 			imageinfo?: {
 				thumburl?: string;
-				url?: string;
 				thumbwidth?: number;
 				thumbheight?: number;
+				width?: number;
+				height?: number;
 				extmetadata?: Record<string, { value?: string }>;
 			}[];
 		};
 		const info = record.imageinfo?.[0];
-		const url = info?.thumburl ?? info?.url;
-		if (!url || !record.title) continue;
+		// Thumbnail only. Falling back to the original once shipped an archive
+		// master into a landing page.
+		if (!info?.thumburl || !record.title) continue;
 
-		const meta = info?.extmetadata ?? {};
+		const meta = info.extmetadata ?? {};
 		const artist = stripHtml(meta.Artist?.value ?? "Wikimedia Commons");
 		const license = stripHtml(meta.LicenseShortName?.value ?? "see Commons");
 		candidates.push({
 			title: record.title,
-			url,
-			width: info?.thumbwidth ?? 0,
-			height: info?.thumbheight ?? 0,
+			url: info.thumburl,
+			width: info.thumbwidth ?? 0,
+			height: info.thumbheight ?? 0,
+			sourceWidth: info.width ?? 0,
+			sourceHeight: info.height ?? 0,
 			credit: `${artist} / Wikimedia Commons (${license})`,
 		});
 	}

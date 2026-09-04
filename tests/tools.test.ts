@@ -3,6 +3,8 @@ import type { ExecResult, Sandbox } from "../app/sandbox.js";
 import {
 	assetCollect,
 	assetFetch,
+	bestCandidate,
+	type CommonsCandidate,
 	commonsQueries,
 	sandboxApplyPatch,
 	sandboxExec,
@@ -291,6 +293,59 @@ describe("commonsQueries", () => {
 		expect(commonsQueries("Hallberg-Rassy cruising sailboat!")).toContain(
 			"hallberg-rassy cruising sailboat",
 		);
+	});
+});
+
+/**
+ * Real candidates for "pocket gopher". Every thumbnail comes back at the
+ * requested box, so thumbnail size says nothing about quality — sorting by it
+ * picked the tallest image, which was a 1.8 MB portrait, and shipped it into a
+ * landing page.
+ */
+describe("bestCandidate", () => {
+	const candidate = (
+		title: string,
+		sourceWidth: number,
+		sourceHeight: number,
+	): CommonsCandidate => ({
+		title,
+		url: `https://upload.wikimedia.org/${title}.jpg`,
+		width: 1200,
+		height: sourceWidth >= sourceHeight ? 900 : 1200,
+		sourceWidth,
+		sourceHeight,
+		credit: "someone / Wikimedia Commons (CC BY-SA 4.0)",
+	});
+
+	it("prefers a large landscape source over a taller one", () => {
+		const pick = bestCandidate([
+			candidate("portrait", 1151, 2048),
+			candidate("mounds", 4000, 3000),
+			candidate("closeup", 2048, 1536),
+		]);
+		expect(pick?.title).toBe("mounds");
+	});
+
+	it("skips a source too small to fill the thumbnail it would be upscaled to", () => {
+		const pick = bestCandidate([
+			candidate("tiny-but-wide", 450, 326),
+			candidate("real", 2048, 1536),
+		]);
+		expect(pick?.title).toBe("real");
+	});
+
+	it("takes a portrait when no landscape source qualifies", () => {
+		expect(bestCandidate([candidate("portrait", 1568, 1735)])?.title).toBe(
+			"portrait",
+		);
+	});
+
+	it("falls back to a small source rather than returning nothing", () => {
+		expect(bestCandidate([candidate("tiny", 450, 326)])?.title).toBe("tiny");
+	});
+
+	it("has nothing to pick from an empty list", () => {
+		expect(bestCandidate([])).toBeUndefined();
 	});
 });
 
