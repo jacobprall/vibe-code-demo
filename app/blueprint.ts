@@ -139,13 +139,22 @@ function singleServiceBlock(
 	const lines: string[] = [];
 	const isStatic = service.kind === "static_site";
 
+	// Normalize rootDir: "." means the app root itself, not a subdirectory.
+	const serviceDir =
+		service.rootDir === "." ? root : `${root}/${service.rootDir}`;
+
 	lines.push(
 		"  - type: web",
 		`    name: ${resourceName}`,
 		`    runtime: ${isStatic ? "static" : service.runtime}`,
-		`    plan: ${airoConfig.render.servicePlan}`,
-		`    region: ${airoConfig.render.region}`,
-		`    rootDir: ${root}/${service.rootDir}`,
+	);
+	// Static sites are served from the global CDN — no region field.
+	if (!isStatic) {
+		lines.push(`    plan: ${airoConfig.render.servicePlan}`);
+		lines.push(`    region: ${airoConfig.render.region}`);
+	}
+	lines.push(
+		`    rootDir: ${serviceDir}`,
 		`    buildCommand: ${service.buildCommand}`,
 	);
 
@@ -163,7 +172,7 @@ function singleServiceBlock(
 		"    autoDeployTrigger: commit",
 		"    buildFilter:",
 		"      paths:",
-		`        - ${root}/${service.rootDir}/**`,
+		`        - ${serviceDir}/**`,
 	);
 
 	const envVars = service.envVars ?? [];

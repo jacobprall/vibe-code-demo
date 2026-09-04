@@ -60,14 +60,14 @@ export const deployPlanSchema = z.object({
 		.min(1)
 		.max(4),
 	/** What the curator should go and find pictures of. */
-	assetQueries: z.array(z.string().min(3).max(120)).max(8),
+	assetQueries: z.array(z.string().min(3).max(120)).max(8).optional().default([]),
 	brief: z.object({
 		pages: z.array(z.string().min(1).max(120)).min(1).max(8),
 		features: z.array(z.string().min(1).max(200)).max(12),
 		voice: z.string().min(1).max(500),
 		content: z.string().min(1).max(4000),
 		/** Entities, fields, and seed data the API and database should hold. */
-		dataModel: z.string().max(3000),
+		dataModel: z.string().max(3000).optional().default(""),
 	}),
 });
 
