@@ -5,7 +5,7 @@ import {
 	tool as sdkTool,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { z } from "zod";
+import { z } from "zod";
 import type { ModelTier } from "../airo.config.js";
 import { requireEnv } from "./config.js";
 import { checkToolCall, RENDER_MCP_SERVER } from "./policy.js";
@@ -51,6 +51,7 @@ export interface Agent {
 
 export interface ClaudeRun {
 	result: string;
+	structuredOutput?: unknown;
 	inputTokens: number;
 	outputTokens: number;
 }
@@ -65,6 +66,8 @@ export interface RunClaudeOptions {
 	renderTools?: readonly string[];
 	sandbox?: Sandbox;
 	signal?: AbortSignal;
+	/** When set, the SDK enforces structured JSON output matching this schema. */
+	outputSchema?: Record<string, unknown>;
 }
 
 export async function runClaude(opts: RunClaudeOptions): Promise<ClaudeRun> {
@@ -96,12 +99,16 @@ export async function runClaude(opts: RunClaudeOptions): Promise<ClaudeRun> {
 		hooks: { PreToolUse: [{ hooks: [enforcePolicy] }] },
 	};
 
+	if (opts.outputSchema) {
+		options.outputFormat = {
+			type: "json_schema",
+			schema: opts.outputSchema,
+		};
+	}
+
 	const servers: NonNullable<Options["mcpServers"]> = {};
 
 	if (renderTools.length > 0) {
-		// The hosted Render MCP server. The key travels in the server config
-		// rather than the subprocess environment, and allowedTools plus
-		// checkToolCall keep this connection read-only.
 		servers[RENDER_MCP_SERVER] = {
 			type: "http",
 			url: renderMcpUrl(),
@@ -139,7 +146,12 @@ export async function runClaude(opts: RunClaudeOptions): Promise<ClaudeRun> {
 				`Agent "${opts.agentId}" failed: ${failureReason(message)}`,
 			);
 		}
-		return { result: message.result, ...usageTotals(message) };
+		const raw = message as unknown as Record<string, unknown>;
+		return {
+			result: message.result,
+			structuredOutput: raw.structured_output,
+			...usageTotals(message),
+		};
 	}
 
 	throw new Error(`Agent "${opts.agentId}" produced no result`);
@@ -164,47 +176,90 @@ export function md(
 		: lines.join("\n");
 }
 
-/** Parse JSON from model output. Tolerates code fences and leading prose. */
-export function parseModelJson<T>(schema: z.ZodType<T>, raw: string): T | null {
-	const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-	const candidate =
-		fenced ?? raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
-	try {
-		return schema.parse(JSON.parse(candidate));
-	} catch {
-		return null;
-	}
-}
-
 export type AgentCall = (message: string) => string | Promise<string>;
 
-/** Call an agent that must return JSON. One repair attempt, then fail closed. */
+/**
+ * Call an agent that must return structured JSON. Uses the SDK's native
+ * structured output via outputFormat when available, with parseModelJson
+ * as a fallback for text-mode agents.
+ */
 export async function agentJson<T>(
 	call: AgentCall,
 	schema: z.ZodType<T>,
 	message: string,
 	stage: string,
 ): Promise<T> {
-	const parsed = parseModelJson(schema, await call(message));
-	if (parsed) return parsed;
+	const raw = await call(message);
 
+	// The agent may have returned structured_output via the SDK, in which
+	// case the raw string is JSON that parses directly.
+	const direct = tryParse(schema, raw);
+	if (direct) return direct;
+
+	// Fallback: extract JSON from prose/fences.
+	const extracted = parseModelJson(schema, raw);
+	if (extracted) return extracted;
+
+	// One repair attempt.
 	console.warn(JSON.stringify({ event: "model_json_repair", stage }));
-	const repaired = parseModelJson(
-		schema,
-		await call(
-			`${message}\n\nYour previous response was not valid JSON. Return only the required JSON object.`,
-		),
+	const raw2 = await call(
+		`${message}\n\nYour previous response was not valid JSON matching the required schema. Return ONLY the JSON object, no prose.`,
 	);
+	const repaired = tryParse(schema, raw2) ?? parseModelJson(schema, raw2);
 	if (repaired) return repaired;
 
 	throw new Error(`${stage} returned invalid structured output twice`);
 }
 
+function tryParse<T>(schema: z.ZodType<T>, raw: string): T | null {
+	try {
+		return schema.parse(JSON.parse(raw));
+	} catch {
+		return null;
+	}
+}
+
 /**
- * Strip our own MCP prefix so policy rules match the bare sandbox tool name.
- * Render MCP names keep their prefix — that is how checkToolCall recognizes
- * them and holds them to the read-only allowlist.
+ * Parse JSON from model output. Models wrap JSON in prose, code fences, or
+ * both — try every reasonable extraction before giving up.
  */
+export function parseModelJson<T>(schema: z.ZodType<T>, raw: string): T | null {
+	for (const candidate of jsonCandidates(raw)) {
+		try {
+			return schema.parse(JSON.parse(candidate));
+		} catch {
+			// Try next candidate.
+		}
+	}
+	return null;
+}
+
+function* jsonCandidates(raw: string): Generator<string> {
+	// Fenced code blocks (largest first).
+	const fences = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+	for (const match of fences.sort((a, b) => b[1].length - a[1].length)) {
+		yield match[1].trim();
+	}
+	// First { to last }.
+	const first = raw.indexOf("{");
+	const last = raw.lastIndexOf("}");
+	if (first !== -1 && last > first) {
+		yield raw.slice(first, last + 1);
+	}
+}
+
+/**
+ * Convert a Zod schema to a JSON Schema object the SDK's outputFormat accepts.
+ * Strips the $schema draft declaration that the Claude CLI rejects.
+ */
+export function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
+	const jsonSchema = z.toJSONSchema(schema) as Record<string, unknown>;
+	delete jsonSchema.$schema;
+	return jsonSchema;
+}
+
+/* ── Internals ────────────────────────────────────────────────────────── */
+
 function bareToolName(name: string): string {
 	const prefix = `mcp__${MCP_SERVER}__`;
 	return name.startsWith(prefix) ? name.slice(prefix.length) : name;
@@ -267,7 +322,6 @@ function tokenCount(
 	return 0;
 }
 
-/** Extract total token usage from a result message across SDK versions. */
 function usageTotals(message: SDKMessage): {
 	inputTokens: number;
 	outputTokens: number;

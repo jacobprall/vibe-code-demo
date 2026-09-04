@@ -1,7 +1,13 @@
-/** The three agents, in pipeline order, and how each becomes a Render task. */
+/** The agents, in pipeline order, and how each becomes a Render task. */
 import { task } from "@renderinc/sdk/workflows";
 import { airoConfig } from "../airo.config.js";
-import { type Agent, md, runClaude } from "./claude.js";
+import { type Agent, md, runClaude, zodToJsonSchema } from "./claude.js";
+import {
+	assetManifestSchema,
+	buildOutputSchema,
+	deployDiagnosisSchema,
+	deployPlanSchema,
+} from "./contracts.js";
 import { RENDER_READ_ONLY_TOOLS } from "./policy.js";
 import { connectSandbox } from "./sandbox.js";
 import { allTools, assetTools, readTools } from "./tools.js";
@@ -212,6 +218,14 @@ export interface AgentTaskInput {
 	sandboxId?: string;
 }
 
+/** JSON Schema for each agent's structured output, keyed by agent id. */
+const OUTPUT_SCHEMAS: Record<string, Record<string, unknown>> = {
+	architect: zodToJsonSchema(deployPlanSchema),
+	curator: zodToJsonSchema(assetManifestSchema),
+	builder: zodToJsonSchema(buildOutputSchema),
+	"deploy-manager": zodToJsonSchema(deployDiagnosisSchema),
+};
+
 /** Turn an Agent into a Render Workflows task. */
 export function agentTask(agent: Agent) {
 	return task(
@@ -226,6 +240,7 @@ export function agentTask(agent: Agent) {
 				tools: agent.tools,
 				renderTools: agent.renderTools,
 				sandbox: input.sandboxId ? connectSandbox(input.sandboxId) : undefined,
+				outputSchema: OUTPUT_SCHEMAS[agent.id],
 			});
 
 			console.log(
@@ -237,6 +252,11 @@ export function agentTask(agent: Agent) {
 					outputTokens: run.outputTokens,
 				}),
 			);
+
+			// Prefer structured_output when the SDK enforced the schema.
+			if (run.structuredOutput !== undefined) {
+				return JSON.stringify(run.structuredOutput);
+			}
 			return run.result;
 		},
 	);
