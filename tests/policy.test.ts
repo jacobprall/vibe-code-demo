@@ -38,6 +38,12 @@ describe("checkToolCall", () => {
 		).toContain("path traversal");
 	});
 
+	it("blocks a sibling directory that merely shares the checkout's prefix", () => {
+		expect(
+			checkToolCall("sandbox__read_file", { path: "/home/user/repox/x.ts" }),
+		).toContain("outside the checkout");
+	});
+
 	it("blocks absolute paths outside the checkout", () => {
 		expect(checkToolCall("sandbox__read_file", { path: "/etc/shadow" })).toContain(
 			"outside the checkout",
@@ -46,7 +52,7 @@ describe("checkToolCall", () => {
 
 	it("allows paths inside the checkout and /tmp", () => {
 		expect(
-			checkToolCall("sandbox__read_file", { path: "/home/user/apps/x.ts" }),
+			checkToolCall("sandbox__read_file", { path: "/home/user/repo/x.ts" }),
 		).toBeNull();
 		expect(checkToolCall("sandbox__read_file", { path: "/tmp/scratch" })).toBeNull();
 		expect(checkToolCall("sandbox__read_file", { path: "src/index.ts" })).toBeNull();
@@ -73,7 +79,7 @@ describe("checkToolCall", () => {
 		expect(
 			checkToolCall("asset__fetch", {
 				url: "https://upload.wikimedia.org/a/b.jpg",
-				path: "/home/user/apps/apps/demo/shop/web/public/assets/b.jpg",
+				path: "/home/user/repo/apps/demo/shop/web/public/assets/b.jpg",
 			}),
 		).toBeNull();
 		expect(
@@ -90,7 +96,7 @@ describe("checkToolCall", () => {
  * unresolved relative path builds an application nobody can commit.
  */
 describe("resolveSandboxPath", () => {
-	const APP_DIR = "/home/user/apps/apps/demo/shop";
+	const APP_DIR = "/home/user/repo/apps/demo/shop";
 	const resolved = (path: string) => resolveSandboxPath(APP_DIR, path);
 
 	it.each([
@@ -98,7 +104,7 @@ describe("resolveSandboxPath", () => {
 		[".", APP_DIR],
 		["./api/../web", `${APP_DIR}/web`],
 		[`${APP_DIR}/api`, `${APP_DIR}/api`],
-		["/home/user/apps/render.yaml", "/home/user/apps/render.yaml"],
+		["/home/user/repo/render.yaml", "/home/user/repo/render.yaml"],
 		["/tmp/scratch.json", "/tmp/scratch.json"],
 	])("resolves %s", (input, expected) => {
 		expect(resolved(input)).toEqual({ path: expected });
@@ -110,7 +116,7 @@ describe("resolveSandboxPath", () => {
 		"/root",
 		"/etc/passwd",
 		"../../../../../../root/app",
-		"/home/user/appsx",
+		"/home/user/repox",
 	])("rejects %s", (input) => {
 		const result = resolved(input);
 		expect("error" in result && result.error).toContain("outside the checkout");

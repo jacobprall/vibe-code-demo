@@ -234,6 +234,12 @@ export const sandboxApplyPatch: Tool<typeof applyPatchSchema> = {
 const COMMONS_API = "https://commons.wikimedia.org/w/api.php";
 const SEARCH_TIMEOUT_MS = 20_000;
 const FETCH_TIMEOUT_MS = 30_000;
+const RATE_LIMIT_RETRIES = 2;
+const RATE_LIMIT_BACKOFF_MS = 1_000;
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 const assetSearchSchema = {
 	query: z.string().describe("What to find photographs of."),
@@ -254,7 +260,7 @@ export const assetSearch: Tool<typeof assetSearchSchema> = {
 	async invoke(input): Promise<ToolResult> {
 		let candidates: CommonsCandidate[];
 		try {
-			candidates = await searchCommons(input.query, input.limit ?? 6);
+			candidates = await searchCommonsRelaxed(input.query, input.limit ?? 6);
 		} catch (error) {
 			return {
 				content: `Commons search failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -479,7 +485,7 @@ async function collectOne(
 ): Promise<CollectResult> {
 	let candidates: CommonsCandidate[];
 	try {
-		candidates = await searchCommons(subject, 8);
+		candidates = await searchCommonsRelaxed(subject, 8);
 	} catch (error) {
 		return {
 			subject,
@@ -553,6 +559,72 @@ function extensionOf(url: string): string {
 
 /* ── Commons ──────────────────────────────────────────────────────────── */
 
+/**
+ * Words that carry no weight in an image search but do count as terms Commons
+ * requires a match for.
+ */
+const STOPWORDS = new Set([
+	"a",
+	"an",
+	"and",
+	"at",
+	"closeup",
+	"for",
+	"from",
+	"full",
+	"image",
+	"in",
+	"into",
+	"near",
+	"of",
+	"on",
+	"over",
+	"photo",
+	"photograph",
+	"the",
+	"to",
+	"under",
+	"with",
+]);
+
+/**
+ * Progressively shorter forms of one subject, longest first.
+ *
+ * Commons ANDs every term, so a natural-language subject like "Beneteau
+ * Oceanis sailboat sailing offshore" matches nothing while "Beneteau Oceanis
+ * sailboat" matches plenty. The architect writes prose; this turns it into
+ * something the search can answer instead of leaving the model to guess.
+ */
+export function commonsQueries(subject: string): string[] {
+	const words = subject.toLowerCase().match(/[a-z0-9-]+/g) ?? [];
+	const significant = words.filter((word) => !STOPWORDS.has(word));
+
+	const ladder = [
+		subject.trim(),
+		significant.join(" "),
+		significant.slice(0, 4).join(" "),
+		significant.slice(0, 3).join(" "),
+		significant.slice(0, 2).join(" "),
+	];
+	return [...new Set(ladder.filter((query) => query.length > 0))];
+}
+
+/**
+ * Search Commons for a subject, relaxing the query until something comes back.
+ * Attempts are sequential: Commons rate-limits, and the first one usually wins.
+ */
+async function searchCommonsRelaxed(
+	subject: string,
+	limit: number,
+): Promise<CommonsCandidate[]> {
+	let candidates: CommonsCandidate[] = [];
+	for (const query of commonsQueries(subject)) {
+		candidates = await searchCommons(query, limit);
+		if (candidates.length > 0) return candidates;
+	}
+	return candidates;
+}
+
 /** Query Commons and return parsed candidates. Shared by both asset tools. */
 async function searchCommons(
 	query: string,
@@ -571,12 +643,19 @@ async function searchCommons(
 		iiurlwidth: "1400",
 	});
 
-	const response = await fetch(`${COMMONS_API}?${params}`, {
-		headers: { "user-agent": "airo-factory/0.1 (Render demo)" },
-		signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
-	});
-	if (!response.ok) throw new Error(`Commons responded ${response.status}`);
-	return parseCommons(await response.json());
+	// Relaxing a query multiplies the requests a run makes, and every subject
+	// searches in parallel, so back off once rather than losing the subject.
+	for (let attempt = 0; ; attempt++) {
+		const response = await fetch(`${COMMONS_API}?${params}`, {
+			headers: { "user-agent": "airo-factory/0.1 (Render demo)" },
+			signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+		});
+		if (response.ok) return parseCommons(await response.json());
+		if (response.status !== 429 || attempt === RATE_LIMIT_RETRIES) {
+			throw new Error(`Commons responded ${response.status}`);
+		}
+		await sleep(RATE_LIMIT_BACKOFF_MS * (attempt + 1));
+	}
 }
 
 interface CommonsCandidate {

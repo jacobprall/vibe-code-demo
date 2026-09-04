@@ -33,7 +33,9 @@ export interface AiroConfig {
 }
 
 export const airoConfig: AiroConfig = {
-	repoDir: "/home/user/apps",
+	// Not "/home/user/apps": the repository already has an apps/ directory, and
+	// the doubled path in every command and prompt reads like a bug.
+	repoDir: "/home/user/repo",
 	appsDir: "apps",
 	branch: "main",
 	resourcePrefix: "airo",

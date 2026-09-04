@@ -46,8 +46,10 @@ export const architect: Agent = {
 		you cannot justify, and do not leave one out because it seems advanced.
 
 		assetQueries are what a photo researcher will search Wikimedia Commons
-		for. Make them concrete and photographable — "handcrafted walnut dining
-		chair", not "furniture".
+		for. Two to four words, concrete and photographable — "walnut dining
+		chair", not "furniture" and not "handcrafted walnut dining chair in a
+		sunlit workshop". Commons requires every word to match, so a sentence
+		finds nothing.
 
 		The brief is what the builder works from. Be specific about pages,
 		features, voice, and real content: product names, prices, materials,
