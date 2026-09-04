@@ -125,13 +125,7 @@ async function run(
 
 		// ── Imagery ─────────────────────────────────────────────────────
 		await setRunStage(runId, "curating");
-		const assetManifest = await agentJson(
-			(message) =>
-				curatorTask({ message, sandboxId: sandbox.id, workDir: appDir }),
-			assetManifestSchema,
-			curatorMessage(plan, appDir),
-			"curator",
-		);
+		const assetManifest = await curate(sandbox, appDir, plan);
 
 		// ── Build and verify ────────────────────────────────────────────
 		await setRunStage(runId, "building");
@@ -208,6 +202,39 @@ function manifestToTiers(manifest: Manifest): TierKind[] {
 		tiers.push("postgres");
 	}
 	return tiers;
+}
+
+/* ── Imagery ──────────────────────────────────────────────────────────── */
+
+/**
+ * Photographs are decoration: the builder falls back to inline SVG and CSS
+ * without them. So a curator that runs out of turns, or a Commons outage,
+ * degrades the storefront rather than failing a deploy.
+ */
+async function curate(
+	sandbox: Sandbox,
+	appDir: string,
+	plan: DeployPlan,
+): Promise<AssetManifest> {
+	if (plan.assetQueries.length === 0) return { assets: [] };
+
+	try {
+		return await agentJson(
+			(message) =>
+				curatorTask({ message, sandboxId: sandbox.id, workDir: appDir }),
+			assetManifestSchema,
+			curatorMessage(plan, appDir),
+			"curator",
+		);
+	} catch (error) {
+		console.warn(
+			JSON.stringify({
+				event: "curator_skipped",
+				reason: error instanceof Error ? error.message : String(error),
+			}),
+		);
+		return { assets: [] };
+	}
 }
 
 /* ── Build ────────────────────────────────────────────────────────────── */

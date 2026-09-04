@@ -135,10 +135,12 @@ export function pathEscape(input: Record<string, unknown>): string | null {
 		if (normalized.includes("/../") || normalized.startsWith("../")) {
 			return "path traversal via ../";
 		}
+		// isInside, not startsWith: a sibling like /home/user/repox shares the
+		// prefix but is not in the checkout.
 		if (
 			normalized.startsWith("/") &&
-			!normalized.startsWith(airoConfig.repoDir) &&
-			!normalized.startsWith("/tmp/")
+			!isInside(airoConfig.repoDir, normalized) &&
+			!isInside(SCRATCH_DIR, normalized)
 		) {
 			return `absolute path outside the checkout: ${normalized.slice(0, 60)}`;
 		}

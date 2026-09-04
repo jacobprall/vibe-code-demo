@@ -3,6 +3,7 @@ import type { ExecResult, Sandbox } from "../app/sandbox.js";
 import {
 	assetCollect,
 	assetFetch,
+	commonsQueries,
 	sandboxApplyPatch,
 	sandboxExec,
 	sandboxListDir,
@@ -12,7 +13,7 @@ import {
 	type ToolContext,
 } from "../app/tools.js";
 
-const APP_DIR = "/home/user/apps/apps/demo/shop";
+const APP_DIR = "/home/user/repo/apps/demo/shop";
 
 function context(sandbox: Partial<Sandbox>, workDir = APP_DIR): ToolContext {
 	return { sandbox: sandbox as Sandbox, workDir };
@@ -49,7 +50,7 @@ describe("sandbox__exec", () => {
 		await sandboxExec.invoke({ command: "mkdir -p web" }, context({ run }));
 
 		expect(run.mock.calls[0][0]).toBe(
-			"cd '/home/user/apps/apps/demo/shop' && mkdir -p web",
+			"cd '/home/user/repo/apps/demo/shop' && mkdir -p web",
 		);
 	});
 
@@ -61,11 +62,11 @@ describe("sandbox__exec", () => {
 		);
 
 		expect(run.mock.calls[0][0]).toBe(
-			"cd '/home/user/apps/apps/demo/shop/api' && npm ci",
+			"cd '/home/user/repo/apps/demo/shop/api' && npm ci",
 		);
 	});
 
-	it.each(["/root", "/home/user/apps/../../etc", "../../../../../../root"])(
+	it.each(["/root", "/home/user/repo/../../etc", "../../../../../../root"])(
 		"refuses to run in %s",
 		async (cwd) => {
 			const run = runMock("");
@@ -95,12 +96,12 @@ describe("sandbox__exec", () => {
 	it("runs inside an absolute cwd inside the checkout", async () => {
 		const run = runMock("");
 		await sandboxExec.invoke(
-			{ command: "ls", cwd: "/home/user/apps/apps/demo/shop/web" },
+			{ command: "ls", cwd: "/home/user/repo/apps/demo/shop/web" },
 			context({ run }),
 		);
 
 		expect(run.mock.calls[0][0]).toBe(
-			"cd '/home/user/apps/apps/demo/shop/web' && ls",
+			"cd '/home/user/repo/apps/demo/shop/web' && ls",
 		);
 	});
 });
@@ -223,9 +224,9 @@ describe("asset__fetch destinations", () => {
 	const noWrite = () => context({ writeFile: vi.fn(async () => undefined) });
 
 	it.each([
-		"/home/user/apps/apps/demo/shop/assets/chair.jpg",
-		"/home/user/apps/apps/demo/shop/web/public/assets/chair.png",
-		"/home/user/apps/apps/demo/shop/static/assets/chair.webp",
+		"/home/user/repo/apps/demo/shop/assets/chair.jpg",
+		"/home/user/repo/apps/demo/shop/web/public/assets/chair.png",
+		"/home/user/repo/apps/demo/shop/static/assets/chair.webp",
 	])("accepts %s", async (path) => {
 		const out = await assetFetch.invoke(
 			{ url: "https://upload.wikimedia.org/a.jpg", path },
@@ -245,9 +246,9 @@ describe("asset__fetch destinations", () => {
 
 	it.each([
 		["/etc/cron.d/payload.jpg", "inside the checkout"],
-		["/home/user/apps/render.yaml", "assets/"],
-		["/home/user/apps/apps/demo/shop/assets/script.js", "assets/"],
-		["/home/user/apps/apps/demo/shop/images/chair.jpg", "assets/"],
+		["/home/user/repo/render.yaml", "assets/"],
+		["/home/user/repo/apps/demo/shop/assets/script.js", "assets/"],
+		["/home/user/repo/apps/demo/shop/images/chair.jpg", "assets/"],
 	])("rejects %s", async (path, because) => {
 		const out = await assetFetch.invoke(
 			{ url: "https://upload.wikimedia.org/a.jpg", path },
@@ -255,6 +256,41 @@ describe("asset__fetch destinations", () => {
 		);
 		expect(out.isError).toBe(true);
 		expect(out.content).toContain(because);
+	});
+});
+
+/**
+ * Commons requires every term to match, so a five-word subject finds nothing
+ * and the curator burns its turn budget re-searching by hand.
+ */
+describe("commonsQueries", () => {
+	it("shortens a prose subject, longest first", () => {
+		expect(commonsQueries("Beneteau Oceanis sailboat sailing offshore")).toEqual(
+			[
+				"Beneteau Oceanis sailboat sailing offshore",
+				"beneteau oceanis sailboat sailing offshore",
+				"beneteau oceanis sailboat sailing",
+				"beneteau oceanis sailboat",
+				"beneteau oceanis",
+			],
+		);
+	});
+
+	it("drops words Commons gains nothing from matching", () => {
+		expect(commonsQueries("sailboat cockpit and wheel helm closeup")).toContain(
+			"sailboat cockpit wheel helm",
+		);
+	});
+
+	it("leaves an already short subject as a single search", () => {
+		expect(commonsQueries("walnut chair")).toEqual(["walnut chair"]);
+	});
+
+	it("survives punctuation and empty input", () => {
+		expect(commonsQueries("  ")).toEqual([]);
+		expect(commonsQueries("Hallberg-Rassy cruising sailboat!")).toContain(
+			"hallberg-rassy cruising sailboat",
+		);
 	});
 });
 
@@ -272,7 +308,7 @@ describe("asset__collect", () => {
 
 	it("rejects a destDir that is not an assets directory", async () => {
 		const out = await assetCollect.invoke(
-			{ subjects: ["walnut chair"], destDir: "/home/user/apps/apps/demo/shop" },
+			{ subjects: ["walnut chair"], destDir: "/home/user/repo/apps/demo/shop" },
 			ctx(),
 		);
 		expect(out.isError).toBe(true);
