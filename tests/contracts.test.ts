@@ -180,6 +180,36 @@ describe("manifestSchema", () => {
 		expect(manifestSchema.safeParse(manifest).success).toBe(true);
 	});
 
+	it("carries the database lifecycle a full-stack app needs", () => {
+		const parsed = manifestSchema.parse({
+			services: [
+				{
+					name: "api",
+					kind: "web_service",
+					rootDir: "api",
+					runtime: "node",
+					buildCommand: "npm install",
+					startCommand: "npm start",
+					preDeployCommand: "npm run migrate && npm run seed",
+					healthCheckPath: "/health",
+					dataCheckPath: "/api/products",
+					envVars: [
+						{
+							key: "DATABASE_URL",
+							fromDatabase: { property: "connectionString", name: "main-db" },
+						},
+					],
+				},
+			],
+			databases: [{ name: "main-db" }],
+		});
+		expect(parsed.services[0].preDeployCommand).toBe(
+			"npm run migrate && npm run seed",
+		);
+		expect(parsed.services[0].dataCheckPath).toBe("/api/products");
+		expect(parsed.services[0].envVars?.[0].fromDatabase?.name).toBe("main-db");
+	});
+
 	it("rejects an empty services array", () => {
 		expect(manifestSchema.safeParse({ services: [] }).success).toBe(false);
 	});

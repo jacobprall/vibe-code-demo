@@ -15,8 +15,15 @@ import { airoConfig, appRelativePath } from "../airo.config.js";
 import type { AppSpec, Manifest, Service } from "./contracts.js";
 
 export interface ResourceNames {
-	web: string;
+	/** Render resource name for every manifest service, keyed by manifest name. */
+	services: Map<string, string>;
+	/** Render resource name for every manifest database, keyed by manifest name. */
+	databases: Map<string, string>;
+	/** The primary storefront, if the app has one. Reported as the app's URL. */
+	web: string | null;
+	/** The primary API, if the app has one. */
 	api: string | null;
+	/** The primary database, which an unqualified `fromDatabase` refers to. */
 	db: string | null;
 }
 
@@ -24,6 +31,12 @@ export interface ResourceNames {
  * Render resource names are unique per workspace, and the root Blueprint holds
  * every generated app at once, so the user and app names both have to be in
  * here. Components are truncated to keep the whole name within Render's limit.
+ *
+ * The first storefront, API, and database keep the `-web`, `-api`, and `-db`
+ * names the factory has always used. Anything beyond them is named after
+ * itself: the manifest allows six services and three databases, and two
+ * resources that collapse onto one name silently overwrite each other in the
+ * Blueprint rather than failing.
  */
 export function resourceNames(spec: AppSpec): ResourceNames {
 	const stem = [
@@ -32,14 +45,52 @@ export function resourceNames(spec: AppSpec): ResourceNames {
 		spec.appName.slice(0, 24),
 	].join("-");
 
-	const hasApi = spec.manifest.services.some((s) => s.kind === "web_service");
-	const hasDb = (spec.manifest.databases ?? []).length > 0;
-
-	return {
-		web: `${stem}-web`,
-		api: hasApi ? `${stem}-api` : null,
-		db: hasDb ? `${stem}-db` : null,
+	const taken = new Set<string>();
+	const claim = (suffix: string): string => {
+		const base = `${stem}-${suffix}`;
+		let name = base;
+		for (let n = 2; taken.has(name); n++) name = `${base}-${n}`;
+		taken.add(name);
+		return name;
 	};
+
+	const services = new Map<string, string>();
+	let web: string | null = null;
+	let api: string | null = null;
+
+	for (const service of spec.manifest.services) {
+		const primary =
+			service.kind === "static_site" ? web === null : api === null;
+		const name = claim(primary ? roleOf(service) : slugify(service.name));
+		services.set(service.name, name);
+		if (primary && service.kind === "static_site") web = name;
+		if (primary && service.kind === "web_service") api = name;
+	}
+
+	const databases = new Map<string, string>();
+	let db: string | null = null;
+	for (const database of spec.manifest.databases ?? []) {
+		const name = claim(db === null ? "db" : slugify(database.name));
+		databases.set(database.name, name);
+		db ??= name;
+	}
+
+	return { services, databases, web, api, db };
+}
+
+function roleOf(service: Service): string {
+	return service.kind === "static_site" ? "web" : "api";
+}
+
+/** A manifest-supplied name, reduced to something Render accepts. */
+function slugify(name: string): string {
+	return (
+		name
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-|-$/g, "")
+			.slice(0, 20) || "svc"
+	);
 }
 
 /**
@@ -118,16 +169,12 @@ function serviceBlocks(
 	const lines: string[] = [];
 
 	for (const service of manifest.services) {
-		const resourceName = resolveServiceName(service, names);
+		const resourceName = names.services.get(service.name);
+		if (!resourceName) continue;
 		lines.push(...singleServiceBlock(service, root, resourceName, names));
 	}
 
 	return lines;
-}
-
-function resolveServiceName(service: Service, names: ResourceNames): string {
-	if (service.kind === "web_service" && names.api) return names.api;
-	return names.web;
 }
 
 function singleServiceBlock(
@@ -156,6 +203,13 @@ function singleServiceBlock(
 		`    buildCommand: ${service.buildCommand}`,
 	);
 
+	// Runs after the build with the service's env vars wired, which makes it
+	// the only place a generated app can create its schema. A failure here is
+	// a pre_deploy_failed deploy, so a broken migration is a visible failure
+	// rather than an app serving an empty database.
+	if (service.preDeployCommand) {
+		lines.push(`    preDeployCommand: ${service.preDeployCommand}`);
+	}
 	if (!isStatic && service.startCommand) {
 		lines.push(`    startCommand: ${service.startCommand}`);
 	}
@@ -173,22 +227,28 @@ function singleServiceBlock(
 		`        - ${serviceDir}/**`,
 	);
 
-	const envVars = service.envVars ?? [];
 	// Wire env vars declared by the manifest.
 	const envLines: string[] = [];
-	for (const envVar of envVars) {
-		envLines.push(`      - key: ${envVar.key}`);
-		if (envVar.fromDatabase && names.db) {
+	for (const envVar of service.envVars ?? []) {
+		if (envVar.fromDatabase) {
+			const target =
+				(envVar.fromDatabase.name &&
+					names.databases.get(envVar.fromDatabase.name)) ||
+				names.db;
+			if (!target) continue;
 			envLines.push(
+				`      - key: ${envVar.key}`,
 				"        fromDatabase:",
-				`          name: ${names.db}`,
+				`          name: ${target}`,
 				`          property: ${envVar.fromDatabase.property}`,
 			);
 		} else if (envVar.fromService) {
-			const targetName = resolveFromServiceName(envVar.fromService.name, names);
+			const target = resolveFromServiceName(envVar.fromService.name, names);
+			if (!target) continue;
 			envLines.push(
+				`      - key: ${envVar.key}`,
 				"        fromService:",
-				`          name: ${targetName}`,
+				`          name: ${target}`,
 				"          type: web",
 				`          property: ${envVar.fromService.property}`,
 			);
@@ -202,30 +262,40 @@ function singleServiceBlock(
 }
 
 /**
- * Resolve a logical service reference (like "api" or "web") from the manifest
- * into the actual Render resource name.
+ * Resolve a service reference in the manifest to a Render resource name. The
+ * builder names its own services, so prefer what it declared and fall back to
+ * the "api"/"web" roles it may have used instead.
  */
 function resolveFromServiceName(
-	logicalName: string,
+	reference: string,
 	names: ResourceNames,
-): string {
-	if (logicalName === "api" && names.api) return names.api;
-	if (logicalName === "web") return names.web;
-	if (logicalName === "db" && names.db) return names.db;
-	// Fall back to the web resource.
-	return names.api ?? names.web;
+): string | null {
+	return (
+		names.services.get(reference) ??
+		(reference === "api" ? names.api : null) ??
+		(reference === "web" ? names.web : null) ??
+		names.api ??
+		names.web
+	);
 }
 
 function databaseBlocks(manifest: Manifest, names: ResourceNames): string[] {
-	if (!names.db || !manifest.databases?.length) return [];
-	return [
-		"databases:",
-		`  - name: ${names.db}`,
-		`    plan: ${airoConfig.render.databasePlan}`,
-		`    region: ${airoConfig.render.region}`,
-		`    postgresMajorVersion: "${airoConfig.render.postgresMajorVersion}"`,
-		"    ipAllowList: []",
-	];
+	const databases = manifest.databases ?? [];
+	if (databases.length === 0) return [];
+
+	const lines = ["databases:"];
+	for (const database of databases) {
+		const name = names.databases.get(database.name);
+		if (!name) continue;
+		lines.push(
+			`  - name: ${name}`,
+			`    plan: ${airoConfig.render.databasePlan}`,
+			`    region: ${airoConfig.render.region}`,
+			`    postgresMajorVersion: "${airoConfig.render.postgresMajorVersion}"`,
+			"    ipAllowList: []",
+		);
+	}
+	return lines.length > 1 ? lines : [];
 }
 
 /**

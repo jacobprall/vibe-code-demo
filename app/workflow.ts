@@ -25,6 +25,7 @@ import {
 	type DeployPlan,
 	deployDiagnosisSchema,
 	deployPlanSchema,
+	type Service,
 	type TierKind,
 	type WorkflowResult,
 	workflowInputSchema,
@@ -44,8 +45,14 @@ import {
 	waitForHttpOk,
 	waitForServices,
 } from "./render.js";
-import { createSandbox, type Sandbox, shellEscape } from "./sandbox.js";
+import {
+	createSandbox,
+	ensureSandboxPostgres,
+	type Sandbox,
+	shellEscape,
+} from "./sandbox.js";
 import { finishRun, setRunApp, setRunStage, setRunUrls } from "./store.js";
+import { materializeTemplate } from "./templates.js";
 
 const SANDBOX_TIMEOUT_SECONDS = 2 * 60 * 60;
 const MAX_BUILD_ROUNDS = 2;
@@ -54,6 +61,11 @@ const SERVICE_TIMEOUT_MS = 6 * 60 * 1000;
 const DEPLOY_TIMEOUT_MS = 15 * 60 * 1000;
 const SITE_TIMEOUT_MS = 3 * 60 * 1000;
 const SMOKE_PORT = 8099;
+const BOOT_ATTEMPTS = 15;
+/** Directory under templates/ that a multi-service app starts from. */
+const FULLSTACK_TEMPLATE = "fullstack";
+/** Proves a health endpoint answers before Postgres is reachable, as Render requires. */
+const UNREACHABLE_DATABASE_URL = "postgres://unreachable/db";
 
 export const promptToApp = task(
 	{
@@ -123,6 +135,23 @@ async function run(
 			"Create app directory",
 		);
 
+		// ── Database and skeleton ───────────────────────────────────────
+		// A real Postgres, before the builder starts, so the schema and the
+		// seed are exercised here rather than for the first time in production.
+		let databaseUrl: string | null = null;
+		let template: string[] = [];
+		if (plan.tiers.some((tier) => tier.kind === "postgres")) {
+			await setRunStage(runId, "provisioning");
+			databaseUrl = await ensureSandboxPostgres(sandbox);
+		}
+		// A multi-service app has to get CORS, the API's base URL, and the
+		// migration path right before it works at all, and none of those are
+		// things the prompt can reliably re-derive per run. The template
+		// answers them; the builder still owns the product.
+		if (plan.tiers.some((tier) => tier.kind === "web_service")) {
+			template = await materializeTemplate(sandbox, FULLSTACK_TEMPLATE, appDir);
+		}
+
 		// ── Imagery ─────────────────────────────────────────────────────
 		await setRunStage(runId, "curating");
 		const assetManifest = await curate(sandbox, appDir, plan);
@@ -136,6 +165,8 @@ async function run(
 			prompt,
 			runId,
 			assets: assetManifest,
+			databaseUrl,
+			template,
 		});
 		if (!built.passed) {
 			return { status: "build_failed", summary: built.failures.slice(0, 2_000) };
@@ -181,6 +212,7 @@ async function run(
 			appDir,
 			runId,
 			summary: built.summary,
+			databaseUrl,
 		});
 	} finally {
 		await sandbox
@@ -255,11 +287,13 @@ async function buildAndVerify(opts: {
 	prompt: string;
 	runId: string;
 	assets: AssetManifest;
+	databaseUrl: string | null;
+	template: readonly string[];
 }): Promise<BuildOutcome> {
 	let buildOutput = await runBuilder(
 		opts.sandbox,
 		opts.appDir,
-		builderMessage(opts.prompt, opts.plan, opts.appDir, opts.assets),
+		builderMessage(opts),
 		"builder",
 	);
 
@@ -280,6 +314,7 @@ async function buildAndVerify(opts: {
 			opts.sandbox,
 			opts.appDir,
 			buildOutput.manifest,
+			opts.databaseUrl,
 		);
 		if (failures.length === 0) {
 			return {
@@ -332,12 +367,15 @@ function resolveServiceDir(base: string, relative: string): string {
  * - Run the buildCommand in its rootDir
  * - For static sites: check staticPublishPath produced an index.html
  * - For web services with a healthCheckPath: boot it and curl the endpoint
+ * - For web services with a dataCheckPath: migrate, boot against the sandbox's
+ *   Postgres, and require the endpoint to answer with data
  * - Check for placeholder content in built output
  */
 async function verify(
 	sandbox: Sandbox,
 	appDir: string,
 	manifest: Manifest,
+	databaseUrl: string | null,
 ): Promise<string[]> {
 	const failures: string[] = [];
 
@@ -389,18 +427,102 @@ async function verify(
 			}
 		}
 
-		if (service.kind === "web_service" && service.healthCheckPath) {
-			const boot = await checkServiceBoots(
-				sandbox,
-				serviceDir,
-				service.startCommand ?? "npm start",
-				service.healthCheckPath,
+		if (service.kind === "web_service") {
+			failures.push(
+				...(await checkWebService(sandbox, serviceDir, service, databaseUrl)),
 			);
-			failures.push(...boot);
 		}
 	}
 
 	return failures;
+}
+
+/**
+ * Two boots, because they prove different things. Against an unreachable
+ * database, `healthCheckPath` must still answer — that is what Render's health
+ * check does before the database is up, and a health endpoint that queries
+ * will fail the deploy. Against the real one, `dataCheckPath` must return
+ * data, which is the only check that the schema applied and the seed loaded.
+ */
+async function checkWebService(
+	sandbox: Sandbox,
+	serviceDir: string,
+	service: Service,
+	databaseUrl: string | null,
+): Promise<string[]> {
+	const failures: string[] = [];
+	const startCommand = service.startCommand ?? "npm start";
+
+	if (service.healthCheckPath) {
+		const booted = await startService(sandbox, serviceDir, startCommand, {
+			databaseUrl: UNREACHABLE_DATABASE_URL,
+			readyPath: service.healthCheckPath,
+		});
+		await stopService(sandbox);
+		if (booted) {
+			failures.push(
+				`${service.name}: GET ${service.healthCheckPath} did not answer within ${BOOT_ATTEMPTS}s with an unreachable database. ` +
+					`Render calls it before Postgres is ready, so it must not query. ${booted}`,
+			);
+		}
+	}
+
+	if (!databaseUrl || !service.dataCheckPath) return failures;
+
+	// Exactly what Render will run, in the same order, before the same start
+	// command — so a migration that only works by accident fails here instead.
+	if (service.preDeployCommand) {
+		const migrated = await runVerification(sandbox, serviceDir, [
+			`DATABASE_URL=${shellEscape(databaseUrl)} ${service.preDeployCommand}`,
+		]);
+		if (!migrated.passed) {
+			failures.push(
+				`${service.name}: preDeployCommand failed against a real Postgres:\n${migrated.failures}`,
+			);
+			return failures;
+		}
+	}
+
+	const booted = await startService(sandbox, serviceDir, startCommand, {
+		databaseUrl,
+		readyPath: service.healthCheckPath ?? service.dataCheckPath,
+	});
+	if (booted) {
+		await stopService(sandbox);
+		failures.push(
+			`${service.name}: did not boot against a real Postgres. ${booted}`,
+		);
+		return failures;
+	}
+
+	const probe = await probeService(sandbox, service.dataCheckPath);
+	await stopService(sandbox);
+
+	if (probe.status !== 200) {
+		failures.push(
+			`${service.name}: GET ${service.dataCheckPath} returned ${probe.status} against a real Postgres. ` +
+				`Body:\n${probe.body.slice(0, 1_000)}`,
+		);
+	} else if (isEmptyPayload(probe.body)) {
+		failures.push(
+			`${service.name}: GET ${service.dataCheckPath} returned 200 but no data (${probe.body.slice(0, 200) || "empty body"}). ` +
+				"The schema applied but nothing seeded it, so the deployed app will render an empty page. " +
+				"Seed the tables from preDeployCommand.",
+		);
+	}
+
+	return failures;
+}
+
+/** An endpoint that answers with nothing is the seed failing, not succeeding. */
+function isEmptyPayload(body: string): boolean {
+	const trimmed = body.trim();
+	return (
+		trimmed === "" ||
+		trimmed === "[]" ||
+		trimmed === "{}" ||
+		/^\{\s*"\w+"\s*:\s*\[\s*\]\s*\}$/.test(trimmed)
+	);
 }
 
 async function checkForPlaceholders(
@@ -421,30 +543,49 @@ async function checkForPlaceholders(
 }
 
 /**
- * Boot a web service with an unreachable database and confirm its health
- * endpoint responds. This mirrors what Render's health check does.
+ * Boot a service in the background and wait for it to answer. Returns null on
+ * success, or the service log to report. The process outlives the exec that
+ * started it, so callers can probe it over several requests before stopping
+ * it; the sandbox is terminated in a `finally` regardless.
  */
-async function checkServiceBoots(
+async function startService(
 	sandbox: Sandbox,
 	serviceDir: string,
 	startCommand: string,
-	healthCheckPath: string,
-): Promise<string[]> {
+	opts: { databaseUrl: string; readyPath: string },
+): Promise<string | null> {
 	const start =
-		`cd ${shellEscape(serviceDir)} && ` +
-		`(nohup env PORT=${SMOKE_PORT} DATABASE_URL=postgres://unreachable/db ` +
+		`cd ${shellEscape(serviceDir)} && rm -f /tmp/smoke.log && ` +
+		`(nohup env PORT=${SMOKE_PORT} DATABASE_URL=${shellEscape(opts.databaseUrl)} ` +
 		`${startCommand} >/tmp/smoke.log 2>&1 & echo $! >/tmp/smoke.pid) && ` +
-		"for i in 1 2 3 4 5 6 7 8 9 10; do sleep 1; " +
-		`if curl -fsS -m 2 http://127.0.0.1:${SMOKE_PORT}${healthCheckPath} >/dev/null; then ok=1; break; fi; done; ` +
-		'kill "$(cat /tmp/smoke.pid)" 2>/dev/null; ' +
+		`for _ in $(seq 1 ${BOOT_ATTEMPTS}); do sleep 1; ` +
+		`if curl -fsS -m 2 http://127.0.0.1:${SMOKE_PORT}${opts.readyPath} >/dev/null 2>&1; then ok=1; break; fi; done; ` +
 		'if [ -z "$ok" ]; then echo "--- service log ---"; cat /tmp/smoke.log; exit 1; fi';
 
 	const result = await sandbox.run(start);
-	return result.exitCode === 0
-		? []
-		: [
-				`Service did not serve GET ${healthCheckPath} within 10s:\n${result.output.slice(0, 2_000)}`,
-			];
+	return result.exitCode === 0 ? null : result.output.slice(0, 2_000);
+}
+
+async function stopService(sandbox: Sandbox): Promise<void> {
+	await sandbox
+		.run('kill "$(cat /tmp/smoke.pid)" 2>/dev/null; rm -f /tmp/smoke.pid; true')
+		.catch(() => {});
+}
+
+/** One request against the running service. */
+async function probeService(
+	sandbox: Sandbox,
+	path: string,
+): Promise<{ status: number; body: string }> {
+	const result = await sandbox.run(
+		`curl -sS -m 10 -o /tmp/probe.out -w '%{http_code}' ` +
+			`http://127.0.0.1:${SMOKE_PORT}${path}; echo; head -c 4000 /tmp/probe.out`,
+	);
+	const [statusLine, ...rest] = result.output.split("\n");
+	return {
+		status: Number.parseInt(statusLine.trim(), 10) || 0,
+		body: rest.join("\n"),
+	};
 }
 
 function runBuilder(
@@ -529,6 +670,7 @@ interface DeployContext {
 	appDir: string;
 	runId: string;
 	summary: string;
+	databaseUrl: string | null;
 }
 
 /**
@@ -542,7 +684,7 @@ interface DeployContext {
 async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 	const { mcp, spec, workspaceId } = ctx;
 	const names = resourceNames(spec);
-	const wanted = [names.web, ...(names.api ? [names.api] : [])];
+	const wanted = [...names.services.values()];
 
 	const blueprint = await findBlueprint({
 		repo: ctx.repoUrl,
@@ -585,9 +727,12 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 		};
 	}
 
+	const urlOf = (name: string | null): string | null =>
+		name ? (services.get(name)?.url ?? null) : null;
+
 	await setRunUrls(ctx.runId, {
-		webUrl: services.get(names.web)?.url ?? null,
-		apiUrl: names.api ? (services.get(names.api)?.url ?? null) : null,
+		webUrl: urlOf(names.web),
+		apiUrl: urlOf(names.api),
 	});
 
 	// ── Deploy-manager loop ─────────────────────────────────────────────
@@ -667,6 +812,7 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 			ctx.sandbox,
 			ctx.appDir,
 			buildOutput.manifest,
+			ctx.databaseUrl,
 		);
 		if (failures.length > 0) {
 			console.error(
@@ -695,11 +841,13 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 	}
 
 	// ── Smoke the real thing ────────────────────────────────────────────
-	const webUrl = services.get(names.web)?.url;
+	const apiUrl = urlOf(names.api);
+	// An API-only app has no storefront, so the API is the public URL.
+	const webUrl = urlOf(names.web) ?? apiUrl;
 	if (!webUrl) {
 		return {
 			status: "deploy_failed",
-			summary: `${names.web} deployed but Render reported no public URL.`,
+			summary: `${names.web ?? names.api} deployed but Render reported no public URL.`,
 		};
 	}
 
@@ -711,20 +859,15 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 		};
 	}
 
-	const apiUrl = names.api ? (services.get(names.api)?.url ?? null) : null;
-	if (apiUrl) {
-		const apiService = spec.manifest.services.find(
-			(s) => s.kind === "web_service",
-		);
-		const healthPath = apiService?.healthCheckPath ?? "/health";
-		const health = await waitForHttpOk(
-			`${apiUrl}${healthPath}`,
-			SITE_TIMEOUT_MS,
-		);
-		if (!health.ok) {
+	const apiService = spec.manifest.services.find(
+		(service) => service.kind === "web_service",
+	);
+	if (apiUrl && apiService) {
+		const failure = await smokeApi(apiUrl, apiService, urlOf(names.web));
+		if (failure) {
 			return {
 				status: "deploy_failed",
-				summary: `${apiUrl}${healthPath} did not answer (last status ${health.status}).`,
+				summary: `${failure}\n\nStorefront: ${webUrl}\nAPI: ${apiUrl}`,
 			};
 		}
 	}
@@ -743,6 +886,56 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 			...spec.notes,
 		].join("\n\n"),
 	};
+}
+
+/**
+ * The checks a deploy status cannot make. "live" means the build succeeded and
+ * the health check passed, and the health check is required not to touch the
+ * database — so it certifies exactly the part that does not depend on
+ * Postgres. Whether the API returns rows, and whether the storefront's origin
+ * is allowed to read them, are facts about two services agreeing, invisible to
+ * either one's status.
+ */
+async function smokeApi(
+	apiUrl: string,
+	service: Service,
+	webOrigin: string | null,
+): Promise<string | null> {
+	const healthPath = service.healthCheckPath ?? "/health";
+	const health = await waitForHttpOk(`${apiUrl}${healthPath}`, SITE_TIMEOUT_MS);
+	if (!health.ok) {
+		return `${apiUrl}${healthPath} did not answer (last status ${health.status}).`;
+	}
+
+	if (!service.dataCheckPath) return null;
+
+	const data = await waitForHttpOk(
+		`${apiUrl}${service.dataCheckPath}`,
+		SITE_TIMEOUT_MS,
+		webOrigin ? { headers: { origin: webOrigin } } : undefined,
+	);
+	if (!data.ok) {
+		return (
+			`${apiUrl}${service.dataCheckPath} did not answer (last status ${data.status}). ` +
+			"The service is live, so its database wiring or its schema is the problem."
+		);
+	}
+
+	// The storefront is a different origin on a different host, so a browser
+	// drops the response without this header even though every server-side
+	// check above passed.
+	if (webOrigin) {
+		const allowed = data.headers.get("access-control-allow-origin");
+		if (!allowed || (allowed !== "*" && allowed !== webOrigin)) {
+			return (
+				`${apiUrl}${service.dataCheckPath} answered, but sent ` +
+				`${allowed ? `access-control-allow-origin: ${allowed}` : "no access-control-allow-origin header"} ` +
+				`for origin ${webOrigin}. The storefront cannot read the API from a browser.`
+			);
+		}
+	}
+
+	return null;
 }
 
 /* ── Prompts ──────────────────────────────────────────────────────────── */
@@ -765,18 +958,25 @@ function assetsDir(appDir: string): string {
 	return `${appDir}/assets`;
 }
 
-function builderMessage(
-	prompt: string,
-	plan: DeployPlan,
-	appDir: string,
-	assets: AssetManifest,
-): string {
+function builderMessage(opts: {
+	prompt: string;
+	plan: DeployPlan;
+	appDir: string;
+	assets: AssetManifest;
+	databaseUrl: string | null;
+	template: readonly string[];
+}): string {
+	const { plan } = opts;
 	return [
-		`Product prompt:\n${prompt}`,
+		`Product prompt:\n${opts.prompt}`,
 		"",
-		`App directory: ${appDir}`,
-		"Build the entire application from scratch in this directory. Commands and",
-		"relative paths already start here; only what is in this directory ships.",
+		`App directory: ${opts.appDir}`,
+		opts.template.length > 0
+			? "Commands and relative paths already start here; only what is in this directory ships."
+			: [
+					"Build the entire application from scratch in this directory. Commands and",
+					"relative paths already start here; only what is in this directory ships.",
+				].join("\n"),
 		"",
 		`Approved plan:\n${plan.summary}`,
 		`Infrastructure: ${plan.tiers.map((t) => `${t.kind} (${t.reason})`).join(", ")}`,
@@ -788,7 +988,59 @@ function builderMessage(
 		`Content direction:\n${plan.brief.content}`,
 		...(plan.brief.dataModel ? [`Data model:\n${plan.brief.dataModel}`] : []),
 		"",
-		assetLines(assets),
+		templateLines(opts.template),
+		"",
+		databaseLines(opts.databaseUrl),
+		"",
+		assetLines(opts.assets),
+	].join("\n");
+}
+
+/**
+ * The template is a working three-tier app, so the builder's job is to turn it
+ * into the product rather than to reinvent the wiring. Spelling out the
+ * manifest it corresponds to is the point: those exact values are what
+ * verification and the Blueprint are built around.
+ */
+function templateLines(template: readonly string[]): string {
+	if (template.length === 0) {
+		return "Skeleton: none. Choose your own stack and lay the app out yourself.";
+	}
+	return [
+		"A working skeleton is already in the app directory. It builds, serves, and",
+		"reads from Postgres as it stands — change it into the product rather than",
+		"starting over, and keep the contracts it establishes.",
+		"",
+		"  web/  Vite + React + TypeScript + Tailwind v4, with shadcn/ui Button and",
+		"        Card in src/components/ui and the cn() helper in src/lib/utils.ts.",
+		"        src/lib/api.ts already builds the API base URL from VITE_API_HOST.",
+		"  api/  Hono + node-postgres. CORS is on, GET /health answers without the",
+		"        database, GET /api/items reads it. src/migrate.ts applies",
+		"        sql/schema.sql and sql/seed.sql and is wired to npm run migrate.",
+		"",
+		"Both have a package-lock.json, so build with npm ci, not npm install.",
+		"Rename the items table and the /api/items route to suit the product; edit",
+		"sql/seed.sql to hold the real catalog from the brief.",
+		"",
+		"Return this manifest, adjusted only where you actually changed something:",
+		"  web: static_site, rootDir web, build `npm ci && npm run build`,",
+		"       staticPublishPath dist, envVar VITE_API_HOST fromService api host",
+		"  api: web_service, rootDir api, build `npm ci && npm run build`,",
+		"       preDeployCommand `npm run migrate`, start `npm start`,",
+		"       healthCheckPath /health, dataCheckPath /api/items,",
+		"       envVar DATABASE_URL fromDatabase connectionString",
+		`Files: ${template.join(", ")}`,
+	].join("\n");
+}
+
+function databaseLines(databaseUrl: string | null): string {
+	if (!databaseUrl) return "Database: none. Do not declare one in the manifest.";
+	return [
+		`Database: a real Postgres 18 is already running at ${databaseUrl}.`,
+		"It is the same database your preDeployCommand and your service will use",
+		"during verification, so develop against it — psql is on the PATH.",
+		"Declare it in the manifest as a database, wire DATABASE_URL to it with",
+		"fromDatabase, and set preDeployCommand and dataCheckPath on the service.",
 	].join("\n");
 }
 

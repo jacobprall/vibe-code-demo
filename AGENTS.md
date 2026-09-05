@@ -65,14 +65,14 @@ and no SDK layer — imports are relative with `.js` extensions (NodeNext).
 The dependency direction is one-way:
 
 ```text
-shell → sandbox → tools → claude → agents → tasks → workflow
+sandbox → tools → claude → agents → workflow
 ```
 
 `policy` is imported by `claude` and defines the MCP allowlist. `render` is
-imported by `claude` (for the MCP URL) and by `workflow`. `blueprint`,
-`scaffold`, `git`, `github`, `store`, and `format` are used by `workflow` and
-`gateway`. `config`, `contracts`, and `shell` are leaves. Adding an edge that
-points backwards is a design smell.
+imported by `claude` (for the MCP URL) and by `workflow`. `blueprint`, `git`,
+and `store` are used by `workflow`; `gateway` uses `store`, `policy`, and
+`contracts`. `config` and `contracts` are leaves. Adding an edge that points
+backwards is a design smell.
 
 ```text
 airo.config.ts   Directories, branch, plans, asset hosts, model tiers
@@ -80,28 +80,32 @@ app/
   config.ts      Environment parsing and per-process validation
   contracts.ts   Zod schemas for API input, agent output, and the stored spec
   gateway.ts     Bearer auth, body cap, dispatch, health, status
-  agents.ts      The three agents and their prompts
-  tasks.ts       agentTask() and the three registrations
+  agents.ts      The four agents, their prompts, and agentTask()
   claude.ts      The Agent type, runClaude(), md, parseModelJson, agentJson
   tools.ts       Sandbox tools, asset tools, and the Tool contract
   policy.ts      checkToolCall, path rules, MCP allowlist, secret redaction
-  sandbox.ts     Render Sandboxes
-  shell.ts       shellEscape — quoting for every command we build
-  scaffold.ts    The two-tier app skeleton and its fixed contract
+  sandbox.ts     Render Sandboxes, shellEscape, Postgres in the sandbox
   blueprint.ts   render.yaml generation — the only write path to Render
   render.ts      MCP client, service and deploy reads, Blueprint lookup
-  git.ts         Clone, commit, push, verify — all workflow-owned
-  github.ts      App or PAT credential resolution
+  git.ts         Clone, commit, push, verify, GitHub credentials
   store.ts       Postgres: one runs table
-  format.ts      Run state to public JSON
+  templates.ts   Read a template and materialize it into the sandbox
   workflow.ts    The prompt-to-app pipeline
   schema.sql     Schema, applied by scripts/migrate.ts
   server.ts      Gateway entrypoint
   host.ts        Workflows entrypoint
+templates/
+  fullstack/     web/ (Vite + React + Tailwind + shadcn/ui), api/ (Hono + pg)
 scripts/         migrate, doctor, demo, support
-tests/           agents, blueprint, contracts, gateway, github-auth,
-                 policy, render, shell, tools
+tests/           agents, blueprint, contracts, gateway, git, github-auth,
+                 policy, render, shell, templates, tools
 ```
+
+There is no `tasks.ts`, `scaffold.ts`, `shell.ts`, `github.ts`, or `format.ts`:
+`agentTask()` lives in `agents.ts`, `shellEscape` beside the only thing that
+executes a command in `sandbox.ts`, GitHub credentials in `git.ts`, and run
+formatting in `gateway.ts`. The builder chooses its own stack, so there is no
+skeleton to scaffold — the manifest it returns is what gets deployed.
 
 ## Conventions
 
@@ -136,12 +140,16 @@ Do not weaken these without an explicit security-model change:
  `cd`s there first: the exec API starts in `/`, so an unresolved relative path
  builds an application outside the clone that no commit can ever see.
 - `asset__fetch` accepts HTTPS only, allowlisted hosts only, `image/*` only,
-  under the size cap, and only into a storefront's `web/public/assets`.
+  under the size cap, and only into an `assets/` directory in the checkout.
 - `sandboxId` comes from workflow code, never from the model.
 - Infrastructure is created only by committing a Blueprint. No code path calls
   a Render write API, and agents cannot run git.
-- Verification is workflow-owned and runs the same install and build commands
-  the Blueprint gives Render.
+- Verification is workflow-owned and runs the same install, build, and
+  pre-deploy commands the Blueprint gives Render, against a real Postgres
+  running in the sandbox. A health endpoint must answer with the database
+  unreachable, because Render calls it before Postgres is ready; a
+  `dataCheckPath` must return rows, because nothing else proves the schema was
+  applied or the seed loaded.
 - The push is verified against the remote SHA before the factory waits on a
   deploy.
 - The sandbox is terminated in a `finally` block.
@@ -166,26 +174,55 @@ API is the seam. Do not rebuild a checkpoint store here.
    also the registered task name, so keep it unique and stable. Give it `tools`
    only if it needs the sandbox, and `renderTools` only from
    `RENDER_READ_ONLY_TOOLS`.
-2. Wrap it with `agentTask()` in `app/tasks.ts`.
+2. Wrap it with `agentTask()` at the bottom of `app/agents.ts`, beside the
+   other registrations.
 3. Call it from the relevant stage in `app/workflow.ts`. Pass
    `sandboxId: sandbox.id` only when it declares tools.
-4. If it emits JSON, add a schema to `app/contracts.ts` and call it through
-   `agentJson()`, which retries once and then fails closed.
+4. If it emits JSON, add a schema to `app/contracts.ts`, register it in
+   `OUTPUT_SCHEMAS`, and call it through `agentJson()`, which retries once and
+   then fails closed.
 5. Update `tests/agents.test.ts` for tool access.
 
 ## Add a Render primitive
 
 1. Add the kind to `TIER_KINDS` in `app/contracts.ts` if it is not there, and
    describe when to choose it in the architect's prompt.
-2. Add it to `SUPPORTED` in `app/blueprint.ts` and emit its resource block in
-   `serviceBlocks()` or `databaseBlocks()`. Wire dependent env vars
-   declaratively with `fromDatabase` or `fromService` — never by reading a
-   value back out of an API.
-3. Handle it in `resolvePlan()` in `app/workflow.ts`, including the case where
-   it is requested without the tier it depends on.
-4. Extend `resourceNames()` so the new resource is namespaced by user and app.
-5. Add assertions to `tests/blueprint.test.ts`. That suite is the contract for
+2. Give the builder a way to declare it in `manifestSchema`, since the
+   Blueprint is generated from the manifest rather than from the plan.
+3. Emit its resource block from `serviceBlocks()` or `databaseBlocks()` in
+   `app/blueprint.ts`. Wire dependent env vars declaratively with
+   `fromDatabase` or `fromService` — never by reading a value back out of
+   an API.
+4. Extend `resourceNames()` so the new resource is namespaced by user and app
+   and cannot collide with another resource in the same workspace.
+5. Give `verify()` in `app/workflow.ts` a way to exercise it before the push.
+   A primitive nothing verifies is a primitive that fails in production.
+6. Add assertions to `tests/blueprint.test.ts`. That suite is the contract for
    what gets deployed.
+
+`key_value` is in `TIER_KINDS` and goes no further: the manifest cannot
+declare one and `blueprint.ts` cannot emit one, so an architect that asks for
+it gets nothing. It is the worked example of where the next primitive plugs in.
+
+## Change a template
+
+`templates/fullstack` is a working three-tier app that a multi-service run
+starts from. It exists for the contracts a prompt cannot reliably re-derive
+every run — CORS, the API base URL built from `fromService`'s bare hostname,
+and an idempotent migrate-and-seed wired to `preDeployCommand`.
+
+It lives here rather than in its own repository so it is version-locked to the
+code that deploys it, and so CI builds it. If you change it:
+
+1. Keep it building. `npm ci && npm run build` in both tiers is a CI job, and a
+   template nobody builds is one that quietly stops building.
+2. Keep the seed non-empty and both SQL files idempotent. Verification fails a
+   run whose data endpoint returns no rows.
+3. Update `templateLines()` in `app/workflow.ts` if the manifest it implies
+   changes. `tests/templates.test.ts` pins the two together; that suite is what
+   catches the template and the prompt drifting apart.
+4. Templates are text only. They are materialized as one self-extracting shell
+   script, so a binary file will not survive the trip.
 
 ## Change the pipeline
 
@@ -201,8 +238,8 @@ in a subdirectory.
 ## Checklist
 
 1. Trust boundaries between gateway, workflow, and agents are preserved.
-2. New agents are registered in `app/tasks.ts` and task names match between
-   definition, dispatch, `doctor`, and tests.
+2. New agents are registered at the bottom of `app/agents.ts` and task names
+   match between definition, dispatch, `doctor`, and tests.
 3. New external input is validated and task values stay JSON-serializable.
 4. Infrastructure changes go through `app/blueprint.ts`, not an API call.
 5. Sandbox cleanup and repeated side effects are safe.

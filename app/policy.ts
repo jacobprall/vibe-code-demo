@@ -223,10 +223,20 @@ const SECRET_PATTERNS = [
  * manifest's commands reach the sandbox or the Blueprint.
  */
 export function checkManifestCommands(
-	manifest: { services: { buildCommand?: string; startCommand?: string }[] },
+	manifest: {
+		services: {
+			buildCommand?: string;
+			startCommand?: string;
+			preDeployCommand?: string;
+		}[];
+	},
 ): string | null {
 	for (const service of manifest.services) {
-		for (const field of ["buildCommand", "startCommand"] as const) {
+		for (const field of [
+			"buildCommand",
+			"startCommand",
+			"preDeployCommand",
+		] as const) {
 			const command = service[field];
 			if (!command) continue;
 			for (const rule of RULES) {

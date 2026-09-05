@@ -21,3 +21,21 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm audit --omit=dev --audit-level=moderate
+
+  # A template nobody builds is a template that quietly stops building, and the
+  # first thing to notice would be a customer's failed run.
+  templates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        tier: [web, api]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: templates/fullstack/${{ matrix.tier }}
+      - run: npm run build
+        working-directory: templates/fullstack/${{ matrix.tier }}

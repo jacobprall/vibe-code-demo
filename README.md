@@ -46,30 +46,39 @@ Poll `statusUrl` and a few minutes later it holds the live URLs:
    `get_service`, `get_postgres` — and it can change nothing. For a catalog it
    returns a static site, a web service, and Postgres, each with a reason, plus
    a content brief and a list of subjects to photograph.
-3. **A Render Sandbox** is created and the apps repository is cloned into it.
-   Workflow code scaffolds `web/` (Vite + React + Tailwind) and `api/`
-   (Express + `pg`) at `apps/<user>/<app>/`.
+3. **A Render Sandbox** is created and the apps repository is cloned into it at
+   `apps/<user>/<app>/`. When the plan calls for Postgres, a real Postgres 18
+   starts inside the sandbox — the image already carries the client and the
+   pgdg apt source, so the server is a ten-second install.
 4. **The curator** searches Wikimedia Commons for openly licensed photographs
-   and downloads them into `web/public/assets`. It has no shell and no file
-   write tool: the only bytes it can create are images that passed the
+   and downloads them into the app's `assets/` directory. It has no shell and
+   no file write tool: the only bytes it can create are images that passed the
    factory's host, type, size, and destination checks.
-5. **The builder** writes the storefront and the API against a fixed contract —
-   `GET /health`, `GET /api/products`, images from `assets.json` — and seeds
-   the catalog with the real products from the brief.
-6. **Verification** is deterministic and workflow-owned: `npm install` and
-   `npm run build` for the storefront, an asset-graph check over `dist`, a
-   placeholder-content check, a seed-data check, and booting the API with an
-   unreachable database to prove `/health` answers without one. Failures go
-   back to the builder for up to two more rounds.
+5. **The builder** writes the application. A single-tier app starts from an
+   empty directory and the builder picks its own stack; a multi-service app
+   starts from `templates/fullstack` — Vite, React, Tailwind v4 and shadcn/ui
+   for the storefront, Hono and `pg` for the API — because CORS, the API base
+   URL, and the migration path are contracts a prompt should not have to
+   re-derive every run. Either way the builder returns a manifest describing
+   what it built: directories, build and start commands, the pre-deploy
+   command that creates the schema, health and data endpoints, and env wiring.
+6. **Verification** is deterministic and workflow-owned, and driven by that
+   manifest: each service's build command, an `index.html` check for static
+   output, a placeholder-content check, the pre-deploy command run against the
+   sandbox's Postgres, and two boots of each web service — one with an
+   unreachable database to prove the health endpoint answers without one, and
+   one against the real database to prove the data endpoint returns rows.
+   Failures go back to the builder for up to two more rounds.
 7. **Publishing is deploying.** Workflow code writes the app's `airo.json`,
    its own `render.yaml`, and the repository-root Blueprint, then commits and
    pushes. Render's Blueprint sync creates the services and the database and
    deploys them.
-8. **Verification, again, against reality.** The factory waits for both
-   deploys, fetches the storefront, calls `/health`, and calls `/api/products`
-   — the first request that touches Postgres, and therefore the proof the
-   database wiring worked. If a Render build fails, its build logs go back to
-   the builder for one repair round, and the fix redeploys on push.
+8. **Verification, again, against reality.** The factory waits for every
+   deploy, fetches the storefront, calls the health endpoint, and calls the
+   data endpoint with the storefront's `Origin` — the first request that
+   touches the deployed Postgres, and the only one that can see a missing
+   `Access-Control-Allow-Origin`. If a Render build fails, its build logs go
+   back to the builder for one repair round, and the fix redeploys on push.
 
 ```text
 POST /v1/apps
@@ -77,12 +86,13 @@ POST /v1/apps
   ▼
 Render Workflows: prompt-to-app
   ├─ architect   plan + primitives + brief        ← Render MCP, read-only
-  ├─ curator     openly licensed photography      ┐
-  ├─ builder     storefront + API                 │ one Render Sandbox
-  ├─ verify      install, build, boot, smoke      │
+  ├─ postgres    a real database in the sandbox   ┐
+  ├─ curator     openly licensed photography      │
+  ├─ builder     storefront + API + schema        │ one Render Sandbox
+  ├─ verify      build, migrate, boot, query      │
   ├─ publish     airo.json + render.yaml + push   ┘
   ├─ sync        Render deploys the Blueprint
-  └─ smoke       storefront 200, /health 200, /api/products
+  └─ smoke       storefront 200, health 200, data endpoint returns rows + CORS
   ▼
 GET /v1/apps/:runId → { status, stage, urls, blueprintPath }
 ```
@@ -143,20 +153,16 @@ app/
   config.ts      Environment parsing and per-process validation
   contracts.ts   Zod schemas: API input, agent output, the stored spec
   gateway.ts     Bearer auth, body cap, dispatch, health, status
-  agents.ts      The three agents and their prompts
-  tasks.ts       agentTask() and the three registrations
+  agents.ts      The four agents, their prompts, and agentTask()
   claude.ts      The Agent type and runClaude() over the Claude Agent SDK
   tools.ts       Sandbox tools, asset tools, and the Tool contract
   policy.ts      checkToolCall, path rules, MCP allowlist, redaction
-  sandbox.ts     Render Sandboxes
-  shell.ts       shellEscape — quoting for every command we build
-  scaffold.ts    The two-tier app skeleton and its fixed contract
+  sandbox.ts     Render Sandboxes, shellEscape, Postgres in the sandbox
   blueprint.ts   render.yaml generation: the only write path to Render
   render.ts      MCP client, service and deploy reads, Blueprint lookup
-  git.ts         Clone, commit, push, verify — all workflow-owned
-  github.ts      Credential resolution, App or PAT
+  git.ts         Clone, commit, push, verify, GitHub credentials
   store.ts       Postgres: one runs table
-  format.ts      Run state to public JSON
+  templates.ts   Read a template and materialize it into the sandbox
   workflow.ts    The pipeline, top to bottom
   schema.sql     Applied by scripts/migrate.ts
   server.ts      Gateway entrypoint
@@ -170,7 +176,7 @@ app/
 | `airo.config.ts` | Every knob |
 | `app/workflow.ts` | The whole pipeline, top to bottom |
 | `app/blueprint.ts` | What actually gets deployed, and where to extend it |
-| `app/agents.ts` | The three agents and their prompts |
+| `app/agents.ts` | The four agents and their prompts |
 | `app/tools.ts` | Everything an agent can do, including the asset fetcher |
 | `app/policy.ts` | The one gate between a model and the machine |
 | `app/gateway.ts` | How a curl becomes a dispatched run |
@@ -245,17 +251,28 @@ the concurrency cap, and the model tiers.
 ## Extending
 
 **Another primitive.** `app/blueprint.ts` emits `static_site`, `web_service`,
-and `postgres`. The architect can already ask for `key_value`, and when it does
-the run reports "Designed but not provisioned: key_value" and deploys the rest.
-Turning it on is one resource block and one env var — the commented seam in
-`serviceBlocks()` shows both. Add the kind to `SUPPORTED` and the tier flows
-through `resolvePlan` and into the YAML.
+and `postgres`, all of them generated from the builder's manifest rather than
+from the plan. The architect can already ask for `key_value`, and nothing
+downstream can express one, so it is silently dropped — it is the worked
+example of where the next primitive plugs in. Adding one means a way to
+declare it in `manifestSchema`, a resource block in `serviceBlocks()` or
+`databaseBlocks()`, a name in `resourceNames()`, and a check in `verify()`.
 
-**Another agent.** Add it to `app/agents.ts`, wrap it with `agentTask()` in
-`app/tasks.ts`, call it from `app/workflow.ts`, and give it a Zod schema in
-`app/contracts.ts` if it emits JSON. Give it `tools` only if it needs the
+**Another agent.** Add it to `app/agents.ts`, wrap it with `agentTask()` at the
+bottom of that file, call it from `app/workflow.ts`, and give it a Zod schema
+in `app/contracts.ts` if it emits JSON. Give it `tools` only if it needs the
 sandbox, and `renderTools` only from the read-only allowlist. Update
 `tests/agents.test.ts`, which is what enforces tool access.
+
+**Another template.** `templates/<name>/` is materialized into the app
+directory by `materializeTemplate()` before the builder runs. Templates live in
+this repository so they stay version-locked to the code that deploys them and
+so CI builds them — a template nobody builds is one that quietly stops
+building. They are text only: the whole tree ships as one self-extracting shell
+script, because a forty-file template written a file at a time would be eighty
+API calls before the builder has done anything. If you add one, update
+`templateLines()` in `app/workflow.ts` and `tests/templates.test.ts`, which is
+what keeps the template and the manifest the builder is told to return in sync.
 
 **Another asset source.** `asset__search` and `asset__fetch` in `app/tools.ts`
 are the whole of the factory's reachable internet. Add a host to
@@ -275,14 +292,17 @@ drops in between verification and publishing.
 - Claude's built-in `Bash`, `Read`, `Write`, and `Edit` are never granted;
   `runClaude` always passes `tools: []` for built-ins. Every action an agent
   takes goes through a workflow-owned sandbox tool.
+- `preDeployCommand` is agent-authored and runs in the sandbox and again on
+  Render, so it goes through the same destructive-command gate as the build
+  and start commands before either happens.
 - `checkToolCall` runs as a `PreToolUse` hook and vetoes destructive commands,
   secret exfiltration, paths outside the clone, and any Render MCP tool that is
   not on the read-only allowlist.
 - Agents cannot run git, so they cannot publish; the trigger for a deploy is a
   commit only workflow code can make.
 - `asset__fetch` accepts only HTTPS, only allowlisted hosts, only `image/*`
-  responses under the size cap, and only destinations inside a storefront's
-  public assets directory.
+  responses under the size cap, and only destinations inside an `assets/`
+  directory in the checkout.
 - The push is verified against the remote SHA before the factory waits on a
   deploy, so Render is always building the commit that passed verification.
 - Malformed structured model output fails closed after one repair attempt.
@@ -302,6 +322,10 @@ drops in between verification and publishing.
   them.
 - Generated apps run on paid plans by default: free web services spin down
   after 15 minutes, and a workspace only gets one free Postgres.
+- The sandbox's Postgres is a fresh 18 with no extensions installed, so an app
+  that needs one will pass verification only if it installs it itself.
+- `key_value` is in `TIER_KINDS` and nowhere else, so an architect that asks
+  for one gets nothing and no warning.
 - No reviewer stage, no resumability, and no teardown workflow.
 - A failed task run is not resumed; retry by calling the API again.
 

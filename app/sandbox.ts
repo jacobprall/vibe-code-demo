@@ -146,6 +146,65 @@ export function connectSandbox(sandboxId: string): Sandbox {
 	return new Sandbox(sandboxId);
 }
 
+/* ── Postgres in the sandbox ──────────────────────────────────────────── */
+
+/**
+ * Credentials for the throwaway database. It listens on loopback inside one
+ * sandbox that is terminated at the end of the run, so these are fixed rather
+ * than generated — a value the builder can read in its prompt and in
+ * `DATABASE_URL` is one fewer thing for it to get wrong.
+ */
+export const SANDBOX_DATABASE_URL = "postgres://app:app@127.0.0.1:5432/appdb";
+
+const START_POSTGRES = `
+set -e
+
+# psql ships in the image; the server does not.
+if ! command -v pg_ctlcluster >/dev/null 2>&1; then
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql >/tmp/pg-install.log 2>&1
+fi
+
+version="$(ls /etc/postgresql | sort -n | tail -1)"
+
+# The image has no localhost entry in /etc/hosts, and Postgres defaults to
+# listen_addresses='localhost'. It resolves that name before binding, so it
+# fails with "could not create any TCP/IP sockets" and never starts. Bind the
+# address directly rather than depending on resolution.
+sed -i "s/^#*[[:space:]]*listen_addresses.*/listen_addresses = '127.0.0.1'/" \\
+  "/etc/postgresql/$version/main/postgresql.conf"
+
+pg_ctlcluster "$version" main start >/dev/null 2>&1 || true
+
+for _ in $(seq 1 30); do
+  pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && break
+  sleep 1
+done
+pg_isready -h 127.0.0.1 -p 5432
+
+# Idempotent: a rerun inside the same sandbox must not fail on "already exists".
+su postgres -c "psql -tAc \\"select 1 from pg_roles where rolname='app'\\"" | grep -q 1 ||
+  su postgres -c "psql -tAc \\"create role app with login superuser password 'app'\\""
+su postgres -c "psql -tAc \\"select 1 from pg_database where datname='appdb'\\"" | grep -q 1 ||
+  su postgres -c "createdb -O app appdb"
+
+psql "${SANDBOX_DATABASE_URL}" -tAc 'select 1' >/dev/null
+`;
+
+/**
+ * Bring up a real Postgres inside the sandbox and return the URL to reach it.
+ *
+ * Without one, a full-stack build is only ever exercised against an
+ * unreachable database: the schema is never applied, the seed never loads, and
+ * the first query to run for real runs in production. The sandbox image ships
+ * the Postgres 18 client and the pgdg apt source already configured, so the
+ * server itself is a ten-second install.
+ */
+export async function ensureSandboxPostgres(sandbox: Sandbox): Promise<string> {
+	await sandbox.mustRun(START_POSTGRES, "Start Postgres in the sandbox");
+	return SANDBOX_DATABASE_URL;
+}
+
 /** Drain an exec stream into one string. Capped at 1 MB. */
 async function collectExecOutput(
 	events: AsyncGenerator<ExecEvent>,

@@ -268,11 +268,25 @@ export async function fetchBuildLogs(
 	}
 }
 
-/** The final check: the public URL actually serves. */
+export interface HttpProbe {
+	ok: boolean;
+	status: number;
+	body: string;
+	/** Empty unless the request succeeded. Carries the CORS headers. */
+	headers: Headers;
+}
+
+/**
+ * The final check: the public URL actually serves. `headers` lets a caller
+ * send an Origin and inspect what came back, which is the only way to see a
+ * CORS failure — a server-side fetch is happy without the header a browser
+ * requires.
+ */
 export async function waitForHttpOk(
 	url: string,
 	timeoutMs: number,
-): Promise<{ ok: boolean; status: number; body: string }> {
+	opts: { headers?: Record<string, string> } = {},
+): Promise<HttpProbe> {
 	const deadline = Date.now() + timeoutMs;
 	let status = 0;
 
@@ -280,6 +294,7 @@ export async function waitForHttpOk(
 		try {
 			const response = await fetch(url, {
 				redirect: "follow",
+				headers: opts.headers,
 				signal: AbortSignal.timeout(15_000),
 			});
 			status = response.status;
@@ -288,6 +303,7 @@ export async function waitForHttpOk(
 					ok: true,
 					status,
 					body: (await response.text()).slice(0, 20_000),
+					headers: response.headers,
 				};
 			}
 		} catch {
@@ -296,7 +312,7 @@ export async function waitForHttpOk(
 		await sleep(POLL_INTERVAL_MS);
 	}
 
-	return { ok: false, status, body: "" };
+	return { ok: false, status, body: "", headers: new Headers() };
 }
 
 /* ── Blueprints (REST; not exposed over MCP) ──────────────────────────── */
