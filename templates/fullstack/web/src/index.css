@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+/* shadcn/ui design tokens. Restyle the whole app by changing these. */
+@theme {
+  --color-background: oklch(1 0 0);
+  --color-foreground: oklch(0.15 0.01 260);
+  --color-muted: oklch(0.97 0.005 260);
+  --color-muted-foreground: oklch(0.52 0.015 260);
+  --color-border: oklch(0.92 0.006 260);
+  --color-primary: oklch(0.21 0.02 260);
+  --color-primary-foreground: oklch(0.98 0 0);
+  --color-accent: oklch(0.96 0.01 260);
+  --color-accent-foreground: oklch(0.21 0.02 260);
+  --radius-card: 0.75rem;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}

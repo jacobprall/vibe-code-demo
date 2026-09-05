@@ -53,9 +53,15 @@ export const architect: Agent = {
 
 		The brief is what the builder works from. Be specific about pages,
 		features, voice, and real content: product names, prices, materials,
-		copy directions, calls to action. dataModel is the shape of the data the
-		API serves and the database stores — entities, fields, and what the seed
-		rows should look like. Vague briefs produce placeholder websites.
+		copy directions, calls to action. Vague briefs produce placeholder
+		websites.
+
+		dataModel is required whenever you ask for postgres, and it is the whole
+		specification the builder gets for the database: entities, their fields
+		and types, and the actual seed rows — real values, not a description of
+		what they would contain. Verification calls an endpoint that reads the
+		database and fails the run if it comes back empty, so a data model
+		without seed rows fails.
 
 		Respond ONLY with JSON:
 		{
@@ -162,6 +168,26 @@ export const builder: Agent = {
 		- When you receive build output or Render deploy logs describing a
 		  failure, fix exactly what the output names and nothing else.
 
+		When the app has a database:
+
+		- A real Postgres is already running in the sandbox and its URL is in
+		  your instructions. Build against it. psql is on the PATH.
+		- Put schema creation AND seeding in preDeployCommand. Render runs it
+		  after the build and before the start command, and it is the only
+		  chance the app gets to create its schema — nothing else applies it.
+		  It runs on every deploy, so make it idempotent: CREATE TABLE IF NOT
+		  EXISTS, INSERT ... ON CONFLICT DO NOTHING.
+		- Set dataCheckPath to an endpoint that reads the database and returns
+		  the seeded rows. Verification calls it, and an empty array fails the
+		  run — that is how a missing seed gets caught before it deploys.
+		- The API must send CORS headers. The storefront is a static site on a
+		  different onrender.com host, so without Access-Control-Allow-Origin
+		  every browser drops the response even though the API answers.
+		- The storefront reaches the API through a build-time env var wired
+		  with fromService. Its value is a bare hostname, not a URL, so build
+		  "https://" + host. Default it to a localhost URL when it is unset, or
+		  the sandbox build bakes in "undefined" and passes anyway.
+
 		When you are done, respond with JSON describing what you built:
 		{
 		  "summary": "one paragraph describing what you built",
@@ -174,8 +200,10 @@ export const builder: Agent = {
 		        "runtime": "node" | "static",
 		        "buildCommand": "the command to install deps and build",
 		        "startCommand": "the command to start the server (web_service only)",
+		        "preDeployCommand": "idempotent migrate + seed; required when the app has a database",
 		        "staticPublishPath": "path to built output (static_site only)",
 		        "healthCheckPath": "/health (web_service only)",
+		        "dataCheckPath": "an endpoint that reads the database and returns rows",
 		        "envVars": [
 		          { "key": "DATABASE_URL", "fromDatabase": { "property": "connectionString" } },
 		          { "key": "VITE_API_HOST", "fromService": { "name": "api", "property": "host" } }

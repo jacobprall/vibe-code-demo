@@ -13,6 +13,7 @@ export type RunStatus =
 /** Coarse progress for GET /v1/apps/:runId. Cosmetic; never gates a run. */
 export type RunStage =
 	| "designing"
+	| "provisioning"
 	| "curating"
 	| "building"
 	| "verifying"

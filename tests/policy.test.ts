@@ -194,6 +194,34 @@ describe("checkManifestCommands", () => {
 			}),
 		).toContain("Blocked");
 	});
+
+	// preDeployCommand runs in the sandbox and again on Render, so it needs the
+	// same gate the other two get.
+	it("blocks a destructive preDeployCommand", () => {
+		expect(
+			checkManifestCommands({
+				services: [
+					{
+						buildCommand: "npm install",
+						preDeployCommand: "psql $DATABASE_URL -c 'DROP TABLE products'",
+					},
+				],
+			}),
+		).toContain("Blocked");
+	});
+
+	it("allows an ordinary migration", () => {
+		expect(
+			checkManifestCommands({
+				services: [
+					{
+						buildCommand: "npm install",
+						preDeployCommand: "psql $DATABASE_URL -f schema.sql",
+					},
+				],
+			}),
+		).toBeNull();
+	});
 });
 
 describe("redactSecrets", () => {

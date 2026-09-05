@@ -117,13 +117,29 @@ export const serviceSchema = z.object({
 	runtime: z.enum(["node", "static"]).default("node"),
 	buildCommand: z.string().min(1).max(500),
 	startCommand: z.string().max(500).optional(),
+	/**
+	 * Migrations and seeds. Render runs it after the build and before the start
+	 * command, with the service's env vars already wired, so it is the only
+	 * place a generated app can create its schema. Must be idempotent: it runs
+	 * on every deploy, including redeploys of an unchanged commit.
+	 */
+	preDeployCommand: z.string().max(500).optional(),
 	staticPublishPath: z.string().max(120).optional(),
 	healthCheckPath: z.string().max(120).optional(),
+	/**
+	 * An endpoint that reads the database. `healthCheckPath` deliberately does
+	 * not, so without this nothing — locally or in production — ever proves the
+	 * schema was applied, the seed loaded, or `DATABASE_URL` was wired.
+	 */
+	dataCheckPath: z.string().max(120).optional(),
 	envVars: z
 		.array(
 			z.object({
 				key: z.string().min(1).max(60),
-				fromDatabase: z.object({ property: z.string() }).optional(),
+				/** `name` selects among several databases; omit it for the only one. */
+				fromDatabase: z
+					.object({ property: z.string(), name: z.string().optional() })
+					.optional(),
 				fromService: z
 					.object({ name: z.string(), property: z.string() })
 					.optional(),

@@ -20,7 +20,9 @@ const fullManifest: Manifest = {
 			runtime: "node",
 			buildCommand: "npm install",
 			startCommand: "npm start",
+			preDeployCommand: "npm run migrate",
 			healthCheckPath: "/health",
+			dataCheckPath: "/api/products",
 			envVars: [
 				{
 					key: "DATABASE_URL",
@@ -59,6 +61,37 @@ const staticOnlyManifest: Manifest = {
 	],
 };
 
+const apiOnlyManifest: Manifest = {
+	services: [
+		{
+			name: "api",
+			kind: "web_service",
+			rootDir: ".",
+			runtime: "node",
+			buildCommand: "npm install",
+			startCommand: "npm start",
+			healthCheckPath: "/health",
+		},
+	],
+};
+
+/** The manifest allows six services and three databases; naming has to keep up. */
+const multiServiceManifest: Manifest = {
+	services: [
+		...fullManifest.services,
+		{
+			name: "Search Service",
+			kind: "web_service",
+			rootDir: "search",
+			runtime: "node",
+			buildCommand: "npm install",
+			startCommand: "npm start",
+			healthCheckPath: "/health",
+		},
+	],
+	databases: [{ name: "main-db" }, { name: "analytics" }],
+};
+
 function spec(overrides: Partial<AppSpec> = {}): AppSpec {
 	return {
 		user: "demo",
@@ -87,6 +120,35 @@ describe("resourceNames", () => {
 		);
 		expect(names.api).toBeNull();
 		expect(names.db).toBeNull();
+	});
+
+	it("has no storefront when the app is only an API", () => {
+		const names = resourceNames(spec({ manifest: apiOnlyManifest }));
+		expect(names.web).toBeNull();
+		expect(names.api).toBe("airo-demo-furniture-catalog-api");
+	});
+
+	// Two resources collapsing onto one name overwrites one of them in the
+	// Blueprint rather than failing, so this is the check that matters.
+	it("gives every service and database a distinct name", () => {
+		const names = resourceNames(spec({ manifest: multiServiceManifest }));
+		const all = [...names.services.values(), ...names.databases.values()];
+		expect(new Set(all).size).toBe(all.length);
+	});
+
+	it("keeps the primary names and names the rest after themselves", () => {
+		const names = resourceNames(spec({ manifest: multiServiceManifest }));
+		expect(names.services.get("api")).toBe("airo-demo-furniture-catalog-api");
+		expect(names.services.get("web")).toBe("airo-demo-furniture-catalog-web");
+		expect(names.services.get("Search Service")).toBe(
+			"airo-demo-furniture-catalog-search-service",
+		);
+		expect(names.databases.get("main-db")).toBe(
+			"airo-demo-furniture-catalog-db",
+		);
+		expect(names.databases.get("analytics")).toBe(
+			"airo-demo-furniture-catalog-analytics",
+		);
 	});
 });
 
@@ -119,6 +181,22 @@ describe("appBlueprint", () => {
 	it("declares the database", () => {
 		expect(yaml).toContain("databases:");
 		expect(yaml).toContain("name: airo-demo-furniture-catalog-db");
+	});
+
+	// Without this the schema is never applied and the app deploys against an
+	// empty database, which no other check would notice.
+	it("emits the pre-deploy command that creates the schema", () => {
+		expect(yaml).toContain("preDeployCommand: npm run migrate");
+		expect(yaml.indexOf("preDeployCommand:")).toBeLessThan(
+			yaml.indexOf("startCommand:"),
+		);
+	});
+
+	it("emits one block per service and per database", () => {
+		const multi = appBlueprint(spec({ manifest: multiServiceManifest }));
+		expect(multi).toContain("name: airo-demo-furniture-catalog-search-service");
+		expect(multi).toContain("name: airo-demo-furniture-catalog-analytics");
+		expect(multi.match(/^ {2}- type: web$/gm)).toHaveLength(3);
 	});
 
 	it("emits only a static site when that is all the app needs", () => {
