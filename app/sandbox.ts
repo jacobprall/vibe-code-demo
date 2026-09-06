@@ -167,10 +167,14 @@ fi
 
 version="$(ls /etc/postgresql | sort -n | tail -1)"
 
-# The image has no localhost entry in /etc/hosts, and Postgres defaults to
+# The image cannot resolve the name "localhost", and Postgres defaults to
 # listen_addresses='localhost'. It resolves that name before binding, so it
 # fails with "could not create any TCP/IP sockets" and never starts. Bind the
 # address directly rather than depending on resolution.
+#
+# Keep the literal path to the hosts file out of this script: it is sent to
+# Render as an HTTP body, and Cloudflare's managed rules read that string as a
+# local-file-inclusion attempt and reject the exec with a 403 before it lands.
 sed -i "s/^#*[[:space:]]*listen_addresses.*/listen_addresses = '127.0.0.1'/" \\
   "/etc/postgresql/$version/main/postgresql.conf"
 
