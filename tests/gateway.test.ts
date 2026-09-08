@@ -64,6 +64,8 @@ beforeEach(() => {
 	process.env.UI_USERNAME = "demo";
 	process.env.UI_PASSWORD = "a-long-demo-password";
 	process.env.RENDER_WORKFLOW_SLUG = "wfs-1";
+	delete process.env.UI_AUTH_DISABLED;
+	delete process.env.NODE_ENV;
 });
 
 describe("health", () => {
@@ -198,6 +200,14 @@ describe("browser UI", () => {
 		});
 		expect(response.status).toBe(200);
 		expect(await response.text()).toContain("Describe it. Ship it.");
+	});
+
+	it("allows the explicit auth bypass only outside production", async () => {
+		process.env.UI_AUTH_DISABLED = "true";
+		expect((await createGateway().request("/")).status).toBe(200);
+
+		process.env.NODE_ENV = "production";
+		expect((await createGateway().request("/")).status).toBe(401);
 	});
 
 	it("submits without exposing or requiring the factory bearer token", async () => {
