@@ -6,10 +6,10 @@
  * needs from GitHub is a token that can push to it. There is no REST client.
  */
 import { createSign, randomUUID } from "node:crypto";
-import { airoConfig } from "../airo.config.js";
+import { factoryConfig } from "../factory.config.js";
 import { type ExecResult, type Sandbox, shellEscape } from "./sandbox.js";
 
-export const REPO_DIR = airoConfig.repoDir;
+export const REPO_DIR = factoryConfig.repoDir;
 
 const GITHUB_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 const MAX_VERIFY_OUTPUT_CHARS = 10_000;
@@ -60,7 +60,7 @@ export async function execGitWithToken(
 		throw new Error("execGitWithToken accepts only git commands");
 	}
 
-	const askpassPath = `/tmp/airo-askpass-${randomUUID()}.sh`;
+	const askpassPath = `/tmp/vibe-askpass-${randomUUID()}.sh`;
 	// x-access-token is what GitHub expects for App installation tokens, and is
 	// accepted as the username for a PAT too.
 	await sandbox.upload(
@@ -119,10 +119,10 @@ export async function cloneAppsRepo(
 
 	// -B rather than checkout so a repository with no commits yet works.
 	await git(sandbox, `checkout -B ${shellEscape(branch)}`, "Select branch");
-	await git(sandbox, 'config user.name "airo-factory[bot]"', "Set commit name");
+	await git(sandbox, 'config user.name "vibe-factory[bot]"', "Set commit name");
 	await git(
 		sandbox,
-		'config user.email "bot@airo-factory.dev"',
+		'config user.email "bot@vibe-factory.dev"',
 		"Set commit email",
 	);
 	return remoteUrl;
@@ -356,7 +356,7 @@ async function installationToken(
 				Authorization: `Bearer ${appJwt(credentials)}`,
 				Accept: "application/vnd.github+json",
 				"X-GitHub-Api-Version": "2022-11-28",
-				"User-Agent": "airo-factory",
+				"User-Agent": "vibe-factory",
 			},
 			signal: AbortSignal.timeout(15_000),
 		},

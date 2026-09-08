@@ -57,8 +57,8 @@ describe("serviceRecords", () => {
 			{
 				service: {
 					id: "srv-abc123",
-					name: "airo-demo-shop-web",
-					serviceDetails: { url: "https://airo-demo-shop-web.onrender.com" },
+					name: "vibe-demo-shop-web",
+					serviceDetails: { url: "https://vibe-demo-shop-web.onrender.com" },
 				},
 				cursor: "c1",
 			},
@@ -67,15 +67,15 @@ describe("serviceRecords", () => {
 		expect(serviceRecords(payload)).toEqual([
 			{
 				id: "srv-abc123",
-				name: "airo-demo-shop-web",
-				url: "https://airo-demo-shop-web.onrender.com",
+				name: "vibe-demo-shop-web",
+				url: "https://vibe-demo-shop-web.onrender.com",
 			},
 		]);
 	});
 
 	it("reads a service returned bare, and tolerates a missing URL", () => {
-		expect(serviceRecords({ id: "srv-xyz", name: "airo-demo-shop-api" })).toEqual(
-			[{ id: "srv-xyz", name: "airo-demo-shop-api", url: null }],
+		expect(serviceRecords({ id: "srv-xyz", name: "vibe-demo-shop-api" })).toEqual(
+			[{ id: "srv-xyz", name: "vibe-demo-shop-api", url: null }],
 		);
 	});
 

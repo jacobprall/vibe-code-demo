@@ -99,6 +99,7 @@ function spec(overrides: Partial<AppSpec> = {}): AppSpec {
 		prompt: "Create an online catalog to sell handcrafted furniture",
 		summary: "A storefront, an API, and Postgres behind it.",
 		createdAt: "2026-01-01T00:00:00.000Z",
+		resourcePrefix: "vibe",
 		tiers: ["static_site", "web_service", "postgres"],
 		manifest: fullManifest,
 		notes: [],
@@ -107,11 +108,16 @@ function spec(overrides: Partial<AppSpec> = {}): AppSpec {
 }
 
 describe("resourceNames", () => {
+	it("preserves the prefix used by specs created before the rename", () => {
+		const names = resourceNames(spec({ resourcePrefix: undefined }));
+		expect(names.web).toBe("airo-demo-furniture-catalog-web");
+	});
+
 	it("namespaces every resource by user and app", () => {
 		const names = resourceNames(spec());
-		expect(names.web).toBe("airo-demo-furniture-catalog-web");
-		expect(names.api).toBe("airo-demo-furniture-catalog-api");
-		expect(names.db).toBe("airo-demo-furniture-catalog-db");
+		expect(names.web).toBe("vibe-demo-furniture-catalog-web");
+		expect(names.api).toBe("vibe-demo-furniture-catalog-api");
+		expect(names.db).toBe("vibe-demo-furniture-catalog-db");
 	});
 
 	it("omits resources the app does not have", () => {
@@ -125,7 +131,7 @@ describe("resourceNames", () => {
 	it("has no storefront when the app is only an API", () => {
 		const names = resourceNames(spec({ manifest: apiOnlyManifest }));
 		expect(names.web).toBeNull();
-		expect(names.api).toBe("airo-demo-furniture-catalog-api");
+		expect(names.api).toBe("vibe-demo-furniture-catalog-api");
 	});
 
 	// Two resources collapsing onto one name overwrites one of them in the
@@ -138,16 +144,16 @@ describe("resourceNames", () => {
 
 	it("keeps the primary names and names the rest after themselves", () => {
 		const names = resourceNames(spec({ manifest: multiServiceManifest }));
-		expect(names.services.get("api")).toBe("airo-demo-furniture-catalog-api");
-		expect(names.services.get("web")).toBe("airo-demo-furniture-catalog-web");
+		expect(names.services.get("api")).toBe("vibe-demo-furniture-catalog-api");
+		expect(names.services.get("web")).toBe("vibe-demo-furniture-catalog-web");
 		expect(names.services.get("Search Service")).toBe(
-			"airo-demo-furniture-catalog-search-service",
+			"vibe-demo-furniture-catalog-search-service",
 		);
 		expect(names.databases.get("main-db")).toBe(
-			"airo-demo-furniture-catalog-db",
+			"vibe-demo-furniture-catalog-db",
 		);
 		expect(names.databases.get("analytics")).toBe(
-			"airo-demo-furniture-catalog-analytics",
+			"vibe-demo-furniture-catalog-analytics",
 		);
 	});
 });
@@ -180,7 +186,7 @@ describe("appBlueprint", () => {
 
 	it("declares the database", () => {
 		expect(yaml).toContain("databases:");
-		expect(yaml).toContain("name: airo-demo-furniture-catalog-db");
+		expect(yaml).toContain("name: vibe-demo-furniture-catalog-db");
 	});
 
 	// Without this the schema is never applied and the app deploys against an
@@ -194,8 +200,8 @@ describe("appBlueprint", () => {
 
 	it("emits one block per service and per database", () => {
 		const multi = appBlueprint(spec({ manifest: multiServiceManifest }));
-		expect(multi).toContain("name: airo-demo-furniture-catalog-search-service");
-		expect(multi).toContain("name: airo-demo-furniture-catalog-analytics");
+		expect(multi).toContain("name: vibe-demo-furniture-catalog-search-service");
+		expect(multi).toContain("name: vibe-demo-furniture-catalog-analytics");
 		expect(multi.match(/^ {2}- type: web$/gm)).toHaveLength(3);
 	});
 
@@ -218,15 +224,15 @@ describe("rootBlueprint", () => {
 		const yaml = rootBlueprint([
 			spec(),
 			spec({
-				user: "godaddy",
+				user: "demo",
 				appName: "gopher-dates",
 				tiers: ["static_site"],
 				manifest: staticOnlyManifest,
 			}),
 		]);
 
-		expect(yaml).toContain("airo-demo-furniture-catalog-web");
-		expect(yaml).toContain("airo-godaddy-gopher-dates-web");
+		expect(yaml).toContain("vibe-demo-furniture-catalog-web");
+		expect(yaml).toContain("vibe-demo-gopher-dates-web");
 		expect(yaml.match(/^databases:$/gm)).toHaveLength(1);
 		expect(yaml.match(/^services:$/gm)).toHaveLength(1);
 	});

@@ -1,6 +1,6 @@
 /** The tools an agent can be granted, and the Tool contract itself. */
 import { z } from "zod";
-import { airoConfig } from "../airo.config.js";
+import { factoryConfig } from "../factory.config.js";
 import { type ResolvedPath, resolveSandboxPath } from "./policy.js";
 import { type Sandbox, shellEscape } from "./sandbox.js";
 
@@ -212,7 +212,7 @@ export const sandboxApplyPatch: Tool<typeof applyPatchSchema> = {
 		const cwd = resolveSandboxPath(ctx.workDir, input.cwd ?? ".");
 		if ("error" in cwd) return pathError(cwd.error);
 
-		const patchPath = `/tmp/.airo-${Date.now()}-${++patchCounter}.patch`;
+		const patchPath = `/tmp/.vibe-${Date.now()}-${++patchCounter}.patch`;
 		await ctx.sandbox.upload(patchPath, input.diff);
 
 		const { output, exitCode } = await ctx.sandbox.run(
@@ -303,9 +303,9 @@ function assetDestination(workDir: string, path: string): ResolvedPath {
 			error: `Destination must be inside the checkout. ${target.error}`,
 		};
 	}
-	if (!target.path.startsWith(`${airoConfig.repoDir}/`)) {
+	if (!target.path.startsWith(`${factoryConfig.repoDir}/`)) {
 		return {
-			error: `Destination must be inside the checkout (${airoConfig.repoDir}).`,
+			error: `Destination must be inside the checkout (${factoryConfig.repoDir}).`,
 		};
 	}
 	if (!ASSET_DESTINATION.test(target.path)) {
@@ -338,15 +338,15 @@ export const assetFetch: Tool<typeof assetFetchSchema> = {
 		if (url.protocol !== "https:") {
 			return { content: "Only https URLs are allowed.", isError: true };
 		}
-		if (!airoConfig.assets.allowedHosts.includes(url.hostname)) {
+		if (!factoryConfig.assets.allowedHosts.includes(url.hostname)) {
 			return {
-				content: `Host not allowed: ${url.hostname}. Allowed: ${airoConfig.assets.allowedHosts.join(", ")}`,
+				content: `Host not allowed: ${url.hostname}. Allowed: ${factoryConfig.assets.allowedHosts.join(", ")}`,
 				isError: true,
 			};
 		}
 
 		const response = await fetch(url, {
-			headers: { "user-agent": "airo-factory/0.1 (Render demo)" },
+			headers: { "user-agent": "vibe-factory/0.1 (Render demo)" },
 			signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 		});
 		if (!response.ok) {
@@ -360,9 +360,9 @@ export const assetFetch: Tool<typeof assetFetchSchema> = {
 		}
 
 		const bytes = Buffer.from(await response.arrayBuffer());
-		if (bytes.byteLength > airoConfig.assets.maxBytes) {
+		if (bytes.byteLength > factoryConfig.assets.maxBytes) {
 			return {
-				content: `Image is ${bytes.byteLength} bytes, over the ${airoConfig.assets.maxBytes} byte limit.`,
+				content: `Image is ${bytes.byteLength} bytes, over the ${factoryConfig.assets.maxBytes} byte limit.`,
 				isError: true,
 			};
 		}
@@ -417,16 +417,16 @@ export const assetCollect: Tool<typeof assetCollectSchema> = {
 			);
 		}
 		const destDir = resolved.path;
-		if (!destDir.startsWith(`${airoConfig.repoDir}/`)) {
+		if (!destDir.startsWith(`${factoryConfig.repoDir}/`)) {
 			return pathError(
-				`destDir must be inside the checkout (${airoConfig.repoDir}).`,
+				`destDir must be inside the checkout (${factoryConfig.repoDir}).`,
 			);
 		}
 		if (!destDir.endsWith("/assets")) {
 			return pathError("destDir must end in /assets.");
 		}
 
-		const budget = Math.min(input.subjects.length, airoConfig.assets.maxCount);
+		const budget = Math.min(input.subjects.length, factoryConfig.assets.maxCount);
 		const subjects = input.subjects.slice(0, budget);
 
 		// Every subject in parallel — this is the whole point of the tool.
@@ -547,12 +547,12 @@ async function collectOne(
 async function downloadImage(rawUrl: string): Promise<Buffer> {
 	const url = new URL(rawUrl);
 	if (url.protocol !== "https:") throw new Error("not https");
-	if (!airoConfig.assets.allowedHosts.includes(url.hostname)) {
+	if (!factoryConfig.assets.allowedHosts.includes(url.hostname)) {
 		throw new Error(`host not allowed: ${url.hostname}`);
 	}
 
 	const response = await fetch(url, {
-		headers: { "user-agent": "airo-factory/0.1 (Render demo)" },
+		headers: { "user-agent": "vibe-factory/0.1 (Render demo)" },
 		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 	});
 	if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -561,7 +561,7 @@ async function downloadImage(rawUrl: string): Promise<Buffer> {
 	}
 
 	const bytes = Buffer.from(await response.arrayBuffer());
-	if (bytes.byteLength > airoConfig.assets.maxBytes) {
+	if (bytes.byteLength > factoryConfig.assets.maxBytes) {
 		throw new Error(`${bytes.byteLength} bytes exceeds the limit`);
 	}
 	return bytes;
@@ -668,14 +668,14 @@ async function searchCommons(
 		// Width only. Passing iiurlheight as well moves the thumbnails to
 		// thumb.wikimedia.org, which is not an allowed host — bestCandidate
 		// keeps the tall originals out instead.
-		iiurlwidth: String(airoConfig.assets.imageWidth),
+		iiurlwidth: String(factoryConfig.assets.imageWidth),
 	});
 
 	// Relaxing a query multiplies the requests a run makes, and every subject
 	// searches in parallel, so back off once rather than losing the subject.
 	for (let attempt = 0; ; attempt++) {
 		const response = await fetch(`${COMMONS_API}?${params}`, {
-			headers: { "user-agent": "airo-factory/0.1 (Render demo)" },
+			headers: { "user-agent": "vibe-factory/0.1 (Render demo)" },
 			signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
 		});
 		if (response.ok) return parseCommons(await response.json());

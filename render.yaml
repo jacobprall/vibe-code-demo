@@ -8,12 +8,12 @@
 # DATABASE_URL (the database's internal connection string) as the gateway.
 
 databases:
-  - name: airo-factory-db
+  - name: vibe-factory-db
     plan: basic-256mb
 
 services:
   - type: web
-    name: airo-factory-gateway
+    name: vibe-factory-gateway
     runtime: docker
     plan: starter
     # Applies app/schema.sql before any new instance serves traffic.
@@ -22,11 +22,15 @@ services:
     envVars:
       - key: DATABASE_URL
         fromDatabase:
-          name: airo-factory-db
+          name: vibe-factory-db
           property: connectionString
       - key: APPS_REPO
         sync: false
-      - key: AIRO_API_KEY
+      - key: FACTORY_API_KEY
+        sync: false
+      - key: UI_USERNAME
+        sync: false
+      - key: UI_PASSWORD
         sync: false
       - key: RENDER_WORKFLOW_SLUG
         sync: false

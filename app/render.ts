@@ -87,7 +87,7 @@ export class RenderMcp {
 		await this.rpc("initialize", {
 			protocolVersion: PROTOCOL_VERSION,
 			capabilities: {},
-			clientInfo: { name: "airo-factory", version: "0.1.0" },
+			clientInfo: { name: "vibe-factory", version: "0.1.0" },
 		});
 		// Required by the spec before any other request is served.
 		await this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
@@ -186,6 +186,7 @@ export async function waitForServices(
 	workspaceId: string,
 	names: readonly string[],
 	timeoutMs: number,
+	onPoll?: (detail: string) => void | Promise<void>,
 ): Promise<Map<string, ServiceRecord>> {
 	const deadline = Date.now() + timeoutMs;
 	const wanted = new Set(names);
@@ -198,6 +199,7 @@ export async function waitForServices(
 				.map((service) => [service.name, service]),
 		);
 		if (found.size === wanted.size) return found;
+		await onPoll?.(`Found ${found.size}/${wanted.size} services`);
 		await sleep(POLL_INTERVAL_MS);
 	}
 	return found;
@@ -207,7 +209,11 @@ export async function waitForServices(
 export async function waitForDeploy(
 	mcp: RenderMcp,
 	serviceId: string,
-	opts: { workspaceId: string; timeoutMs: number },
+	opts: {
+		workspaceId: string;
+		timeoutMs: number;
+		onPoll?: (detail: string) => void | Promise<void>;
+	},
 ): Promise<DeployOutcome> {
 	const deadline = Date.now() + opts.timeoutMs;
 	let status = "unknown";
@@ -227,6 +233,7 @@ export async function waitForDeploy(
 			if (DEPLOY_SUCCESS.has(status)) return { deployId, status, live: true };
 			if (DEPLOY_FAILURE.has(status)) return { deployId, status, live: false };
 		}
+		await opts.onPoll?.(`Service ${serviceId}: ${status}`);
 		await sleep(POLL_INTERVAL_MS);
 	}
 
@@ -285,7 +292,10 @@ export interface HttpProbe {
 export async function waitForHttpOk(
 	url: string,
 	timeoutMs: number,
-	opts: { headers?: Record<string, string> } = {},
+	opts: {
+		headers?: Record<string, string>;
+		onPoll?: (detail: string) => void | Promise<void>;
+	} = {},
 ): Promise<HttpProbe> {
 	const deadline = Date.now() + timeoutMs;
 	let status = 0;
@@ -309,6 +319,7 @@ export async function waitForHttpOk(
 		} catch {
 			// CDN propagation and cold starts both lag the deploy going live.
 		}
+		await opts.onPoll?.(`Waiting for ${url} (last status ${status || "none"})`);
 		await sleep(POLL_INTERVAL_MS);
 	}
 

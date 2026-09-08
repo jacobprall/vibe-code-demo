@@ -1,23 +1,22 @@
-# go-daddy-demo
+# vibe-code-demo
 
-A vibe-coding backend on Render. One authenticated API call carrying a prompt
-turns into a designed, built, verified, and deployed application — a static
-storefront, an API, and a Postgres database — using Render Workflows,
-Sandboxes, Blueprints, and the Render MCP server.
+A prompt-to-deploy reference application for Render. Submit an idea in the
+protected browser UI (or call the API) and the factory designs, builds,
+verifies, and deploys a static storefront, API, and Postgres database using
+Render Workflows, Sandboxes, Blueprints, and the Render MCP server.
 
-It is a reference architecture for wiring a product like **Airo** to Render.
-The whole system is about twenty files in `app/`, one file per concern, with no
-framework between the code and the platform.
+The gateway serves the UI at `/`, exposes an authenticated API under `/v1`,
+and stores progress in Postgres so the browser can reconnect to an active run.
 
 ```bash
 curl -X POST https://<gateway>/v1/apps \
-  -H "Authorization: Bearer $AIRO_API_KEY" \
+  -H "Authorization: Bearer $FACTORY_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"prompt":"Create an online catalog to sell handcrafted furniture","user":"godaddy"}'
+  -d '{"prompt":"Create an online catalog to sell handcrafted furniture","user":"demo"}'
 ```
 
 ```json
-{ "runId": "…", "user": "godaddy", "status": "running", "statusUrl": "/v1/apps/…" }
+{ "runId": "…", "user": "demo", "status": "running", "statusUrl": "/v1/apps/…" }
 ```
 
 Poll `statusUrl` and a few minutes later it holds the live URLs:
@@ -27,14 +26,15 @@ Poll `statusUrl` and a few minutes later it holds the live URLs:
   "status": "deployed",
   "appName": "handcrafted-furniture-catalog",
   "urls": {
-    "web": "https://airo-godaddy-handcrafted-furnitu-web.onrender.com",
-    "api": "https://airo-godaddy-handcrafted-furnitu-api.onrender.com"
+    "web": "https://vibe-demo-handcrafted-furnitu-web.onrender.com",
+    "api": "https://vibe-demo-handcrafted-furnitu-api.onrender.com"
   },
-  "blueprintPath": "apps/godaddy/handcrafted-furniture-catalog/render.yaml"
+  "blueprintPath": "apps/demo/handcrafted-furniture-catalog/render.yaml"
 }
 ```
 
-`npm run demo` does both halves and prints the stages as they happen.
+`npm run demo` does both halves from a terminal. The browser UI shows the same
+stages and turns the final URL into an “Open deployed app” link.
 
 ## How a run works
 
@@ -69,7 +69,7 @@ Poll `statusUrl` and a few minutes later it holds the live URLs:
    unreachable database to prove the health endpoint answers without one, and
    one against the real database to prove the data endpoint returns rows.
    Failures go back to the builder for up to two more rounds.
-7. **Publishing is deploying.** Workflow code writes the app's `airo.json`,
+7. **Publishing is deploying.** Workflow code writes the app's `factory.json`,
    its own `render.yaml`, and the repository-root Blueprint, then commits and
    pushes. Render's Blueprint sync creates the services and the database and
    deploys them.
@@ -90,12 +90,16 @@ Render Workflows: prompt-to-app
   ├─ curator     openly licensed photography      │
   ├─ builder     storefront + API + schema        │ one Render Sandbox
   ├─ verify      build, migrate, boot, query      │
-  ├─ publish     airo.json + render.yaml + push   ┘
+  ├─ publish     factory.json + render.yaml + push   ┘
   ├─ sync        Render deploys the Blueprint
   └─ smoke       storefront 200, health 200, data endpoint returns rows + CORS
   ▼
 GET /v1/apps/:runId → { status, stage, urls, blueprintPath }
 ```
+
+After Render reports every service `live`, the workflow intentionally remains
+active during `smoke_testing`. It fetches the public site, exercises the API
+and database, and validates CORS before reporting `deployed`.
 
 ## Why Blueprints are the write path
 
@@ -121,25 +125,24 @@ logs — and how the architect explores the workspace while it designs.
 ```text
 render.yaml                            the Blueprint Render watches
 apps/
-  godaddy/
+  demo/
     handcrafted-furniture-catalog/
-      airo.json                        machine-readable spec for this app
+      factory.json                     machine-readable spec for this app
       render.yaml                      this app's own Blueprint
       README.md
       web/                             static storefront (rootDir)
-      api/                             Express + pg service (rootDir)
-  demo/
+      api/                             Hono + pg service (rootDir)
     gopher-dates/
       …
 ```
 
-The root `render.yaml` is regenerated from every `airo.json` on each run, which
+The root `render.yaml` is regenerated from every `factory.json` on each run, which
 is why the specs are stored as JSON: appending an app never means parsing YAML
 back out. Each app also carries its own self-contained `render.yaml`, so a
 generated app can graduate out of the shared Blueprint — create a Blueprint
 pointing at `apps/<user>/<app>/render.yaml` and it stands alone.
 
-Resources are named `airo-<user>-<app>-{web,api,db}`, so one workspace can hold
+Resources are named `vibe-<user>-<app>-{web,api,db}`, so one workspace can hold
 every generated app without collisions.
 
 ## Architecture
@@ -148,7 +151,7 @@ Two processes deploy independently: the Hono gateway (`app/server.ts`) and the
 Workflows host (`app/host.ts`). One file per concern:
 
 ```text
-airo.config.ts   Directories, branch, plans, asset hosts, model tiers
+factory.config.ts   Directories, branch, plans, asset hosts, model tiers
 app/
   config.ts      Environment parsing and per-process validation
   contracts.ts   Zod schemas: API input, agent output, the stored spec
@@ -173,7 +176,7 @@ app/
 
 | Start here | For |
 | --- | --- |
-| `airo.config.ts` | Every knob |
+| `factory.config.ts` | Every knob |
 | `app/workflow.ts` | The whole pipeline, top to bottom |
 | `app/blueprint.ts` | What actually gets deployed, and where to extend it |
 | `app/agents.ts` | The four agents and their prompts |
@@ -207,6 +210,18 @@ npm run dev:gateway    # http://localhost:3000
 npm run dev:workflows  # needs the authenticated Render CLI
 ```
 
+Open `http://localhost:3000` and sign in with `UI_USERNAME` and `UI_PASSWORD`.
+The UI calls same-origin `/ui` endpoints; `FACTORY_API_KEY` stays on the
+gateway and is never delivered to browser JavaScript. `UI_USERNAME` is also
+the generated-app namespace: a user named `jacob` creates apps under
+`apps/jacob/` with resources named `vibe-jacob-...`. It must be a lowercase
+slug.
+
+For a deployed Workflows host, create a **Workflow** service separately in the
+Render Dashboard (Blueprints do not create Workflow services). Use
+`npm ci` as the build command and `npm run start:workflows` as the start
+command, then copy the workflow variables from `.env.example`.
+
 ### Create the Blueprint, once
 
 Render has no API for creating a Blueprint, so this is the one manual step —
@@ -231,7 +246,9 @@ npm run check    # Biome, tsc, Vitest
 | Variable | Service | Purpose |
 | --- | --- | --- |
 | `APPS_REPO` | Both | The one repository generated apps are committed to |
-| `AIRO_API_KEY` | Gateway | Bearer token for `POST /v1/apps`; 24+ characters |
+| `FACTORY_API_KEY` | Gateway | Bearer token for `POST /v1/apps`; 24+ characters |
+| `UI_USERNAME` | Gateway | UI login and generated-app namespace; lowercase slug |
+| `UI_PASSWORD` | Gateway | HTTP Basic Auth password; 16+ characters |
 | `RENDER_WORKFLOW_SLUG` | Gateway | Workflows service slug, without a task name |
 | `DATABASE_URL` | Both | Postgres connection string for the runs table |
 | `RENDER_API_KEY` | Both | Task dispatch; Sandboxes, MCP, and Blueprint reads |
@@ -242,11 +259,42 @@ npm run check    # Biome, tsc, Vitest
 | `GITHUB_APP_INSTALLATION_ID` | Workflows | Installation on `APPS_REPO` |
 | `GITHUB_TOKEN` | Workflows | Fine-grained PAT; fallback when no App is set |
 | `RENDER_MCP_URL` | Workflows | Optional MCP endpoint override |
+| `FACTORY_GATEWAY_URL` | CLI | Optional gateway used by `npm run demo` |
+| `FACTORY_USER` | CLI | Optional generated-app namespace used by the demo |
 | `PORT` | Gateway | Optional HTTP port; defaults to `3000` |
 
-Everything else lives in `airo.config.ts`: the clone directory, the branch the
+Everything else lives in `factory.config.ts`: the clone directory, the branch the
 Blueprint tracks, service and database plans, region, the asset host allowlist,
 the concurrency cap, and the model tiers.
+
+### Compatibility migration
+
+New installations use neutral names and write `factory.json`. Existing
+generated-app repositories remain safe: the root Blueprint reader accepts the
+legacy spec filename, and specs created before the rename retain their
+original resource prefix. `FACTORY_API_KEY` also accepts the former variable
+as a temporary fallback. Set the new variable everywhere before removing the
+old one.
+
+Renaming the factory's own database or gateway in an already-synced Blueprint
+creates replacement resources; migrate that infrastructure deliberately
+rather than applying the new names blindly.
+
+## Troubleshooting a run that looks stuck
+
+`GET /v1/apps/:runId` returns both a coarse `stage` and a human-readable
+`progress` value:
+
+- `waiting_for_services`: Blueprint sync has not created every expected service.
+- `waiting_for_deploys`: at least one Render deploy has not reached a terminal state.
+- `smoke_testing`: deploys are live; public URL, data, or CORS checks are still running.
+- `done`: the stored run is terminal.
+
+All deploy and HTTP waits have deadlines and heartbeat the database. The
+gateway also stores the Render task-run ID and periodically reconciles a
+`running` row with Workflows. If the task succeeded, failed, or was canceled
+without finalizing Postgres, the next status poll repairs the row and releases
+its concurrency slot.
 
 ## Extending
 
@@ -276,7 +324,7 @@ what keeps the template and the manifest the builder is told to return in sync.
 
 **Another asset source.** `asset__search` and `asset__fetch` in `app/tools.ts`
 are the whole of the factory's reachable internet. Add a host to
-`airoConfig.assets.allowedHosts` and a search implementation; the type, size,
+`factoryConfig.assets.allowedHosts` and a search implementation; the type, size,
 and destination checks already apply.
 
 **Reviewers.** This fork has none — it verifies by building and by calling the
@@ -326,7 +374,8 @@ drops in between verification and publishing.
   that needs one will pass verification only if it installs it itself.
 - `key_value` is in `TIER_KINDS` and nowhere else, so an architect that asks
   for one gets nothing and no warning.
-- No reviewer stage, no resumability, and no teardown workflow.
+- No reviewer stage, step-level resumability, or teardown workflow. Terminal
+  Workflows runs are reconciled, but a failed task restarts from the beginning.
 - A failed task run is not resumed; retry by calling the API again.
 
 ## License

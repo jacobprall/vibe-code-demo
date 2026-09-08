@@ -4,7 +4,7 @@ This file applies to the entire repository.
 
 ## What this is
 
-`go-daddy-demo` turns one authenticated prompt into a deployed application on
+`vibe-code-demo` turns one authenticated prompt into a deployed application on
 Render. It is a reference architecture for wiring a vibe-coding product to
 Render Workflows, Sandboxes, Blueprints, Postgres, and the Render MCP server —
 optimized to be read, not to be a framework.
@@ -57,6 +57,18 @@ it there — that script is where setup mistakes get caught.
 
 `npm run demo` runs the end-to-end demo against a live gateway.
 
+Production entrypoints are `npm run start:gateway` and
+`npm run start:workflows`. Workflows services are created separately in the
+Render Dashboard; they are not supported in `render.yaml`. The generated-apps
+repository needs a one-time Blueprint watching `main:render.yaml` with Auto
+Sync enabled.
+
+The gateway also serves a browser UI at `/`. It is protected by HTTP Basic
+Auth (`UI_USERNAME` and `UI_PASSWORD`) and submits through `/ui/apps`, which
+keeps `FACTORY_API_KEY` server-side. Do not expose a browser route that bypasses
+this protection. The authenticated `UI_USERNAME` is a validated lowercase slug
+and is injected as the app namespace; never accept a browser-supplied `user`.
+
 ## Repository map
 
 Each concern is one file under `app/`. There are no barrels, no path aliases,
@@ -75,7 +87,7 @@ and `store` are used by `workflow`; `gateway` uses `store`, `policy`, and
 backwards is a design smell.
 
 ```text
-airo.config.ts   Directories, branch, plans, asset hosts, model tiers
+factory.config.ts   Directories, branch, plans, asset hosts, model tiers
 app/
   config.ts      Environment parsing and per-process validation
   contracts.ts   Zod schemas for API input, agent output, and the stored spec
@@ -94,6 +106,7 @@ app/
   schema.sql     Schema, applied by scripts/migrate.ts
   server.ts      Gateway entrypoint
   host.ts        Workflows entrypoint
+public/          Basic-Auth-protected prompt and deployment-status UI
 templates/
   fullstack/     web/ (Vite + React + Tailwind + shadcn/ui), api/ (Hono + pg)
 scripts/         migrate, doctor, demo, support
@@ -126,6 +139,9 @@ Do not weaken these without an explicit security-model change:
 - One deployment is bound to one validated `APPS_REPO` and one branch.
 - Only a request carrying the correct bearer token starts a run, and the token
   is compared in constant time.
+- Browser submissions require valid UI Basic Auth. UI handlers reuse the same
+  validation and claim path as `/v1`; no factory bearer token enters an HTML
+  or JavaScript response.
 - The body is capped before it is parsed.
 - Agents receive only the tools listed in their definition. Claude's built-in
   `Bash`, `Read`, `Write`, and `Edit` are never granted — `claude.ts` always
@@ -160,10 +176,15 @@ Do not weaken these without an explicit security-model change:
 ## Durability
 
 There is no step memoization. A failed run is not resumed; the caller retries
-by posting the prompt again. Postgres enforces two things through constraints
-rather than application code: `runs.idempotency_key` is unique, so a retried
-curl cannot start a second run, and the conditional insert in `claimRun` caps
-concurrent runs at `airoConfig.maxConcurrentRuns`.
+by posting the prompt again. The gateway persists the Render task-run ID and
+reconciles terminal Workflows state while polling, so an interrupted task
+cannot leave a database row `running` forever. Long service, deploy, and HTTP
+waits heartbeat `progress`; keep those waits bounded.
+
+Postgres enforces two things through constraints rather than application code:
+`runs.idempotency_key` is unique, so a retried curl cannot start a second run,
+and the conditional insert in `claimRun` caps concurrent runs at
+`factoryConfig.maxConcurrentRuns`.
 
 If you add resumability, `ctx.step()` from Render Workflows' Durability 2.0
 API is the seam. Do not rebuild a checkpoint store here.
@@ -232,6 +253,16 @@ below. Fetch large state inside the workflow rather than passing it through
 dispatch, and keep repeated execution safe: a rerun of the same prompt
 overwrites the app directory and rebases onto the branch.
 
+Deployment progress distinguishes `waiting_for_services`,
+`waiting_for_deploys`, and `smoke_testing`. Render reporting `live` is not
+terminal: the public URL, data endpoint, and CORS checks must pass before the
+run becomes `deployed`.
+
+New generated apps write `factory.json` with `resourcePrefix`. Root Blueprint
+regeneration also reads the legacy filename and treats a missing prefix as the
+legacy value. Do not remove that compatibility path until all existing app
+specs have been migrated, or their Render resources will be renamed.
+
 Helpers that outgrow the workflow file belong in a new `app/<concern>.ts`, not
 in a subdirectory.
 
@@ -243,6 +274,8 @@ in a subdirectory.
 3. New external input is validated and task values stay JSON-serializable.
 4. Infrastructure changes go through `app/blueprint.ts`, not an API call.
 5. Sandbox cleanup and repeated side effects are safe.
-6. `.env.example`, `render.yaml`, `README.md`, and `scripts/doctor.ts` updated
+6. `.env.example`, `render.yaml`, `README.md`, `AGENTS.md`, and
+   `scripts/doctor.ts` updated
    if configuration changed.
-7. `npm run check` passes.
+7. Browser UI changes preserve Basic Auth and never serialize secrets.
+8. `npm run check` passes.

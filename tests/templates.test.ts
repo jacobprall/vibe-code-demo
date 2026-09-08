@@ -98,7 +98,7 @@ describe("extractionScript", () => {
 
 	it("writes every file exactly once", () => {
 		for (const file of files) {
-			expect(script).toContain(`cat > '${file.path}' <<'AIRO_TEMPLATE_EOF'`);
+			expect(script).toContain(`cat > '${file.path}' <<'FACTORY_TEMPLATE_EOF'`);
 		}
 		expect(script.match(/^cat > /gm)).toHaveLength(files.length);
 	});
@@ -106,14 +106,14 @@ describe("extractionScript", () => {
 	// An unquoted heredoc would let the shell expand ${...} and $( ) in JSX and
 	// SQL on the way in.
 	it("quotes every heredoc so nothing is expanded", () => {
-		expect(script.match(/<<'AIRO_TEMPLATE_EOF'/g)).toHaveLength(files.length);
-		expect(script).not.toMatch(/<<AIRO_TEMPLATE_EOF/);
+		expect(script.match(/<<'FACTORY_TEMPLATE_EOF'/g)).toHaveLength(files.length);
+		expect(script).not.toMatch(/<<FACTORY_TEMPLATE_EOF/);
 	});
 
 	it("refuses a file that would end its own heredoc", () => {
 		expect(() =>
 			extractionScript(
-				[{ path: "a.txt", contents: "before\nAIRO_TEMPLATE_EOF\nrm -rf /" }],
+				[{ path: "a.txt", contents: "before\nFACTORY_TEMPLATE_EOF\nrm -rf /" }],
 				"/tmp/x",
 			),
 		).toThrow(/heredoc delimiter/);

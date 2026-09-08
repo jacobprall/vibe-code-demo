@@ -2,6 +2,7 @@
 
 const REPO_PATTERN =
 	/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/[A-Za-z0-9._-]+$/;
+const USER_SLUG_PATTERN = /^[a-z][a-z0-9-]{2,30}$/;
 
 export interface Repository {
 	owner: string;
@@ -13,6 +14,12 @@ export interface Repository {
 
 export function requireEnv(name: string): string {
 	const value = process.env[name]?.trim();
+	if (!value) throw new Error(`${name} is not set`);
+	return value;
+}
+
+function envWithLegacyAlias(name: string, legacyName: string): string {
+	const value = process.env[name]?.trim() || process.env[legacyName]?.trim();
 	if (!value) throw new Error(`${name} is not set`);
 	return value;
 }
@@ -41,11 +48,23 @@ export function appsRepo(): Repository {
 
 /** The bearer token callers present to the public API. */
 export function apiKey(): string {
-	const key = requireEnv("AIRO_API_KEY");
+	const key = envWithLegacyAlias("FACTORY_API_KEY", "AIRO_API_KEY");
 	if (key.length < 24) {
-		throw new Error("AIRO_API_KEY must be at least 24 characters");
+		throw new Error("FACTORY_API_KEY must be at least 24 characters");
 	}
 	return key;
+}
+
+export function uiCredentials(): { username: string; password: string } {
+	const username = requireEnv("UI_USERNAME");
+	const password = requireEnv("UI_PASSWORD");
+	if (!USER_SLUG_PATTERN.test(username)) {
+		throw new Error("UI_USERNAME must be a lowercase slug");
+	}
+	if (password.length < 16) {
+		throw new Error("UI_PASSWORD must be at least 16 characters");
+	}
+	return { username, password };
 }
 
 export function renderWorkspaceId(): string {
@@ -69,6 +88,7 @@ function requireGitHubCredentials(): void {
 /** Fail fast if the gateway is misconfigured. */
 export function assertGatewayEnv(): void {
 	apiKey();
+	uiCredentials();
 	requireEnv("RENDER_WORKFLOW_SLUG");
 	// The Render SDK reads this when the gateway dispatches a workflow task.
 	requireEnv("RENDER_API_KEY");

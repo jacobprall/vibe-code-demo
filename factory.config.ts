@@ -2,7 +2,7 @@
 
 export type ModelTier = "small" | "medium" | "large";
 
-export interface AiroConfig {
+export interface FactoryConfig {
 	/** Where the apps repository is cloned inside the sandbox. */
 	repoDir: string;
 	/** Directory in that repository holding one subdirectory per user. */
@@ -34,13 +34,13 @@ export interface AiroConfig {
 	models: Record<ModelTier, string>;
 }
 
-export const airoConfig: AiroConfig = {
+export const factoryConfig: FactoryConfig = {
 	// Not "/home/user/apps": the repository already has an apps/ directory, and
 	// the doubled path in every command and prompt reads like a bug.
 	repoDir: "/home/user/repo",
 	appsDir: "apps",
 	branch: "main",
-	resourcePrefix: "airo",
+	resourcePrefix: "vibe",
 	blueprintPath: "render.yaml",
 	render: {
 		region: "oregon",
@@ -69,10 +69,10 @@ export const airoConfig: AiroConfig = {
 
 /** Absolute path of one generated app inside the cloned repository. */
 export function appPath(user: string, appName: string): string {
-	return `${airoConfig.repoDir}/${appRelativePath(user, appName)}`;
+	return `${factoryConfig.repoDir}/${appRelativePath(user, appName)}`;
 }
 
 /** Path of one generated app relative to the repository root. */
 export function appRelativePath(user: string, appName: string): string {
-	return `${airoConfig.appsDir}/${user}/${appName}`;
+	return `${factoryConfig.appsDir}/${user}/${appName}`;
 }

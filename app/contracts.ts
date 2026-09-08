@@ -189,7 +189,7 @@ export type DeployDiagnosis = z.infer<typeof deployDiagnosisSchema>;
 /* ── The stored app spec ──────────────────────────────────────────────── */
 
 /**
- * `airo.json`, committed beside each generated app. It is the machine-readable
+ * `factory.json`, committed beside each generated app. It is the machine-readable
  * source for both the app's own render.yaml and the repository-root Blueprint,
  * which is why the root Blueprint can be regenerated without parsing YAML.
  */
@@ -199,6 +199,8 @@ export const appSpecSchema = z.object({
 	prompt: z.string().min(1),
 	summary: z.string().min(1),
 	createdAt: z.string().min(1),
+	/** Persisted so changing the default never renames an existing app's resources. */
+	resourcePrefix: slug.optional(),
 	tiers: z.array(z.enum(TIER_KINDS)).min(1),
 	manifest: manifestSchema,
 	notes: z.array(z.string()).max(20),

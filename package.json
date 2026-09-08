@@ -1,5 +1,5 @@
 {
-  "name": "go-daddy-demo",
+  "name": "vibe-code-demo",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -15,7 +15,7 @@
     "db:migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
     "doctor": "node --env-file-if-exists=.env --import tsx scripts/doctor.ts",
     "demo": "node --env-file-if-exists=.env --import tsx scripts/demo.ts",
-    "lint": "biome lint --error-on-warnings app scripts tests airo.config.ts",
+    "lint": "biome lint --error-on-warnings app public scripts tests factory.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run lint && npm run typecheck && npm test"

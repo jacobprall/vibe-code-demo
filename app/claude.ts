@@ -6,7 +6,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { airoConfig, type ModelTier } from "../airo.config.js";
+import { factoryConfig, type ModelTier } from "../factory.config.js";
 import { requireEnv } from "./config.js";
 import { checkToolCall, RENDER_MCP_SERVER } from "./policy.js";
 import { renderMcpUrl } from "./render.js";
@@ -120,7 +120,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<ClaudeRun> {
 	}
 
 	const sandbox = opts.sandbox;
-	const workDir = opts.workDir ?? airoConfig.repoDir;
+	const workDir = opts.workDir ?? factoryConfig.repoDir;
 	if (sandbox && tools.length > 0) {
 		servers[MCP_SERVER] = createSdkMcpServer({
 			name: MCP_SERVER,

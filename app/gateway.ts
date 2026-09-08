@@ -6,11 +6,26 @@
  * Postgres, and dispatches a prompt.
  */
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { Hono } from "hono";
-import { apiKey } from "./config.js";
-import { createAppRequestSchema } from "./contracts.js";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { Hono, type Context } from "hono";
+import { basicAuth } from "hono/basic-auth";
+import { apiKey, uiCredentials } from "./config.js";
+import {
+	createAppRequestSchema,
+	type WorkflowResult,
+} from "./contracts.js";
 import { redactSecrets } from "./policy.js";
-import { claimRun, finishRun, getRun, ping, type RunRecord } from "./store.js";
+import {
+	claimRun,
+	claimWorkflowCheck,
+	finishRun,
+	getRun,
+	ping,
+	type RunRecord,
+	setRunApp,
+	setRunUrls,
+	setWorkflowRunId,
+} from "./store.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const RUN_ID = /^[0-9a-f-]{36}$/;
@@ -18,6 +33,8 @@ const TASK_NAME = "prompt-to-app";
 
 export function createGateway(): Hono {
 	const app = new Hono();
+	const credentials = uiCredentials();
+	const uiAuth = basicAuth(credentials);
 
 	app.get("/health", (c) => c.json({ status: "ok" }));
 
@@ -30,88 +47,116 @@ export function createGateway(): Hono {
 		}
 	});
 
-	app.post("/v1/apps", async (c) => {
-		if (!authorized(c.req.raw.headers)) {
-			return c.json({ error: "unauthorized" }, 401);
-		}
+	app.post("/v1/apps", (c) => createRun(c, true));
+	app.get("/v1/apps/:runId", (c) => readRun(c, true));
 
-		const body = await readBody(c.req.raw);
-		if (body === null) return c.json({ error: "payload too large" }, 413);
-
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(body);
-		} catch {
-			return c.json({ error: "invalid json" }, 400);
-		}
-		const request = createAppRequestSchema.safeParse(parsed);
-		if (!request.success) {
-			return c.json(
-				{
-					error: "invalid request",
-					detail:
-						"prompt must be 8-2000 characters; user must be a lowercase slug",
-				},
-				400,
-			);
-		}
-
-		const runId = randomUUID();
-		const { prompt, user, idempotencyKey = runId } = request.data;
-
-		let claim: Awaited<ReturnType<typeof claimRun>>;
-		try {
-			claim = await claimRun({ id: runId, idempotencyKey, prompt, user });
-		} catch (error) {
-			console.error("Failed to claim run:", error);
-			return c.json({ error: "store unavailable" }, 503);
-		}
-		if (!claim.claimed) {
-			return claim.reason === "duplicate"
-				? c.json({ runId: claim.runId, duplicate: true }, 200)
-				: c.json({ error: "too many concurrent runs" }, 429);
-		}
-
-		if (!(await dispatchWorkflow(TASK_NAME, { prompt, user, runId }))) {
-			await finishRun(runId, "failed", { summary: "dispatch failed" }).catch(
-				(error) => console.error("Failed to release run claim:", error),
-			);
-			return c.json({ error: "dispatch failed" }, 502);
-		}
-
-		return c.json(
-			{ runId, user, status: "running", statusUrl: `/v1/apps/${runId}` },
-			202,
-		);
-	});
-
-	app.get("/v1/apps/:runId", async (c) => {
-		if (!authorized(c.req.raw.headers)) {
-			return c.json({ error: "unauthorized" }, 401);
-		}
-
-		const runId = c.req.param("runId");
-		if (!RUN_ID.test(runId)) return c.json({ error: "not found" }, 404);
-
-		let run: Awaited<ReturnType<typeof getRun>>;
-		try {
-			run = await getRun(runId);
-		} catch (error) {
-			console.error("Failed to read run:", error);
-			return c.json({ error: "store unavailable" }, 503);
-		}
-		if (!run) return c.json({ error: "not found" }, 404);
-
-		return c.json(runResponse(run));
-	});
+	app.use("/ui/*", uiAuth);
+	app.post("/ui/apps", (c) => createRun(c, false, credentials.username));
+	app.get("/ui/apps/:runId", (c) => readRun(c, false));
+	app.get("/", uiAuth, serveStatic({ path: "./public/index.html" }));
+	app.get("/app.js", uiAuth, serveStatic({ path: "./public/app.js" }));
+	app.get("/style.css", uiAuth, serveStatic({ path: "./public/style.css" }));
 
 	return app;
+}
+
+async function createRun(
+	c: Context,
+	requireBearer: boolean,
+	userOverride?: string,
+): Promise<Response> {
+	if (requireBearer && !authorized(c.req.raw.headers)) {
+		return c.json({ error: "unauthorized" }, 401);
+	}
+
+	const body = await readBody(c.req.raw);
+	if (body === null) return c.json({ error: "payload too large" }, 413);
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(body);
+	} catch {
+		return c.json({ error: "invalid json" }, 400);
+	}
+	const request = createAppRequestSchema.safeParse(
+		userOverride && parsed && typeof parsed === "object"
+			? { ...parsed, user: userOverride }
+			: parsed,
+	);
+	if (!request.success) {
+		return c.json(
+			{
+				error: "invalid request",
+				detail: "prompt must be 8-2000 characters; user must be a lowercase slug",
+			},
+			400,
+		);
+	}
+
+	const runId = randomUUID();
+	const { prompt, user, idempotencyKey = runId } = request.data;
+	let claim: Awaited<ReturnType<typeof claimRun>>;
+	try {
+		claim = await claimRun({ id: runId, idempotencyKey, prompt, user });
+	} catch (error) {
+		console.error("Failed to claim run:", error);
+		return c.json({ error: "store unavailable" }, 503);
+	}
+	if (!claim.claimed) {
+		return claim.reason === "duplicate"
+			? c.json({ runId: claim.runId, duplicate: true }, 200)
+			: c.json({ error: "too many concurrent runs" }, 429);
+	}
+
+	const workflowRunId = await dispatchWorkflow(TASK_NAME, {
+		prompt,
+		user,
+		runId,
+	});
+	if (!workflowRunId) {
+		await finishRun(runId, "failed", { summary: "dispatch failed" }).catch(
+			(error) => console.error("Failed to release run claim:", error),
+		);
+		return c.json({ error: "dispatch failed" }, 502);
+	}
+	await setWorkflowRunId(runId, workflowRunId).catch((error) =>
+		console.error("Failed to save workflow run id:", error),
+	);
+
+	const statusBase = requireBearer ? "/v1/apps" : "/ui/apps";
+	return c.json(
+		{ runId, user, status: "running", statusUrl: `${statusBase}/${runId}` },
+		202,
+	);
+}
+
+async function readRun(c: Context, requireBearer: boolean): Promise<Response> {
+	if (requireBearer && !authorized(c.req.raw.headers)) {
+		return c.json({ error: "unauthorized" }, 401);
+	}
+
+	const runId = c.req.param("runId");
+	if (!runId || !RUN_ID.test(runId)) return c.json({ error: "not found" }, 404);
+
+	try {
+		let run = await getRun(runId);
+		if (!run) return c.json({ error: "not found" }, 404);
+		if (run.status === "running" && run.workflowRunId) {
+			await reconcileWorkflowRun(run);
+			run = (await getRun(runId)) ?? run;
+		}
+		return c.json(runResponse(run));
+	} catch (error) {
+		console.error("Failed to read run:", error);
+		return c.json({ error: "store unavailable" }, 503);
+	}
 }
 
 export interface RunResponse {
 	runId: string;
 	status: string;
 	stage: string | null;
+	progress: string | null;
 	prompt: string;
 	user: string;
 	appName: string | null;
@@ -128,6 +173,7 @@ export function runResponse(run: RunRecord): RunResponse {
 		runId: run.id,
 		status: run.status,
 		stage: run.stage,
+		progress: run.progress,
 		prompt: run.prompt,
 		user: run.user,
 		appName: run.appName,
@@ -137,6 +183,98 @@ export function runResponse(run: RunRecord): RunResponse {
 		createdAt: run.createdAt,
 		updatedAt: run.updatedAt,
 	};
+}
+
+async function reconcileWorkflowRun(run: RunRecord): Promise<void> {
+	if (!run.workflowRunId || !(await claimWorkflowCheck(run.id))) return;
+
+	try {
+		const { Render } = await import("@renderinc/sdk");
+		const taskRun = await new Render().workflows.getTaskRun(run.workflowRunId);
+		if (taskRun.status === "running" || taskRun.status === "pending") return;
+
+		if (taskRun.status === "succeeded" || taskRun.status === "completed") {
+			const result = workflowResult(taskRun.results?.[0]);
+			if (result) {
+				await recoverWorkflowResult(run, result);
+				return;
+			}
+			await finishRun(run.id, "failed", {
+				summary: "Workflow completed without a valid terminal result.",
+			});
+			return;
+		}
+
+		await finishRun(run.id, "failed", {
+			summary: `Workflow ${taskRun.status}: ${taskRun.error ?? "no error was reported"}`,
+		});
+	} catch (error) {
+		// Reconciliation is a safety net. A transient SDK failure must not hide
+		// the latest durable status already stored in Postgres.
+		console.error("Failed to reconcile workflow run:", error);
+	}
+}
+
+async function recoverWorkflowResult(
+	run: RunRecord,
+	result: WorkflowResult,
+): Promise<void> {
+	if (result.status === "deployed") {
+		if (run.blueprintPath) {
+			await setRunApp(run.id, {
+				appName: result.appName,
+				blueprintPath: run.blueprintPath,
+			});
+		}
+		await setRunUrls(run.id, {
+			webUrl: result.webUrl,
+			apiUrl: result.apiUrl,
+		});
+	}
+	await finishRun(run.id, result.status, { summary: result.summary });
+}
+
+function workflowResult(value: unknown): WorkflowResult | null {
+	if (!value || typeof value !== "object") return null;
+	const candidate = value as Record<string, unknown>;
+	if (typeof candidate.status !== "string" || typeof candidate.summary !== "string") {
+		return null;
+	}
+	if (
+		candidate.status === "build_failed" ||
+		candidate.status === "deploy_failed"
+	) {
+		return { status: candidate.status, summary: candidate.summary };
+	}
+	if (
+		candidate.status === "awaiting_blueprint" &&
+		typeof candidate.user === "string" &&
+		typeof candidate.appName === "string"
+	) {
+		return {
+			status: candidate.status,
+			user: candidate.user,
+			appName: candidate.appName,
+			summary: candidate.summary,
+		};
+	}
+	if (
+		candidate.status === "deployed" &&
+		typeof candidate.user === "string" &&
+		typeof candidate.appName === "string" &&
+		typeof candidate.webUrl === "string" &&
+		(candidate.apiUrl === null || typeof candidate.apiUrl === "string")
+	) {
+		return {
+			status: candidate.status,
+			user: candidate.user,
+			appName: candidate.appName,
+			webUrl: candidate.webUrl,
+			apiUrl: candidate.apiUrl,
+			summary: candidate.summary,
+		};
+	}
+	return null;
 }
 
 /**
@@ -180,20 +318,23 @@ export async function readBody(request: Request): Promise<string | null> {
 export async function dispatchWorkflow(
 	taskName: string,
 	payload: { prompt: string; user: string; runId: string },
-): Promise<boolean> {
+): Promise<string | null> {
 	const slug = process.env.RENDER_WORKFLOW_SLUG;
 	if (!slug) {
 		console.error(`RENDER_WORKFLOW_SLUG not set — cannot dispatch ${taskName}`);
-		return false;
+		return null;
 	}
 
 	try {
 		const { Render } = await import("@renderinc/sdk");
-		await new Render().workflows.startTask(`${slug}/${taskName}`, [payload]);
-		return true;
+		const started = await new Render().workflows.startTask(
+			`${slug}/${taskName}`,
+			[payload],
+		);
+		return started.taskRunId;
 	} catch (error) {
 		console.error(`Failed to dispatch ${taskName}:`, error);
-		return false;
+		return null;
 	}
 }
 
