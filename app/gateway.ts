@@ -7,7 +7,7 @@
  */
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { basicAuth } from "hono/basic-auth";
 import { apiKey, uiCredentials } from "./config.js";
 import {
@@ -34,7 +34,11 @@ const TASK_NAME = "prompt-to-app";
 export function createGateway(): Hono {
 	const app = new Hono();
 	const credentials = uiCredentials();
-	const uiAuth = basicAuth(credentials);
+	const uiAuth: MiddlewareHandler =
+		process.env.NODE_ENV !== "production" &&
+		process.env.UI_AUTH_DISABLED === "true"
+			? async (_c, next) => next()
+			: basicAuth(credentials);
 
 	app.get("/health", (c) => c.json({ status: "ok" }));
 

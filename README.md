@@ -217,6 +217,10 @@ the generated-app namespace: a user named `jacob` creates apps under
 `apps/jacob/` with resources named `vibe-jacob-...`. It must be a lowercase
 slug.
 
+Cursor’s embedded preview does not always display HTTP Basic Auth prompts. For
+local preview only, set `UI_AUTH_DISABLED=true`; the bypass is ignored whenever
+`NODE_ENV=production`.
+
 For a deployed Workflows host, create a **Workflow** service separately in the
 Render Dashboard (Blueprints do not create Workflow services). Use
 `npm ci` as the build command and `npm run start:workflows` as the start
