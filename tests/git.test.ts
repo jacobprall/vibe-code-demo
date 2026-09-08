@@ -53,7 +53,7 @@ const push = (sandbox: Sandbox, resolve?: () => Promise<readonly string[]>) =>
 /**
  * The root Blueprint holds every app the factory has built, so a concurrent
  * run's push makes it conflict every time. It is generated from each app's
- * airo.json, so it is recomputed rather than merged — without this, the run
+ * factory.json, so it is recomputed rather than merged — without this, the run
  * that lost the race failed after building and verifying an app successfully.
  */
 describe("pushVerified rebase conflicts", () => {

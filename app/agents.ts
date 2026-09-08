@@ -1,6 +1,6 @@
 /** The agents, in pipeline order, and how each becomes a Render task. */
 import { task } from "@renderinc/sdk/workflows";
-import { airoConfig } from "../airo.config.js";
+import { factoryConfig } from "../factory.config.js";
 import { type Agent, md, runClaude, zodToJsonSchema } from "./claude.js";
 import {
 	assetManifestSchema,
@@ -286,7 +286,7 @@ export function agentTask(agent: Agent) {
 				agentId: agent.id,
 				systemPrompt: agent.prompt,
 				prompt: input.message,
-				model: airoConfig.models[agent.model],
+				model: factoryConfig.models[agent.model],
 				maxTurns: agent.maxTurns,
 				tools: agent.tools,
 				renderTools: agent.renderTools,
@@ -299,7 +299,7 @@ export function agentTask(agent: Agent) {
 				JSON.stringify({
 					event: "agent_completed",
 					agent: agent.id,
-					model: airoConfig.models[agent.model],
+					model: factoryConfig.models[agent.model],
 					inputTokens: run.inputTokens,
 					outputTokens: run.outputTokens,
 				}),

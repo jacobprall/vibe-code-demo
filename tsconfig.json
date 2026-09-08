@@ -12,6 +12,6 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["app", "scripts", "tests", "airo.config.ts"],
+  "include": ["app", "scripts", "tests", "factory.config.ts"],
   "exclude": ["node_modules"]
 }

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="description" content="Turn a prompt into a deployed application on Render." />
+		<title>Vibe Code Demo</title>
+		<link rel="stylesheet" href="/style.css" />
+	</head>
+	<body>
+		<main>
+			<header>
+				<p class="eyebrow">Render Workflows demo</p>
+				<h1>Describe it. Ship it.</h1>
+				<p class="lede">
+					Submit an app idea and follow it from design through a live Render deployment.
+				</p>
+			</header>
+
+			<section class="panel">
+				<form id="prompt-form">
+					<label for="prompt">What should we build?</label>
+					<textarea
+						id="prompt"
+						name="prompt"
+						minlength="8"
+						maxlength="2000"
+						required
+						placeholder="Create a neighborhood plant exchange with listings, pickup details, and a friendly visual style."
+					></textarea>
+					<div class="form-actions">
+						<button type="submit">Build and deploy</button>
+					</div>
+				</form>
+			</section>
+
+			<section id="run-panel" class="panel run-panel" hidden aria-live="polite">
+				<div class="status-heading">
+					<div>
+						<p class="eyebrow">Current run</p>
+						<h2 id="status">Starting</h2>
+					</div>
+					<span id="activity" class="activity" aria-hidden="true"></span>
+				</div>
+				<ol id="stages" class="stages"></ol>
+				<p id="progress" class="progress"></p>
+				<div id="result" class="result" hidden>
+					<a id="web-url" class="primary-link" href="/" target="_blank" rel="noreferrer">Open deployed app</a>
+					<a id="api-url" href="/" target="_blank" rel="noreferrer" hidden>Open API</a>
+				</div>
+				<pre id="summary" hidden></pre>
+			</section>
+		</main>
+		<script type="module" src="/app.js"></script>
+	</body>
+</html>

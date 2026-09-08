@@ -7,4 +7,4 @@ assertWorkflowEnv();
 await import("./agents.js");
 await import("./workflow.js");
 
-console.log("airo factory workflows ready");
+console.log("vibe code factory workflows ready");

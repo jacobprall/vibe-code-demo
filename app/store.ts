@@ -1,6 +1,6 @@
 /** Postgres: one runs table. Render filesystems are ephemeral. */
 import pg from "pg";
-import { airoConfig } from "../airo.config.js";
+import { factoryConfig } from "../factory.config.js";
 
 export type RunStatus =
 	| "running"
@@ -19,6 +19,9 @@ export type RunStage =
 	| "verifying"
 	| "publishing"
 	| "deploying"
+	| "waiting_for_services"
+	| "waiting_for_deploys"
+	| "smoke_testing"
 	| "done";
 
 export interface RunRecord {
@@ -28,6 +31,8 @@ export interface RunRecord {
 	user: string;
 	status: RunStatus;
 	stage: RunStage | null;
+	progress: string | null;
+	workflowRunId: string | null;
 	appName: string | null;
 	webUrl: string | null;
 	apiUrl: string | null;
@@ -42,7 +47,8 @@ export type ClaimResult =
 	| { claimed: false; reason: "duplicate"; runId: string }
 	| { claimed: false; reason: "at_capacity" };
 
-const COLUMNS = `id, idempotency_key, prompt, user_name, status, stage,
+const COLUMNS = `id, idempotency_key, prompt, user_name, status, stage, progress,
+	                workflow_run_id,
 	                app_name, web_url, api_url, blueprint_path, summary,
 	                created_at, updated_at`;
 
@@ -55,7 +61,7 @@ export function db(): pg.Pool {
 		pool = new pg.Pool({
 			connectionString,
 			max: 2,
-			application_name: "airo-factory",
+			application_name: "vibe-factory",
 			connectionTimeoutMillis: 5_000,
 			idleTimeoutMillis: 10_000,
 			allowExitOnIdle: true,
@@ -90,7 +96,7 @@ export async function claimRun(input: {
 			input.idempotencyKey,
 			input.prompt,
 			input.user,
-			airoConfig.maxConcurrentRuns,
+			factoryConfig.maxConcurrentRuns,
 		],
 	);
 	if (inserted.rowCount === 1) return { claimed: true };
@@ -105,11 +111,45 @@ export async function claimRun(input: {
 		: { claimed: false, reason: "at_capacity" };
 }
 
-export async function setRunStage(id: string, stage: RunStage): Promise<void> {
+export async function setRunStage(
+	id: string,
+	stage: RunStage,
+	progress: string | null = null,
+): Promise<void> {
 	await db().query(
-		"update runs set stage = $2, updated_at = now() where id = $1",
-		[id, stage],
+		"update runs set stage = $2, progress = $3, updated_at = now() where id = $1",
+		[id, stage, progress],
 	);
+}
+
+export async function touchRun(id: string, progress: string): Promise<void> {
+	await db().query(
+		"update runs set progress = $2, updated_at = now() where id = $1 and status = 'running'",
+		[id, progress],
+	);
+}
+
+export async function setWorkflowRunId(
+	id: string,
+	workflowRunId: string,
+): Promise<void> {
+	await db().query(
+		"update runs set workflow_run_id = $2, updated_at = now() where id = $1",
+		[id, workflowRunId],
+	);
+}
+
+/** Throttle status reconciliation across gateway instances. */
+export async function claimWorkflowCheck(id: string): Promise<boolean> {
+	const result = await db().query(
+		`update runs
+		 set workflow_checked_at = now()
+		 where id = $1
+		   and status = 'running'
+		   and (workflow_checked_at is null or workflow_checked_at < now() - interval '30 seconds')`,
+		[id],
+	);
+	return result.rowCount === 1;
 }
 
 export async function setRunApp(
@@ -142,7 +182,8 @@ export async function finishRun(
 ): Promise<void> {
 	await db().query(
 		`update runs
-		 set status = $2, stage = 'done', summary = $3, updated_at = now()
+		 set status = $2, stage = 'done', progress = null,
+		     summary = $3, updated_at = now()
 		 where id = $1`,
 		[id, status, details.summary ?? null],
 	);
@@ -163,6 +204,8 @@ export async function getRun(id: string): Promise<RunRecord | null> {
 		user: row.user_name,
 		status: row.status,
 		stage: row.stage,
+		progress: row.progress,
+		workflowRunId: row.workflow_run_id,
 		appName: row.app_name,
 		webUrl: row.web_url,
 		apiUrl: row.api_url,

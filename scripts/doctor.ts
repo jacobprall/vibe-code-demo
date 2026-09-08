@@ -4,7 +4,7 @@
  * Every check reports what is wrong and how to fix it. Read-only by design:
  * it never creates or edits a resource.
  */
-import { airoConfig } from "../airo.config.js";
+import { factoryConfig } from "../factory.config.js";
 import { appsRepo, renderWorkspaceId } from "../app/config.js";
 import { githubToken, usingGitHubApp } from "../app/git.js";
 import { findBlueprint, listServices, RenderMcp } from "../app/render.js";
@@ -38,7 +38,7 @@ async function github<T>(
 				Authorization: `Bearer ${token}`,
 				Accept: "application/vnd.github+json",
 				"X-GitHub-Api-Version": "2022-11-28",
-				"User-Agent": "airo-factory-doctor",
+				"User-Agent": "vibe-factory-doctor",
 			},
 			signal: AbortSignal.timeout(15_000),
 		});
@@ -63,21 +63,54 @@ function checkConfiguration(): void {
 		});
 	}
 
-	const key = process.env.AIRO_API_KEY?.trim() ?? "";
+	const currentKey = process.env.FACTORY_API_KEY?.trim() ?? "";
+	const legacyKey = process.env.AIRO_API_KEY?.trim() ?? "";
+	const key = currentKey || legacyKey;
 	if (!key) {
 		record({
 			level: "fail",
-			message: "AIRO_API_KEY is missing",
+			message: "FACTORY_API_KEY is missing",
 			fix: "Generate one with: openssl rand -hex 32",
 		});
 	} else if (key.length < 24) {
 		record({
 			level: "fail",
-			message: `AIRO_API_KEY is only ${key.length} characters`,
+			message: `FACTORY_API_KEY is only ${key.length} characters`,
 			fix: "Use at least 24. Generate with: openssl rand -hex 32",
 		});
 	} else {
-		record({ level: "ok", message: "AIRO_API_KEY looks strong" });
+		record({ level: "ok", message: "FACTORY_API_KEY looks strong" });
+	}
+	if (!currentKey && legacyKey) {
+		record({
+			level: "warn",
+			message: "The deprecated API key variable is still in use",
+			fix: "Copy its value to FACTORY_API_KEY on the gateway, then remove the old variable.",
+		});
+	}
+
+	const uiUsername = process.env.UI_USERNAME?.trim() ?? "";
+	if (!/^[a-z][a-z0-9-]{2,30}$/.test(uiUsername)) {
+		record({
+			level: "fail",
+			message: "UI_USERNAME is missing or is not a lowercase slug",
+			fix: "Use 3-31 lowercase letters, numbers, or hyphens; it also namespaces generated apps.",
+		});
+	} else {
+		record({
+			level: "ok",
+			message: `UI_USERNAME namespaces apps as ${uiUsername}`,
+		});
+	}
+	const uiPassword = process.env.UI_PASSWORD?.trim() ?? "";
+	if (uiPassword.length < 16) {
+		record({
+			level: "fail",
+			message: "UI_PASSWORD is missing or shorter than 16 characters",
+			fix: "Set a strong password on the gateway.",
+		});
+	} else {
+		record({ level: "ok", message: "UI_PASSWORD looks strong" });
 	}
 
 	// The gateway needs this to dispatch, not just the workflows host.
@@ -165,12 +198,12 @@ async function checkGitHub(): Promise<void> {
 
 	const branch = info.body?.default_branch;
 	record(
-		branch === airoConfig.branch
+		branch === factoryConfig.branch
 			? { level: "ok", message: `Default branch is ${branch}` }
 			: {
 					level: "warn",
-					message: `Default branch is ${branch ?? "unknown"}, but the factory pushes to ${airoConfig.branch}`,
-					fix: `Set branch in airo.config.ts to ${branch}, or point the Blueprint at ${airoConfig.branch}.`,
+					message: `Default branch is ${branch ?? "unknown"}, but the factory pushes to ${factoryConfig.branch}`,
+					fix: `Set branch in factory.config.ts to ${branch}, or point the Blueprint at ${factoryConfig.branch}.`,
 				},
 	);
 }
@@ -198,16 +231,16 @@ async function checkBlueprint(): Promise<void> {
 	try {
 		const blueprint = await findBlueprint({
 			repo: repo.url,
-			branch: airoConfig.branch,
-			path: airoConfig.blueprintPath,
+			branch: factoryConfig.branch,
+			path: factoryConfig.blueprintPath,
 		});
 		if (!blueprint) {
 			record({
 				level: "fail",
-				message: `No Blueprint watches ${repo.fullName} (${airoConfig.branch}:${airoConfig.blueprintPath})`,
+				message: `No Blueprint watches ${repo.fullName} (${factoryConfig.branch}:${factoryConfig.blueprintPath})`,
 				fix:
 					"Create it once in the Render Dashboard: New > Blueprint, pick the apps " +
-					`repository, branch ${airoConfig.branch}, Blueprint Path ${airoConfig.blueprintPath}. ` +
+					`repository, branch ${factoryConfig.branch}, Blueprint Path ${factoryConfig.blueprintPath}. ` +
 					"Until then runs commit their app but stop at awaiting_blueprint.",
 			});
 			return;
@@ -260,7 +293,7 @@ async function checkRenderMcp(): Promise<void> {
 		});
 
 		const ours = services.filter((service) =>
-			service.name.startsWith(`${airoConfig.resourcePrefix}-`),
+			service.name.startsWith(`${factoryConfig.resourcePrefix}-`),
 		);
 		record({
 			level: "ok",
@@ -309,6 +342,8 @@ async function checkPostgres(): Promise<void> {
 			"prompt",
 			"user_name",
 			"status",
+			"progress",
+			"workflow_run_id",
 			"web_url",
 			"blueprint_path",
 		].filter((name) => !columns.has(name));
@@ -318,7 +353,7 @@ async function checkPostgres(): Promise<void> {
 				: {
 						level: "fail",
 						message: `runs is missing: ${missing.join(", ")}`,
-						fix: "This database predates the current schema. Drop the table or use a fresh database.",
+						fix: "Apply the additive migration with npm run db:migrate.",
 					},
 		);
 	} catch (error) {

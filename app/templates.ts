@@ -27,7 +27,7 @@ const SKIP = new Set(["node_modules", "dist", ".git", ".DS_Store"]);
 const SKIP_SUFFIX = [".tsbuildinfo", ".log"];
 
 /** Unlikely enough in source that the collision check below never fires. */
-const HEREDOC = "AIRO_TEMPLATE_EOF";
+const HEREDOC = "FACTORY_TEMPLATE_EOF";
 
 export interface TemplateFile {
 	/** Path relative to the template root, e.g. "web/src/App.tsx". */
@@ -112,7 +112,7 @@ export async function materializeTemplate(
 	const files = await readTemplate(name);
 	if (files.length === 0) throw new Error(`Template "${name}" is empty`);
 
-	const scriptPath = `/tmp/airo-template-${Date.now()}.sh`;
+	const scriptPath = `/tmp/vibe-template-${Date.now()}.sh`;
 	await sandbox.upload(scriptPath, extractionScript(files, destDir));
 	try {
 		await sandbox.mustRun(

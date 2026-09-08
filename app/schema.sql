@@ -9,6 +9,9 @@ create table if not exists runs (
     status           text        not null default 'running',
     -- Where the run is right now, for GET /v1/apps/:runId.
     stage            text,
+    progress         text,
+    workflow_run_id  text,
+    workflow_checked_at timestamptz,
     app_name         text,
     web_url          text,
     api_url          text,
@@ -18,6 +21,11 @@ create table if not exists runs (
     created_at       timestamptz not null default now(),
     updated_at       timestamptz not null default now()
 );
+
+-- Keep migrations safe for databases created before these columns existed.
+alter table runs add column if not exists progress text;
+alter table runs add column if not exists workflow_run_id text;
+alter table runs add column if not exists workflow_checked_at timestamptz;
 
 -- Makes the concurrency count in claimRun cheap.
 create index if not exists runs_running

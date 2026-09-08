@@ -1,5 +1,5 @@
 /** The one gate between a model and the machine. */
-import { airoConfig } from "../airo.config.js";
+import { factoryConfig } from "../factory.config.js";
 
 export const PATH_TOOLS = new Set([
 	"sandbox__read_file",
@@ -139,7 +139,7 @@ export function pathEscape(input: Record<string, unknown>): string | null {
 		// prefix but is not in the checkout.
 		if (
 			normalized.startsWith("/") &&
-			!isInside(airoConfig.repoDir, normalized) &&
+			!isInside(factoryConfig.repoDir, normalized) &&
 			!isInside(SCRATCH_DIR, normalized)
 		) {
 			return `absolute path outside the checkout: ${normalized.slice(0, 60)}`;
@@ -170,13 +170,13 @@ export function resolveSandboxPath(
 		: normalizePosix(`${workDir}/${path}`);
 
 	if (
-		isInside(airoConfig.repoDir, absolute) ||
+		isInside(factoryConfig.repoDir, absolute) ||
 		isInside(SCRATCH_DIR, absolute)
 	) {
 		return { path: absolute };
 	}
 	return {
-		error: `"${path}" resolves to ${absolute}, outside the checkout (${airoConfig.repoDir}).`,
+		error: `"${path}" resolves to ${absolute}, outside the checkout (${factoryConfig.repoDir}).`,
 	};
 }
 

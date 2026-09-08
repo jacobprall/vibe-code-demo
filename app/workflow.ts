@@ -1,10 +1,10 @@
 /** prompt-to-app — one API call to a deployed app on Render. */
 import { task } from "@renderinc/sdk/workflows";
 import {
-	airoConfig,
+	factoryConfig,
 	appPath,
 	appRelativePath,
-} from "../airo.config.js";
+} from "../factory.config.js";
 import {
 	architectTask,
 	buildTask,
@@ -51,7 +51,13 @@ import {
 	type Sandbox,
 	shellEscape,
 } from "./sandbox.js";
-import { finishRun, setRunApp, setRunStage, setRunUrls } from "./store.js";
+import {
+	finishRun,
+	setRunApp,
+	setRunStage,
+	setRunUrls,
+	touchRun,
+} from "./store.js";
 import { materializeTemplate } from "./templates.js";
 
 const SANDBOX_TIMEOUT_SECONDS = 2 * 60 * 60;
@@ -126,7 +132,7 @@ async function run(
 			sandbox,
 			token,
 			repo,
-			airoConfig.branch,
+			factoryConfig.branch,
 		);
 		const appDir = appPath(user, appName);
 		// Every agent path resolves against this, so it has to exist first.
@@ -180,6 +186,7 @@ async function run(
 			prompt,
 			summary: plan.summary,
 			createdAt: new Date().toISOString(),
+			resourcePrefix: factoryConfig.resourcePrefix,
 			tiers,
 			manifest,
 			notes: [],
@@ -195,7 +202,7 @@ async function run(
 		if (!sha) {
 			return { status: "build_failed", summary: "The run produced no files." };
 		}
-		await pushVerified(sandbox, token, remoteUrl, airoConfig.branch, () =>
+		await pushVerified(sandbox, token, remoteUrl, factoryConfig.branch, () =>
 			writeRootBlueprint(sandbox),
 		);
 
@@ -612,7 +619,7 @@ async function writeBlueprints(
 	repoUrl: string,
 ): Promise<void> {
 	await sandbox.writeFile(
-		`${appDir}/airo.json`,
+		`${appDir}/factory.json`,
 		`${JSON.stringify(spec, null, 2)}\n`,
 	);
 	await sandbox.writeFile(`${appDir}/render.yaml`, appBlueprint(spec));
@@ -622,7 +629,7 @@ async function writeBlueprints(
 }
 
 /**
- * Regenerate the repository-root Blueprint from every app's airo.json.
+ * Regenerate the repository-root Blueprint from every app's factory.json.
  *
  * Derived state, never merged: a concurrent run appends its own app to the
  * same file, so this is also what resolves a rebase conflict on it. Returns
@@ -631,30 +638,33 @@ async function writeBlueprints(
 async function writeRootBlueprint(sandbox: Sandbox): Promise<string[]> {
 	const specs = await readAllSpecs(sandbox);
 	await sandbox.writeFile(
-		`${airoConfig.repoDir}/${airoConfig.blueprintPath}`,
+		`${factoryConfig.repoDir}/${factoryConfig.blueprintPath}`,
 		rootBlueprint(specs),
 	);
-	return [airoConfig.blueprintPath];
+	return [factoryConfig.blueprintPath];
 }
 
 async function readAllSpecs(sandbox: Sandbox): Promise<AppSpec[]> {
-	const root = `${airoConfig.repoDir}/${airoConfig.appsDir}`;
+	const root = `${factoryConfig.repoDir}/${factoryConfig.appsDir}`;
 	const found = await sandbox.run(
-		`find ${shellEscape(root)} -mindepth 3 -maxdepth 3 -name airo.json -print 2>/dev/null || true`,
+		`find ${shellEscape(root)} -mindepth 3 -maxdepth 3 \\( -name factory.json -o -name airo.json \\) -print 2>/dev/null || true`,
 	);
 
-	const specs: AppSpec[] = [];
+	const specs = new Map<string, { spec: AppSpec; current: boolean }>();
 	for (const path of found.output.split("\n").map((line) => line.trim())) {
 		if (!path) continue;
 		const raw = await sandbox.run(`cat ${shellEscape(path)}`);
 		if (raw.exitCode !== 0) continue;
 		try {
-			specs.push(appSpecSchema.parse(JSON.parse(raw.output)));
+			const spec = appSpecSchema.parse(JSON.parse(raw.output));
+			const key = `${spec.user}/${spec.appName}`;
+			const current = path.endsWith("/factory.json");
+			if (current || !specs.has(key)) specs.set(key, { spec, current });
 		} catch {
 			console.warn(JSON.stringify({ event: "skipped_app_spec", path }));
 		}
 	}
-	return specs;
+	return [...specs.values()].map(({ spec }) => spec);
 }
 
 /* ── Deploy ───────────────────────────────────────────────────────────── */
@@ -685,11 +695,12 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 	const { mcp, spec, workspaceId } = ctx;
 	const names = resourceNames(spec);
 	const wanted = [...names.services.values()];
+	const heartbeat = runHeartbeat(ctx.runId);
 
 	const blueprint = await findBlueprint({
 		repo: ctx.repoUrl,
-		branch: airoConfig.branch,
-		path: airoConfig.blueprintPath,
+		branch: factoryConfig.branch,
+		path: factoryConfig.blueprintPath,
 	}).catch((error) => {
 		console.error("Failed to look up the Blueprint:", error);
 		return null;
@@ -701,18 +712,24 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 			appName: spec.appName,
 			summary: [
 				ctx.summary,
-				`Committed to ${ctx.repoUrl} on ${airoConfig.branch}, but no Blueprint is watching ${airoConfig.blueprintPath}.`,
+				`Committed to ${ctx.repoUrl} on ${factoryConfig.branch}, but no Blueprint is watching ${factoryConfig.blueprintPath}.`,
 				"Create one once in the Render Dashboard (New > Blueprint) and every later run deploys on push.",
 				...spec.notes,
 			].join("\n\n"),
 		};
 	}
 
+	await setRunStage(
+		ctx.runId,
+		"waiting_for_services",
+		`Waiting for ${wanted.length} Blueprint service(s)`,
+	);
 	const services = await waitForServices(
 		mcp,
 		workspaceId,
 		wanted,
 		SERVICE_TIMEOUT_MS,
+		heartbeat,
 	);
 	if (services.size < wanted.length) {
 		const missing = wanted.filter((name) => !services.has(name));
@@ -737,12 +754,18 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 
 	// ── Deploy-manager loop ─────────────────────────────────────────────
 	for (let round = 0; round <= MAX_DEPLOY_REPAIR_ROUNDS; round++) {
+		await setRunStage(
+			ctx.runId,
+			"waiting_for_deploys",
+			`Waiting for ${services.size} deploy(s), round ${round + 1}`,
+		);
 		const outcomes = await Promise.all(
 			[...services.values()].map(async (service) => ({
 				service,
 				deploy: await waitForDeploy(mcp, service.id, {
 					workspaceId,
 					timeoutMs: DEPLOY_TIMEOUT_MS,
+					onPoll: (detail) => heartbeat(`${service.name}: ${detail}`),
 				}),
 			})),
 		);
@@ -835,12 +858,17 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 			ctx.sandbox,
 			ctx.token,
 			ctx.remoteUrl,
-			airoConfig.branch,
+			factoryConfig.branch,
 			() => writeRootBlueprint(ctx.sandbox),
 		);
 	}
 
 	// ── Smoke the real thing ────────────────────────────────────────────
+	await setRunStage(
+		ctx.runId,
+		"smoke_testing",
+		"Deploys are live; checking public URLs, data, and CORS",
+	);
 	const apiUrl = urlOf(names.api);
 	// An API-only app has no storefront, so the API is the public URL.
 	const webUrl = urlOf(names.web) ?? apiUrl;
@@ -851,7 +879,9 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 		};
 	}
 
-	const site = await waitForHttpOk(webUrl, SITE_TIMEOUT_MS);
+	const site = await waitForHttpOk(webUrl, SITE_TIMEOUT_MS, {
+		onPoll: heartbeat,
+	});
 	if (!site.ok) {
 		return {
 			status: "deploy_failed",
@@ -863,7 +893,12 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 		(service) => service.kind === "web_service",
 	);
 	if (apiUrl && apiService) {
-		const failure = await smokeApi(apiUrl, apiService, urlOf(names.web));
+		const failure = await smokeApi(
+			apiUrl,
+			apiService,
+			urlOf(names.web),
+			heartbeat,
+		);
 		if (failure) {
 			return {
 				status: "deploy_failed",
@@ -882,7 +917,7 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 		apiUrl,
 		summary: [
 			ctx.summary,
-			`Deployed ${[...services.values()].length} service(s)${hasDb ? " and a Postgres database" : ""} from ${airoConfig.blueprintPath} (Blueprint ${blueprint.id}).`,
+			`Deployed ${[...services.values()].length} service(s)${hasDb ? " and a Postgres database" : ""} from ${factoryConfig.blueprintPath} (Blueprint ${blueprint.id}).`,
 			...spec.notes,
 		].join("\n\n"),
 	};
@@ -900,9 +935,12 @@ async function smokeApi(
 	apiUrl: string,
 	service: Service,
 	webOrigin: string | null,
+	onPoll?: (detail: string) => void | Promise<void>,
 ): Promise<string | null> {
 	const healthPath = service.healthCheckPath ?? "/health";
-	const health = await waitForHttpOk(`${apiUrl}${healthPath}`, SITE_TIMEOUT_MS);
+	const health = await waitForHttpOk(`${apiUrl}${healthPath}`, SITE_TIMEOUT_MS, {
+		onPoll,
+	});
 	if (!health.ok) {
 		return `${apiUrl}${healthPath} did not answer (last status ${health.status}).`;
 	}
@@ -912,7 +950,10 @@ async function smokeApi(
 	const data = await waitForHttpOk(
 		`${apiUrl}${service.dataCheckPath}`,
 		SITE_TIMEOUT_MS,
-		webOrigin ? { headers: { origin: webOrigin } } : undefined,
+		{
+			headers: webOrigin ? { origin: webOrigin } : undefined,
+			onPoll,
+		},
 	);
 	if (!data.ok) {
 		return (
@@ -936,6 +977,15 @@ async function smokeApi(
 	}
 
 	return null;
+}
+
+function runHeartbeat(runId: string): (detail: string) => Promise<void> {
+	let lastUpdate = 0;
+	return async (detail) => {
+		if (Date.now() - lastUpdate < 30_000) return;
+		lastUpdate = Date.now();
+		await touchRun(runId, detail.slice(0, 500));
+	};
 }
 
 /* ── Prompts ──────────────────────────────────────────────────────────── */
@@ -1067,7 +1117,7 @@ function appReadme(spec: AppSpec, repoUrl: string): string {
 		"",
 		spec.summary,
 		"",
-		`Generated by the Airo factory from the prompt: "${oneLine(spec.prompt)}"`,
+		`Generated by the Vibe Code factory from the prompt: "${oneLine(spec.prompt)}"`,
 		"",
 		"## Infrastructure",
 		"",

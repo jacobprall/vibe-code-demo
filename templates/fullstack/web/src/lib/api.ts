@@ -2,7 +2,7 @@
  * Where the API lives.
  *
  * Render wires VITE_API_HOST with `fromService`, and that property is a bare
- * hostname — "airo-demo-shop-api.onrender.com", not a URL — so the scheme has
+ * hostname — "vibe-demo-shop-api.onrender.com", not a URL — so the scheme has
  * to be added here. Vite inlines this at build time, which is why it is a
  * build-time variable on the static site rather than something fetched later.
  *
