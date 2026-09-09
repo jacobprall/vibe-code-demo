@@ -20,7 +20,9 @@ import {
 	claimWorkflowCheck,
 	finishRun,
 	getRun,
+	listRunsByUser,
 	ping,
+	reopenPausedRun,
 	type RunRecord,
 	setRunApp,
 	setRunUrls,
@@ -55,6 +57,7 @@ export function createGateway(): Hono {
 	app.get("/v1/apps/:runId", (c) => readRun(c, true));
 
 	app.use("/ui/*", uiAuth);
+	app.get("/ui/apps", (c) => listRuns(c, credentials.username));
 	app.post("/ui/apps", (c) => createRun(c, false, credentials.username));
 	app.get("/ui/apps/:runId", (c) => readRun(c, false));
 	app.get("/", uiAuth, serveStatic({ path: "./public/index.html" }));
@@ -62,6 +65,16 @@ export function createGateway(): Hono {
 	app.get("/style.css", uiAuth, serveStatic({ path: "./public/style.css" }));
 
 	return app;
+}
+
+async function listRuns(c: Context, user: string): Promise<Response> {
+	try {
+		const runs = await listRunsByUser(user);
+		return c.json({ runs: runs.map(runResponse) });
+	} catch (error) {
+		console.error("Failed to list runs:", error);
+		return c.json({ error: "store unavailable" }, 503);
+	}
 }
 
 async function createRun(
@@ -145,6 +158,13 @@ async function readRun(c: Context, requireBearer: boolean): Promise<Response> {
 	try {
 		let run = await getRun(runId);
 		if (!run) return c.json({ error: "not found" }, 404);
+		if (
+			run.status === "failed" &&
+			run.summary?.startsWith("Workflow paused:")
+		) {
+			await reopenPausedRun(run.id);
+			run = (await getRun(runId)) ?? run;
+		}
 		if (run.status === "running" && run.workflowRunId) {
 			await reconcileWorkflowRun(run);
 			run = (await getRun(runId)) ?? run;
@@ -195,8 +215,6 @@ async function reconcileWorkflowRun(run: RunRecord): Promise<void> {
 	try {
 		const { Render } = await import("@renderinc/sdk");
 		const taskRun = await new Render().workflows.getTaskRun(run.workflowRunId);
-		if (taskRun.status === "running" || taskRun.status === "pending") return;
-
 		if (taskRun.status === "succeeded" || taskRun.status === "completed") {
 			const result = workflowResult(taskRun.results?.[0]);
 			if (result) {
@@ -209,9 +227,11 @@ async function reconcileWorkflowRun(run: RunRecord): Promise<void> {
 			return;
 		}
 
-		await finishRun(run.id, "failed", {
-			summary: `Workflow ${taskRun.status}: ${taskRun.error ?? "no error was reported"}`,
-		});
+		if (taskRun.status === "failed" || taskRun.status === "canceled") {
+			await finishRun(run.id, "failed", {
+				summary: `Workflow ${taskRun.status}: ${taskRun.error ?? "no error was reported"}`,
+			});
+		}
 	} catch (error) {
 		// Reconciliation is a safety net. A transient SDK failure must not hide
 		// the latest durable status already stored in Postgres.

@@ -5,7 +5,9 @@ const mocks = vi.hoisted(() => ({
 	claimWorkflowCheck: vi.fn(),
 	finishRun: vi.fn(),
 	getRun: vi.fn(),
+	listRunsByUser: vi.fn(),
 	ping: vi.fn(),
+	reopenPausedRun: vi.fn(),
 	setRunApp: vi.fn(),
 	setRunUrls: vi.fn(),
 	setWorkflowRunId: vi.fn(),
@@ -18,7 +20,9 @@ vi.mock("../app/store.js", () => ({
 	claimWorkflowCheck: mocks.claimWorkflowCheck,
 	finishRun: mocks.finishRun,
 	getRun: mocks.getRun,
+	listRunsByUser: mocks.listRunsByUser,
 	ping: mocks.ping,
+	reopenPausedRun: mocks.reopenPausedRun,
 	setRunApp: mocks.setRunApp,
 	setRunUrls: mocks.setRunUrls,
 	setWorkflowRunId: mocks.setWorkflowRunId,
@@ -53,7 +57,9 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.claimRun.mockResolvedValue({ claimed: true });
 	mocks.finishRun.mockResolvedValue(undefined);
+	mocks.listRunsByUser.mockResolvedValue([]);
 	mocks.ping.mockResolvedValue(undefined);
+	mocks.reopenPausedRun.mockResolvedValue(undefined);
 	mocks.startTask.mockResolvedValue({ taskRunId: "trn-1" });
 	mocks.claimWorkflowCheck.mockResolvedValue(false);
 	mocks.setRunApp.mockResolvedValue(undefined);
@@ -230,6 +236,16 @@ describe("browser UI", () => {
 			statusUrl: expect.stringMatching(/^\/ui\/apps\//),
 		});
 	});
+
+	it("lists only runs in the authenticated UI namespace", async () => {
+		const response = await createGateway().request("/ui/apps", {
+			headers: { authorization },
+		});
+
+		expect(response.status).toBe(200);
+		expect(mocks.listRunsByUser).toHaveBeenCalledWith("demo");
+		expect(await response.json()).toEqual({ runs: [] });
+	});
 });
 
 describe("status", () => {
@@ -312,6 +328,42 @@ describe("status", () => {
 			"deployed",
 			{ summary: "Deployed." },
 		);
+	});
+
+	it("keeps paused workflows running and repairs prior false failures", async () => {
+		const base = {
+			id: "6f9619ff-8b86-d011-b42d-00cf4fc964ff",
+			idempotencyKey: "k",
+			prompt: PROMPT,
+			user: "demo",
+			stage: "waiting_for_deploys",
+			progress: null,
+			workflowRunId: "trn-1",
+			appName: "furniture-catalog",
+			webUrl: "https://vibe-demo-furniture-catalog-web.onrender.com",
+			apiUrl: null,
+			blueprintPath: "apps/demo/furniture-catalog/render.yaml",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:10:00.000Z",
+		};
+		const failed = {
+			...base,
+			status: "failed",
+			summary: "Workflow paused: no error was reported",
+		};
+		const repaired = { ...base, status: "running", summary: null };
+		mocks.getRun.mockResolvedValueOnce(failed).mockResolvedValue(repaired);
+		mocks.claimWorkflowCheck.mockResolvedValue(true);
+		mocks.getTaskRun.mockResolvedValue({ status: "paused", results: [] });
+
+		const response = await createGateway().request(
+			"/v1/apps/6f9619ff-8b86-d011-b42d-00cf4fc964ff",
+			{ headers: { authorization: `Bearer ${KEY}` } },
+		);
+
+		expect(response.status).toBe(200);
+		expect(mocks.reopenPausedRun).toHaveBeenCalledWith(base.id);
+		expect(mocks.finishRun).not.toHaveBeenCalled();
 	});
 
 	it("404s an id that is not a run id without querying Postgres", async () => {

@@ -152,6 +152,18 @@ export async function claimWorkflowCheck(id: string): Promise<boolean> {
 	return result.rowCount === 1;
 }
 
+/** Repair rows misclassified when Workflows briefly reported `paused`. */
+export async function reopenPausedRun(id: string): Promise<void> {
+	await db().query(
+		`update runs
+		 set status = 'running', progress = 'Workflow paused; waiting to resume',
+		     updated_at = now()
+		 where id = $1 and status = 'failed'
+		   and summary like 'Workflow paused:%'`,
+		[id],
+	);
+}
+
 export async function setRunApp(
 	id: string,
 	app: { appName: string; blueprintPath: string },
@@ -182,7 +194,9 @@ export async function finishRun(
 ): Promise<void> {
 	await db().query(
 		`update runs
-		 set status = $2, stage = 'done', progress = null,
+		 set status = $2,
+		     stage = case when $2 in ('deployed', 'awaiting_blueprint') then 'done' else stage end,
+		     progress = null,
 		     summary = $3, updated_at = now()
 		 where id = $1`,
 		[id, status, details.summary ?? null],
@@ -195,23 +209,39 @@ export async function getRun(id: string): Promise<RunRecord | null> {
 		[id],
 	);
 	if (rows.length === 0) return null;
+	return rowToRun(rows[0]);
+}
 
-	const row = rows[0];
+export async function listRunsByUser(
+	user: string,
+	limit = 50,
+): Promise<RunRecord[]> {
+	const { rows } = await db().query(
+		`select ${COLUMNS} from runs
+		 where user_name = $1
+		 order by created_at desc
+		 limit $2`,
+		[user, limit],
+	);
+	return rows.map(rowToRun);
+}
+
+function rowToRun(row: Record<string, unknown>): RunRecord {
 	return {
-		id: row.id,
-		idempotencyKey: row.idempotency_key,
-		prompt: row.prompt,
-		user: row.user_name,
-		status: row.status,
-		stage: row.stage,
-		progress: row.progress,
-		workflowRunId: row.workflow_run_id,
-		appName: row.app_name,
-		webUrl: row.web_url,
-		apiUrl: row.api_url,
-		blueprintPath: row.blueprint_path,
-		summary: row.summary,
-		createdAt: row.created_at.toISOString(),
-		updatedAt: row.updated_at.toISOString(),
+		id: String(row.id),
+		idempotencyKey: String(row.idempotency_key),
+		prompt: String(row.prompt),
+		user: String(row.user_name),
+		status: row.status as RunStatus,
+		stage: (row.stage as RunStage | null) ?? null,
+		progress: (row.progress as string | null) ?? null,
+		workflowRunId: (row.workflow_run_id as string | null) ?? null,
+		appName: (row.app_name as string | null) ?? null,
+		webUrl: (row.web_url as string | null) ?? null,
+		apiUrl: (row.api_url as string | null) ?? null,
+		blueprintPath: (row.blueprint_path as string | null) ?? null,
+		summary: (row.summary as string | null) ?? null,
+		createdAt: (row.created_at as Date).toISOString(),
+		updatedAt: (row.updated_at as Date).toISOString(),
 	};
 }

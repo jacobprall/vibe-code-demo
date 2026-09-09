@@ -34,7 +34,9 @@ Poll `statusUrl` and a few minutes later it holds the live URLs:
 ```
 
 `npm run demo` does both halves from a terminal. The browser UI shows the same
-stages and turns the final URL into an “Open deployed app” link.
+stages and turns the final URL into an “Open deployed app” link. It also lists
+the authenticated user's latest 50 runs from Postgres, restores the last
+selected run after a reload, and lets you switch between runs.
 
 ## How a run works
 

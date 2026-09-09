@@ -68,6 +68,8 @@ Auth (`UI_USERNAME` and `UI_PASSWORD`) and submits through `/ui/apps`, which
 keeps `FACTORY_API_KEY` server-side. Do not expose a browser route that bypasses
 this protection. The authenticated `UI_USERNAME` is a validated lowercase slug
 and is injected as the app namespace; never accept a browser-supplied `user`.
+`GET /ui/apps` lists only that namespace's runs, and the UI restores selection
+from local storage while treating Postgres as the source of truth.
 
 ## Repository map
 
