@@ -34,22 +34,36 @@
 				</form>
 			</section>
 
-			<section id="run-panel" class="panel run-panel" hidden aria-live="polite">
-				<div class="status-heading">
-					<div>
-						<p class="eyebrow">Current run</p>
-						<h2 id="status">Starting</h2>
+			<div class="workspace">
+				<aside class="panel history-panel">
+					<div class="history-heading">
+						<div>
+							<p class="eyebrow">History</p>
+							<h2>Your runs</h2>
+						</div>
+						<button id="refresh-runs" class="secondary-button" type="button">Refresh</button>
 					</div>
-					<span id="activity" class="activity" aria-hidden="true"></span>
-				</div>
-				<ol id="stages" class="stages"></ol>
-				<p id="progress" class="progress"></p>
-				<div id="result" class="result" hidden>
-					<a id="web-url" class="primary-link" href="/" target="_blank" rel="noreferrer">Open deployed app</a>
-					<a id="api-url" href="/" target="_blank" rel="noreferrer" hidden>Open API</a>
-				</div>
-				<pre id="summary" hidden></pre>
-			</section>
+					<p id="empty-history" class="empty-history">No runs yet.</p>
+					<div id="run-list" class="run-list"></div>
+				</aside>
+
+				<section id="run-panel" class="panel run-panel" hidden aria-live="polite">
+					<div class="status-heading">
+						<div>
+							<p class="eyebrow">Selected run</p>
+							<h2 id="status">Starting</h2>
+						</div>
+						<span id="activity" class="activity" aria-hidden="true"></span>
+					</div>
+					<ol id="stages" class="stages"></ol>
+					<p id="progress" class="progress"></p>
+					<div id="result" class="result" hidden>
+						<a id="web-url" class="primary-link" href="/" target="_blank" rel="noreferrer">Open deployed app</a>
+						<a id="api-url" href="/" target="_blank" rel="noreferrer" hidden>Open API</a>
+					</div>
+					<pre id="summary" hidden></pre>
+				</section>
+			</div>
 		</main>
 		<script type="module" src="/app.js"></script>
 	</body>
