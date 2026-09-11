@@ -1,113 +1,87 @@
 # vibe-code-demo
 
-A prompt-to-deploy reference application for Render. Submit an idea in the
-protected browser UI (or call the API) and the factory designs, builds,
-verifies, and deploys a static storefront, API, and Postgres database using
-Render Workflows, Sandboxes, Blueprints, and the Render MCP server.
+A reference for taking a natural-language app idea through generation,
+verification, and a real Render deployment. It demonstrates how Workflows,
+Sandboxes, Blueprints, Postgres, and read-only Render MCP access fit together in
+a production-shaped agent system.
 
-The gateway serves the UI at `/`, exposes an authenticated API under `/v1`,
-and stores progress in Postgres so the browser can reconnect to an active run.
+[Patterns](#production-patterns-demonstrated) · [Run lifecycle](#run-lifecycle) ·
+[Get started](#get-started) · [Deploy](#deploy-the-factory) ·
+[Blueprint write path](#why-blueprints-are-the-write-path) ·
+[Safety](#safety-boundaries)
 
-```bash
-curl -X POST https://<gateway>/v1/apps \
-  -H "Authorization: Bearer $FACTORY_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"Create an online catalog to sell handcrafted furniture","user":"demo"}'
-```
+This is a demonstration and pattern library, not a multi-tenant app-building
+product. Use it to make architecture choices concrete, then adapt the
+boundaries, supported primitives, verification, cost controls, and user
+experience to your own requirements.
 
-```json
-{ "runId": "…", "user": "demo", "status": "running", "statusUrl": "/v1/apps/…" }
-```
+## Use this reference when
 
-Poll `statusUrl` and a few minutes later it holds the live URLs:
+- You want to see an agent produce and deploy a multi-service application
+  rather than stop at generated code.
+- You need to demonstrate declarative infrastructure as the controlled write
+  path while agents inspect the platform through read-only MCP tools.
+- The design needs both pre-deploy evidence and post-deploy proof across a
+  frontend, API, database, and browser security boundary.
 
-```json
-{
-  "status": "deployed",
-  "appName": "handcrafted-furniture-catalog",
-  "urls": {
-    "web": "https://vibe-demo-handcrafted-furnitu-web.onrender.com",
-    "api": "https://vibe-demo-handcrafted-furnitu-api.onrender.com"
-  },
-  "blueprintPath": "apps/demo/handcrafted-furniture-catalog/render.yaml"
-}
-```
+Do not use it unchanged for untrusted public users. The included gateway has
+simple authentication, one apps repository and branch, a small concurrency
+cap, no tenant-level quotas, and no teardown workflow.
 
-`npm run demo` does both halves from a terminal. The browser UI shows the same
-stages and turns the final URL into an “Open deployed app” link. It also lists
-the authenticated user's latest 50 runs from Postgres, restores the last
-selected run after a reload, and lets you switch between runs.
+## Production patterns demonstrated
 
-## How a run works
+- **Separate ingress from privileged execution.** The gateway authenticates,
+  caps input, records durable status, and dispatches; the Workflows host owns
+  models, source credentials, sandboxes, and deployment coordination. This
+  narrows the public attack surface, at the cost of operating two services.
+- **Declarative infrastructure as the only write path.** Agents cannot create
+  Render resources. Workflow code turns a validated manifest into Blueprints,
+  commits them, and lets Render sync the desired state. The result is
+  reviewable and reproducible, but the initial Blueprint connection is manual
+  and only modeled primitives can be deployed.
+- **Capabilities instead of prompt-only restrictions.** The architect gets a
+  read-only Render MCP allowlist, the curator can fetch only validated image
+  assets, and the builder can edit a sandbox but cannot run Git. Adding a new
+  capability requires code and policy work, which is deliberate friction.
+- **Templates encode contracts, not the whole application.** Multi-service
+  apps start with known API, CORS, migration, and environment-wiring seams;
+  the model still controls product-specific behavior and presentation. This
+  improves reliability while narrowing stack freedom.
+- **Verify locally and against reality.** The workflow builds, migrates, boots,
+  and queries services in the sandbox, then waits for Render and smoke-tests
+  public URLs, database access, and CORS. This catches integration failures a
+  build cannot, but increases run time and infrastructure consumption.
+- **Durable progress with reconciliation.** Postgres holds run state,
+  idempotency, heartbeats, task IDs, and concurrency claims so clients can
+  reconnect and stale runs can be repaired. That operational reliability adds
+  a database and state machine to what could otherwise be a short demo script.
 
-1. **The gateway** authenticates the bearer token, caps the prompt, claims the
-   run in Postgres, and dispatches `{ prompt, user, runId }`. It runs no
-   models, holds no repository credential, and creates no infrastructure.
-2. **The architect** decides what to build and which Render primitives it
-   needs. It can read the Render workspace over MCP — `list_services`,
-   `get_service`, `get_postgres` — and it can change nothing. For a catalog it
-   returns a static site, a web service, and Postgres, each with a reason, plus
-   a content brief and a list of subjects to photograph.
-3. **A Render Sandbox** is created and the apps repository is cloned into it at
-   `apps/<user>/<app>/`. When the plan calls for Postgres, a real Postgres 18
-   starts inside the sandbox — the image already carries the client and the
-   pgdg apt source, so the server is a ten-second install.
-4. **The curator** searches Wikimedia Commons for openly licensed photographs
-   and downloads them into the app's `assets/` directory. It has no shell and
-   no file write tool: the only bytes it can create are images that passed the
-   factory's host, type, size, and destination checks.
-5. **The builder** writes the application. A single-tier app starts from an
-   empty directory and the builder picks its own stack; a multi-service app
-   starts from `templates/fullstack` — Vite, React, Tailwind v4 and shadcn/ui
-   for the storefront, Hono and `pg` for the API — because CORS, the API base
-   URL, and the migration path are contracts a prompt should not have to
-   re-derive every run. Either way the builder returns a manifest describing
-   what it built: directories, build and start commands, the pre-deploy
-   command that creates the schema, health and data endpoints, and env wiring.
-6. **Verification** is deterministic and workflow-owned, and driven by that
-   manifest: each service's build command, an `index.html` check for static
-   output, a placeholder-content check, the pre-deploy command run against the
-   sandbox's Postgres, and two boots of each web service — one with an
-   unreachable database to prove the health endpoint answers without one, and
-   one against the real database to prove the data endpoint returns rows.
-   Failures go back to the builder for up to two more rounds.
-7. **Publishing is deploying.** Workflow code writes the app's `factory.json`,
-   its own `render.yaml`, and the repository-root Blueprint, then commits and
-   pushes. Render's Blueprint sync creates the services and the database and
-   deploys them.
-8. **Verification, again, against reality.** The factory waits for every
-   deploy, fetches the storefront, calls the health endpoint, and calls the
-   data endpoint with the storefront's `Origin` — the first request that
-   touches the deployed Postgres, and the only one that can see a missing
-   `Access-Control-Allow-Origin`. If a Render build fails, its build logs go
-   back to the builder for one repair round, and the fix redeploys on push.
+## Run lifecycle
 
-```text
-POST /v1/apps
-  │  bearer auth → prompt cap → claim in Postgres → dispatch
-  ▼
-Render Workflows: prompt-to-app
-  ├─ architect   plan + primitives + brief        ← Render MCP, read-only
-  ├─ postgres    a real database in the sandbox   ┐
-  ├─ curator     openly licensed photography      │
-  ├─ builder     storefront + API + schema        │ one Render Sandbox
-  ├─ verify      build, migrate, boot, query      │
-  ├─ publish     factory.json + render.yaml + push   ┘
-  ├─ sync        Render deploys the Blueprint
-  └─ smoke       storefront 200, health 200, data endpoint returns rows + CORS
-  ▼
-GET /v1/apps/:runId → { status, stage, urls, blueprintPath }
-```
-
-After Render reports every service `live`, the workflow intentionally remains
-active during `smoke_testing`. It fetches the public site, exercises the API
-and database, and validates CORS before reporting `deployed`.
+1. An authenticated UI or API request is claimed in Postgres and dispatched
+   with a prompt, user namespace, and run ID.
+2. A read-only architect chooses supported Render primitives and produces a
+   plan; no infrastructure changes occur.
+3. One sandbox receives the apps repository. A curator supplies constrained
+   media and a builder creates the application from an empty directory or a
+   contract-bearing template.
+4. Workflow-owned checks build, migrate, boot, and query the generated
+   services. Failures can return to the builder for bounded repair rounds.
+5. Workflow code derives `factory.json` and `render.yaml`, commits, pushes,
+   and verifies the remote SHA. Blueprint sync—not an agent API call—creates
+   the infrastructure.
+6. The workflow waits for deployment. On failure, a deploy manager uses
+   read-only Render MCP data to diagnose the deploy and can request one bounded
+   builder repair; live services still must pass public storefront, health,
+   data, and CORS checks.
+7. Postgres exposes progress and final URLs to reconnecting clients; a
+   `finally` block terminates the sandbox.
 
 ## Why Blueprints are the write path
 
 Nothing in this repository calls a Render API to create infrastructure. The
-factory writes YAML, commits it, and Render syncs it. That has three
-consequences worth the design:
+factory writes YAML, commits it, and Render syncs it. That design has three
+useful consequences:
 
 - **Env wiring is declarative.** `fromDatabase` puts `DATABASE_URL` on the API
   and `fromService` puts the API's hostname into the storefront's build. No
@@ -147,44 +121,18 @@ pointing at `apps/<user>/<app>/render.yaml` and it stands alone.
 Resources are named `vibe-<user>-<app>-{web,api,db}`, so one workspace can hold
 every generated app without collisions.
 
-## Architecture
+## Where to look
 
-Two processes deploy independently: the Hono gateway (`app/server.ts`) and the
-Workflows host (`app/host.ts`). One file per concern:
-
-```text
-factory.config.ts   Directories, branch, plans, asset hosts, model tiers
-app/
-  config.ts      Environment parsing and per-process validation
-  contracts.ts   Zod schemas: API input, agent output, the stored spec
-  gateway.ts     Bearer auth, body cap, dispatch, health, status
-  agents.ts      The four agents, their prompts, and agentTask()
-  claude.ts      The Agent type and runClaude() over the Claude Agent SDK
-  tools.ts       Sandbox tools, asset tools, and the Tool contract
-  policy.ts      checkToolCall, path rules, MCP allowlist, redaction
-  sandbox.ts     Render Sandboxes, shellEscape, Postgres in the sandbox
-  blueprint.ts   render.yaml generation: the only write path to Render
-  render.ts      MCP client, service and deploy reads, Blueprint lookup
-  git.ts         Clone, commit, push, verify, GitHub credentials
-  store.ts       Postgres: one runs table
-  templates.ts   Read a template and materialize it into the sandbox
-  workflow.ts    The pipeline, top to bottom
-  schema.sql     Applied by scripts/migrate.ts
-  server.ts      Gateway entrypoint
-  host.ts        Workflows entrypoint
-```
-
-### Reading order
-
-| Start here | For |
-| --- | --- |
-| `factory.config.ts` | Every knob |
-| `app/workflow.ts` | The whole pipeline, top to bottom |
-| `app/blueprint.ts` | What actually gets deployed, and where to extend it |
-| `app/agents.ts` | The four agents and their prompts |
-| `app/tools.ts` | Everything an agent can do, including the asset fetcher |
-| `app/policy.ts` | The one gate between a model and the machine |
-| `app/gateway.ts` | How a curl becomes a dispatched run |
+- Start with `app/workflow.ts` for the control flow and `factory.config.ts` for
+  configurable plans, limits, models, and asset policy.
+- Read `app/blueprint.ts`, `app/contracts.ts`, and `app/templates.ts` together
+  to see how model output becomes constrained deployable infrastructure.
+- Read `app/claude.ts`, `app/tools.ts`, and `app/policy.ts` together to inspect
+  the model-to-machine and model-to-Render trust boundaries.
+- Read `app/gateway.ts` and `app/store.ts` for authentication, idempotency,
+  progress, concurrency, and reconciliation.
+- See [VIBE_CODE_DEMO_ARCHITECTURE.md](../VIBE_CODE_DEMO_ARCHITECTURE.md) for
+  the presentation-sized system diagram.
 
 ## Get started
 
@@ -212,6 +160,10 @@ npm run dev:gateway    # http://localhost:3000
 npm run dev:workflows  # needs the authenticated Render CLI
 ```
 
+`dev:workflows` runs locally but creates real Render Sandboxes and can deploy
+real, billable resources. Local development changes where orchestration runs;
+it does not emulate the Render data plane.
+
 Open `http://localhost:3000` and sign in with `UI_USERNAME` and `UI_PASSWORD`.
 The UI calls same-origin `/ui` endpoints; `FACTORY_API_KEY` stays on the
 gateway and is never delivered to browser JavaScript. `UI_USERNAME` is also
@@ -219,16 +171,35 @@ the generated-app namespace: a user named `jacob` creates apps under
 `apps/jacob/` with resources named `vibe-jacob-...`. It must be a lowercase
 slug.
 
+Submit an idea in the UI, or run the same flow from a terminal:
+
+```bash
+npm run demo -- "Create an online catalog for handcrafted furniture"
+```
+
+The command follows the durable status endpoint until it prints the generated
+app's public URLs and Blueprint path.
+
 Cursor’s embedded preview does not always display HTTP Basic Auth prompts. For
 local preview only, set `UI_AUTH_DISABLED=true`; the bypass is ignored whenever
 `NODE_ENV=production`.
 
-For a deployed Workflows host, create a **Workflow** service separately in the
-Render Dashboard (Blueprints do not create Workflow services). Use
-`npm ci` as the build command and `npm run start:workflows` as the start
-command, then copy the workflow variables from `.env.example`.
+## Deploy the factory
 
-### Create the Blueprint, once
+1. Create a Blueprint from this repository's `render.yaml`. It provisions the
+   gateway and its Postgres database.
+2. Set the unsynced gateway variables from [Configuration](#configuration) and
+   deploy once so the pre-deploy migration runs.
+3. Create a **Workflow** service from the same repository. Blueprints do not
+   create Workflow services; use `npm ci` to build and
+   `npm run start:workflows` to start.
+4. Set the Workflows variables from `.env.example`, using the database's
+   internal connection string, then set the gateway's
+   `RENDER_WORKFLOW_SLUG`.
+5. Run `npm run doctor` before a demonstration to verify the cross-service
+   wiring.
+
+### Connect the generated-apps Blueprint once
 
 Render has no API for creating a Blueprint, so this is the one manual step —
 and it happens once, not per app.
@@ -273,7 +244,8 @@ Everything else lives in `factory.config.ts`: the clone directory, the branch th
 Blueprint tracks, service and database plans, region, the asset host allowlist,
 the concurrency cap, and the model tiers.
 
-### Compatibility migration
+<details>
+<summary>Notes for existing installations</summary>
 
 New installations use neutral names and write `factory.json`. Existing
 generated-app repositories remain safe: the root Blueprint reader accepts the
@@ -285,6 +257,8 @@ old one.
 Renaming the factory's own database or gateway in an already-synced Blueprint
 creates replacement resources; migrate that infrastructure deliberately
 rather than applying the new names blindly.
+
+</details>
 
 ## Troubleshooting a run that looks stuck
 
@@ -302,41 +276,24 @@ gateway also stores the Render task-run ID and periodically reconciles a
 without finalizing Postgres, the next status poll repairs the row and releases
 its concurrency slot.
 
-## Extending
+## Adaptation seams
 
-**Another primitive.** `app/blueprint.ts` emits `static_site`, `web_service`,
-and `postgres`, all of them generated from the builder's manifest rather than
-from the plan. The architect can already ask for `key_value`, and nothing
-downstream can express one, so it is silently dropped — it is the worked
-example of where the next primitive plugs in. Adding one means a way to
-declare it in `manifestSchema`, a resource block in `serviceBlocks()` or
-`databaseBlocks()`, a name in `resourceNames()`, and a check in `verify()`.
-
-**Another agent.** Add it to `app/agents.ts`, wrap it with `agentTask()` at the
-bottom of that file, call it from `app/workflow.ts`, and give it a Zod schema
-in `app/contracts.ts` if it emits JSON. Give it `tools` only if it needs the
-sandbox, and `renderTools` only from the read-only allowlist. Update
-`tests/agents.test.ts`, which is what enforces tool access.
-
-**Another template.** `templates/<name>/` is materialized into the app
-directory by `materializeTemplate()` before the builder runs. Templates live in
-this repository so they stay version-locked to the code that deploys them and
-so CI builds them — a template nobody builds is one that quietly stops
-building. They are text only: the whole tree ships as one self-extracting shell
-script, because a forty-file template written a file at a time would be eighty
-API calls before the builder has done anything. If you add one, update
-`templateLines()` in `app/workflow.ts` and `tests/templates.test.ts`, which is
-what keeps the template and the manifest the builder is told to return in sync.
-
-**Another asset source.** `asset__search` and `asset__fetch` in `app/tools.ts`
-are the whole of the factory's reachable internet. Add a host to
-`factoryConfig.assets.allowedHosts` and a search implementation; the type, size,
-and destination checks already apply.
-
-**Reviewers.** This fork has none — it verifies by building and by calling the
-deployed app. The upstream `render-factory` runs security, correctness, and
-test reviewers in parallel with a judge before anything ships, and that stage
-drops in between verification and publishing.
+- **Render primitives:** extend the manifest contract, Blueprint generator, and
+  verification together. Keeping that path closed forces each resource type to
+  be modeled deliberately instead of accepting arbitrary agent-authored YAML;
+  the current `key_value` mismatch is called out under limitations.
+- **Agent roles:** add a task only when a distinct context or capability
+  boundary is useful. Grant sandbox or Render tools explicitly and keep the
+  allowlist test as the executable access review.
+- **Templates:** add one when a target architecture has contracts the model
+  should not rediscover on every run. Keep templates versioned and built in CI;
+  the tradeoff is committing to a narrower stack.
+- **External assets:** treat each new source as an egress-policy change, not
+  just a search integration. Host, content type, size, and destination checks
+  belong in the tool boundary.
+- **Review:** this demo favors deterministic and deployed checks over model
+  reviewers. For higher-risk generation, add review before publishing as
+  `render-factory` does, accepting the extra latency and model cost.
 
 ## Safety boundaries
 
@@ -368,9 +325,13 @@ drops in between verification and publishing.
 
 ## Current limitations
 
+- Every run, including one started from local development, consumes model
+  tokens and a real Render Sandbox.
 - Creating the Blueprint is manual, once, because Render has no API for it.
 - One deployment is bound to one apps repository and one branch. Concurrent
   runs rebase onto that branch; the cap is three at a time.
+- UI authentication and user slugs are demonstration conveniences, not
+  tenant isolation, authorization, quotas, or abuse controls.
 - Generated apps are never torn down. Every run leaves a web service, a static
   site, and a Postgres instance running, and they cost money until you delete
   them.
