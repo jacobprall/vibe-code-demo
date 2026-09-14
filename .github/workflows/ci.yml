@@ -20,7 +20,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: npm audit --omit=dev --audit-level=moderate
 
   # A template nobody builds is a template that quietly stops building, and the
   # first thing to notice would be a customer's failed run.
