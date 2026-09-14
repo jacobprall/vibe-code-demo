@@ -10,8 +10,7 @@ a production-shaped agent system.
 [Blueprint write path](#why-blueprints-are-the-write-path) ·
 [Safety](#safety-boundaries)
 
-This is a demonstration and pattern library, not a multi-tenant app-building
-product. Use it to make architecture choices concrete, then adapt the
+This is a demonstration and pattern library. Use it to make architecture choices concrete, then adapt the
 boundaries, supported primitives, verification, cost controls, and user
 experience to your own requirements.
 
@@ -243,22 +242,6 @@ npm run check    # Biome, tsc, Vitest
 Everything else lives in `factory.config.ts`: the clone directory, the branch the
 Blueprint tracks, service and database plans, region, the asset host allowlist,
 the concurrency cap, and the model tiers.
-
-<details>
-<summary>Notes for existing installations</summary>
-
-New installations use neutral names and write `factory.json`. Existing
-generated-app repositories remain safe: the root Blueprint reader accepts the
-legacy spec filename, and specs created before the rename retain their
-original resource prefix. `FACTORY_API_KEY` also accepts the former variable
-as a temporary fallback. Set the new variable everywhere before removing the
-old one.
-
-Renaming the factory's own database or gateway in an already-synced Blueprint
-creates replacement resources; migrate that infrastructure deliberately
-rather than applying the new names blindly.
-
-</details>
 
 ## Troubleshooting a run that looks stuck
 
