@@ -5,6 +5,8 @@ verification, and a real Render deployment. It demonstrates how Workflows,
 Sandboxes, Blueprints, Postgres, and read-only Render MCP access fit together in
 a production-shaped agent system.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/render-examples/vibe-code-demo)
+
 [Patterns](#production-patterns-demonstrated) · [Run lifecycle](#run-lifecycle) ·
 [Get started](#get-started) · [Deploy](#deploy-the-factory) ·
 [Blueprint write path](#why-blueprints-are-the-write-path) ·
