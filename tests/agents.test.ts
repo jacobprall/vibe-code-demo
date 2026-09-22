@@ -28,6 +28,18 @@ describe("agent definitions", () => {
 			expect(["small", "medium", "large"]).toContain(agent.model);
 		}
 	});
+
+	it("keeps ordinary websites on the fast static path", () => {
+		expect(agents.architect.prompt).toContain(
+			"Default to only a static_site for websites",
+		);
+		expect(agents.architect.prompt).toMatch(
+			/A catalog alone\s+does not justify an API or database/,
+		);
+		expect(agents.builder.prompt).toContain(
+			"dependency-free HTML, CSS, and JavaScript",
+		);
+	});
 });
 
 describe("tool access", () => {
