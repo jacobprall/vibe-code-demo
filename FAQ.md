@@ -164,7 +164,7 @@ A: The gateway reconciles stale runs by checking Workflows status. Heartbeats an
 A: Yes, up to 3 concurrent runs (configurable). Each run gets its own sandbox and app namespace (`vibe-<user>-<app>-{web,api,db}`). Concurrent runs rebase onto the same branch.
 
 **Q: Is this safe for public/untrusted users?**
-A: No. It's a demonstration. Auth is HTTP Basic, there's no tenant isolation, no quotas, no abuse controls, and no teardown. The README says this explicitly.
+A: No. It's a demonstration. Auth is HTTP Basic, there's no tenant isolation, no quotas, no abuse controls, and no teardown. See [docs/when-to-use.md](docs/when-to-use.md) and [docs/limitations.md](docs/limitations.md).
 
 **Q: How is this different from just using Claude to write code?**
 A: Claude writes the code, but the factory is the system around it: isolated sandboxes, real database verification, declarative deployment, MCP-based monitoring, durable state, and a deploy-repair loop. The code gets *built, migrated, booted, queried, committed, deployed, and smoke-tested* before anyone sees a URL.
