@@ -1,77 +1,87 @@
-# The factory's own gateway, Workflows service, and database.
+# The factory's own gateway, Workflows service, and database, in one project.
 #
 # This is not the Blueprint that deploys generated apps — that one lives at the
 # root of APPS_REPO and is written by app/blueprint.ts.
 
-databases:
-  - name: vibe-factory-db
-    plan: basic-256mb
+projects:
+  - name: vibe-factory
+    environments:
+      - name: production
+        # Keep network isolation off. In an isolated environment, workflow task
+        # runs cannot use the private network, and the workflow connects to the
+        # database on that network.
+        networking:
+          isolation: disabled
 
-services:
-  - type: web
-    name: vibe-factory-gateway
-    runtime: docker
-    plan: starter
-    # Applies app/schema.sql before any new instance serves traffic.
-    preDeployCommand: npm run db:migrate
-    healthCheckPath: /ready
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: vibe-factory-db
-          property: connectionString
-      - key: APPS_REPO
-        sync: false
-      # Generated once when the Blueprint creates the gateway and preserved
-      # across later syncs.
-      - key: FACTORY_API_KEY
-        generateValue: true
-      - key: UI_USERNAME
-        sync: false
-      - key: UI_PASSWORD
-        sync: false
-      - key: RENDER_WORKFLOW_SLUG
-        fromService:
-          type: workflow
-          name: vibe-factory-workflows
-          property: slug
-      # Used by the Render SDK to start the workflow task.
-      - key: RENDER_API_KEY
-        sync: false
+        databases:
+          - name: vibe-factory-db
+            plan: basic-256mb
 
-  # Runs every task that app/host.ts registers. The model key and the GitHub
-  # credential are set only here, never on the gateway.
-  - type: workflow
-    name: vibe-factory-workflows
-    runtime: node
-    repo: https://github.com/render-examples/vibe-code-demo
-    # A workflow must set its region. Task runs connect to the database on the
-    # private network, and that network does not cross regions. Use the same
-    # region as the database, which is oregon by default.
-    region: oregon
-    buildCommand: npm ci --omit=dev
-    startCommand: npm run start:workflows
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: vibe-factory-db
-          property: connectionString
-      - key: APPS_REPO
-        sync: false
-      # Sandboxes, the Render MCP server, and Blueprint reads.
-      - key: RENDER_API_KEY
-        sync: false
-      - key: RENDER_WORKSPACE_ID
-        sync: false
-      - key: ANTHROPIC_API_KEY
-        sync: false
-      # Set the three GitHub App variables or GITHUB_TOKEN. Each option needs
-      # Contents: write on APPS_REPO.
-      - key: GITHUB_APP_ID
-        sync: false
-      - key: GITHUB_APP_PRIVATE_KEY
-        sync: false
-      - key: GITHUB_APP_INSTALLATION_ID
-        sync: false
-      - key: GITHUB_TOKEN
-        sync: false
+        services:
+          - type: web
+            name: vibe-factory-gateway
+            runtime: docker
+            plan: starter
+            # Applies app/schema.sql before any new instance serves traffic.
+            preDeployCommand: npm run db:migrate
+            healthCheckPath: /ready
+            envVars:
+              - key: DATABASE_URL
+                fromDatabase:
+                  name: vibe-factory-db
+                  property: connectionString
+              - key: APPS_REPO
+                sync: false
+              # Generated once when the Blueprint creates the gateway and
+              # preserved across later syncs.
+              - key: FACTORY_API_KEY
+                generateValue: true
+              - key: UI_USERNAME
+                sync: false
+              - key: UI_PASSWORD
+                sync: false
+              - key: RENDER_WORKFLOW_SLUG
+                fromService:
+                  type: workflow
+                  name: vibe-factory-workflows
+                  property: slug
+              # Used by the Render SDK to start the workflow task.
+              - key: RENDER_API_KEY
+                sync: false
+
+          # Runs every task that app/host.ts registers. The model key and the
+          # GitHub credential are set only here, never on the gateway.
+          - type: workflow
+            name: vibe-factory-workflows
+            runtime: node
+            repo: https://github.com/render-examples/vibe-code-demo
+            # A workflow must set its region. Task runs connect to the database
+            # on the private network, and that network does not cross regions.
+            # Use the same region as the database, which is oregon by default.
+            region: oregon
+            buildCommand: npm ci --omit=dev
+            startCommand: npm run start:workflows
+            envVars:
+              - key: DATABASE_URL
+                fromDatabase:
+                  name: vibe-factory-db
+                  property: connectionString
+              - key: APPS_REPO
+                sync: false
+              # Sandboxes, the Render MCP server, and Blueprint reads.
+              - key: RENDER_API_KEY
+                sync: false
+              - key: RENDER_WORKSPACE_ID
+                sync: false
+              - key: ANTHROPIC_API_KEY
+                sync: false
+              # Set the three GitHub App variables or GITHUB_TOKEN. Each option
+              # needs Contents: write on APPS_REPO.
+              - key: GITHUB_APP_ID
+                sync: false
+              - key: GITHUB_APP_PRIVATE_KEY
+                sync: false
+              - key: GITHUB_APP_INSTALLATION_ID
+                sync: false
+              - key: GITHUB_TOKEN
+                sync: false
