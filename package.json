@@ -9,7 +9,7 @@
   "scripts": {
     "start:gateway": "tsx app/server.ts",
     "start:workflows": "tsx app/host.ts",
-    "dev:gateway": "node --env-file=.env node_modules/.bin/tsx watch app/server.ts",
+    "dev:gateway": "RENDER_USE_LOCAL_DEV=true node --env-file=.env node_modules/.bin/tsx watch app/server.ts",
     "dev:workflows": "render workflows dev -- node --env-file=.env node_modules/.bin/tsx app/host.ts",
     "dev:postgres": "docker compose up postgres",
     "db:migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",

@@ -47,6 +47,11 @@ The gateway listens on `0.0.0.0:${PORT:-3000}`. `GET /health` is liveness,
 arrive at `POST /v1/apps`, and runs are polled at `GET /v1/apps/:runId`. Local
 workflow runs create real Render Sandboxes and deploy real services.
 
+`dev:gateway` sets `RENDER_USE_LOCAL_DEV=true`, so the local gateway starts
+tasks on the `dev:workflows` task server, which finds a task by its name and
+ignores the slug. Set that variable only in `dev:gateway`, never in `.env`:
+the workflows host loads `.env` too and must use the Render API.
+
 Verify a change with `npm run check` (Biome, `tsc`, Vitest). For one file:
 `npx vitest run tests/blueprint.test.ts`. Validate this repository's own
 Blueprint with `render blueprints validate` when `render.yaml` changes.
