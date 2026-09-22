@@ -58,10 +58,10 @@ it there — that script is where setup mistakes get caught.
 `npm run demo` runs the end-to-end demo against a live gateway.
 
 Production entrypoints are `npm run start:gateway` and
-`npm run start:workflows`. Workflows services are created separately in the
-Render Dashboard; they are not supported in `render.yaml`. The generated-apps
-repository needs a one-time Blueprint watching `main:render.yaml` with Auto
-Sync enabled.
+`npm run start:workflows`. `render.yaml` creates both services and the
+database, and sets the gateway's `RENDER_WORKFLOW_SLUG` from the workflow with
+`fromService`. The generated-apps repository needs a one-time Blueprint
+watching `main:render.yaml` with Auto Sync enabled.
 
 The gateway also serves a browser UI at `/`. It is protected by HTTP Basic
 Auth (`UI_USERNAME` and `UI_PASSWORD`) and submits through `/ui/apps`, which

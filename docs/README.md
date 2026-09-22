@@ -199,17 +199,20 @@ local preview only, set `UI_AUTH_DISABLED=true`; the bypass is ignored whenever
 ## Deploy the factory
 
 1. Create a Blueprint from this repository's `render.yaml`. It provisions the
-   gateway and its Postgres database.
-2. Set the unsynced gateway variables from [Configuration](#configuration) and
-   deploy once so the pre-deploy migration runs.
-3. Create a **Workflow** service from the same repository. Blueprints do not
-   create Workflow services; use `npm ci` to build and
-   `npm run start:workflows` to start.
-4. Set the Workflows variables from `.env.example`, using the database's
-   internal connection string, then set the gateway's
-   `RENDER_WORKFLOW_SLUG`.
-5. Run `npm run doctor` before a demonstration to verify the cross-service
+   gateway, the Workflows service, and their Postgres database. It also sets
+   `DATABASE_URL` on both services, and the gateway's `RENDER_WORKFLOW_SLUG`
+   to the workflow's slug.
+2. Fill in the unsynced variables when the Dashboard prompts for them. Each
+   one is described in [Configuration](#configuration). For GitHub, set the
+   three `GITHUB_APP_*` variables or `GITHUB_TOKEN`.
+3. Run `npm run doctor` before a demonstration to verify the cross-service
    wiring.
+
+If you created the Workflows service by hand before `render.yaml` defined it,
+rename it to `vibe-factory-workflows` before the next Blueprint sync. The
+Blueprint then adopts it and keeps its environment variables. Otherwise the
+sync creates a second workflow without its secrets and points the gateway at
+it.
 
 ### Connect the generated-apps Blueprint once
 
@@ -332,6 +335,9 @@ Implementation details and invariants for contributors are in [AGENTS.md](../AGE
 - Every run, including one started from local development, consumes model
   tokens and a real Render Sandbox.
 - Creating the Blueprint is manual, once, because Render has no API for it.
+- A workspace can hold only one factory from this `render.yaml`. Render does
+  not yet replicate workflows, so it rejects a second Blueprint that defines
+  `vibe-factory-workflows`.
 - One deployment is bound to one apps repository and one branch. Concurrent
   runs rebase onto that branch; the cap is three at a time.
 - UI authentication and user slugs are demonstration conveniences, not
