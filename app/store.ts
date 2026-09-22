@@ -1,5 +1,5 @@
 /** Postgres: one runs table. Render filesystems are ephemeral. */
-import pg from "pg";
+import pg from "../node_modules/@types/pg/index.js";
 import { factoryConfig } from "../factory.config.js";
 
 export type RunStatus =
