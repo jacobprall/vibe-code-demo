@@ -37,6 +37,8 @@ export interface Agent {
 	readonly description?: string;
 	readonly model: ModelTier;
 	readonly prompt: string;
+	/** Adaptive-thinking depth. Lower effort reduces latency for stage demos. */
+	readonly effort?: Options["effort"];
 	readonly tools?: readonly Tool[];
 	/**
 	 * Read-only Render MCP tools this agent may call, from
@@ -61,6 +63,7 @@ export interface RunClaudeOptions {
 	systemPrompt: string;
 	prompt: string;
 	model: string;
+	effort?: Options["effort"];
 	maxTurns?: number;
 	tools?: readonly Tool[];
 	renderTools?: readonly string[];
@@ -89,6 +92,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<ClaudeRun> {
 	const options: Options = {
 		systemPrompt: opts.systemPrompt,
 		model: opts.model,
+		effort: opts.effort,
 		maxTurns: opts.maxTurns,
 		// Claude's built-in Bash/Read/Write/Edit stay off — agents reach the
 		// machine only through our sandbox tools.

@@ -29,6 +29,12 @@ describe("agent definitions", () => {
 		}
 	});
 
+	it("runs Sonnet agents at low effort", () => {
+		for (const agent of all.filter((candidate) => candidate.model === "medium")) {
+			expect(agent.effort).toBe("low");
+		}
+	});
+
 	it("keeps ordinary websites on the fast static path", () => {
 		expect(agents.architect.prompt).toContain(
 			"Default to only a static_site for websites",
