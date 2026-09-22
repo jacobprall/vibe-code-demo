@@ -166,7 +166,7 @@ A: Yes, `npm run dev:gateway` and `npm run dev:workflows` in separate terminals.
 | `app/sandbox.ts` | Sandbox lifecycle, exec, Postgres setup |
 | `app/store.ts` | Postgres-backed run state, idempotency, concurrency |
 | `scripts/doctor.ts` | Pre-flight diagnostic — run before every demo |
-| `render.yaml` | The factory's own Blueprint (gateway + its database) |
+| `render.yaml` | The factory's own Blueprint (gateway, Workflows service, and database) |
 
 ---
 
