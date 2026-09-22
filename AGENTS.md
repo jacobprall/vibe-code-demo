@@ -59,9 +59,11 @@ it there — that script is where setup mistakes get caught.
 
 Production entrypoints are `npm run start:gateway` and
 `npm run start:workflows`. `render.yaml` creates both services and the
-database, and sets the gateway's `RENDER_WORKFLOW_SLUG` from the workflow with
-`fromService`. The generated-apps repository needs a one-time Blueprint
-watching `main:render.yaml` with Auto Sync enabled.
+database in the `vibe-factory` project, and sets the gateway's
+`RENDER_WORKFLOW_SLUG` from the workflow with `fromService`. Keep that
+environment's network isolation off: an isolated workflow cannot reach the
+database. The generated-apps repository needs a one-time Blueprint watching
+`main:render.yaml` with Auto Sync enabled.
 
 The gateway also serves a browser UI at `/`. It is protected by HTTP Basic
 Auth (`UI_USERNAME` and `UI_PASSWORD`) and submits through `/ui/apps`, which

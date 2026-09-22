@@ -199,7 +199,8 @@ local preview only, set `UI_AUTH_DISABLED=true`; the bypass is ignored whenever
 ## Deploy the factory
 
 1. Create a Blueprint from this repository's `render.yaml`. It provisions the
-   gateway, the Workflows service, and their Postgres database. It also sets
+   gateway, the Workflows service, and their Postgres database in the
+   `production` environment of a `vibe-factory` project. It also sets
    `DATABASE_URL` on both services, and the gateway's `RENDER_WORKFLOW_SLUG`
    to the workflow's slug.
 2. Fill in the unsynced variables when the Dashboard prompts for them. Each
