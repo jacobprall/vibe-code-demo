@@ -16,6 +16,7 @@ export const architect: Agent = {
 	id: "architect",
 	description: "Turns a product prompt into a Render deployment plan",
 	model: "medium",
+	effort: "low",
 	// No sandbox tools: the architect designs, it does not build. Its only
 	// tools are read-only views of the Render workspace it designs for.
 	renderTools: RENDER_READ_ONLY_TOOLS,
@@ -143,6 +144,7 @@ export const builder: Agent = {
 	id: "builder",
 	description: "Builds the full application in an isolated sandbox",
 	model: "medium",
+	effort: "low",
 	tools: allTools,
 	maxTurns: 80,
 	plan: "standard",
@@ -239,6 +241,7 @@ export const deployManager: Agent = {
 	id: "deploy-manager",
 	description: "Watches Render deploys via MCP, diagnoses failures",
 	model: "medium",
+	effort: "low",
 	renderTools: RENDER_READ_ONLY_TOOLS,
 	maxTurns: 20,
 	plan: "standard",
@@ -300,6 +303,7 @@ export function agentTask(agent: Agent) {
 				systemPrompt: agent.prompt,
 				prompt: input.message,
 				model: factoryConfig.models[agent.model],
+				effort: agent.effort,
 				maxTurns: agent.maxTurns,
 				tools: agent.tools,
 				renderTools: agent.renderTools,
