@@ -246,15 +246,41 @@ button:disabled {
 }
 
 .result {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 16px;
-	align-items: center;
+	display: grid;
+	gap: 12px;
 	margin-top: 20px;
+	padding: 24px;
+	border: 1px solid rgb(147 223 189 / 28%);
+	border-radius: 14px;
+	background:
+		linear-gradient(135deg, rgb(147 223 189 / 10%), transparent 60%),
+		#10151a;
 }
 
 .result[hidden] {
 	display: none;
+}
+
+.result .eyebrow {
+	margin-bottom: 0;
+	color: #93dfbd;
+}
+
+.result h3 {
+	margin: 0;
+	font-size: clamp(1.5rem, 4vw, 2.25rem);
+	letter-spacing: -0.035em;
+}
+
+.result-summary {
+	max-width: 65ch;
+	margin-bottom: 4px;
+	color: #c5cad4;
+	line-height: 1.6;
+}
+
+.result .primary-link {
+	justify-self: start;
 }
 
 a {

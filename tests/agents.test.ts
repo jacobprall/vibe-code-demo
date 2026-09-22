@@ -45,6 +45,9 @@ describe("agent definitions", () => {
 		expect(agents.builder.prompt).toContain(
 			"dependency-free HTML, CSS, and JavaScript",
 		);
+		expect(agents.builder.prompt).toContain(
+			"one user-facing sentence, at most 200 characters",
+		);
 	});
 });
 

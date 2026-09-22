@@ -164,7 +164,7 @@ export type Manifest = z.infer<typeof manifestSchema>;
 /* ── Builder ──────────────────────────────────────────────────────────── */
 
 export const buildOutputSchema = z.object({
-	summary: z.string().min(1),
+	summary: z.string().min(1).max(240),
 	manifest: manifestSchema,
 });
 
