@@ -276,8 +276,7 @@ in a subdirectory.
 3. New external input is validated and task values stay JSON-serializable.
 4. Infrastructure changes go through `app/blueprint.ts`, not an API call.
 5. Sandbox cleanup and repeated side effects are safe.
-6. `.env.example`, `render.yaml`, `docs/configuration.md`, `docs/deployment.md`,
-   `README.md`, `AGENTS.md`, and `scripts/doctor.ts` updated if configuration
-   changed.
+6. `.env.example`, `render.yaml`, `docs/README.md`, `README.md`, `AGENTS.md`,
+   and `scripts/doctor.ts` updated if configuration changed.
 7. Browser UI changes preserve Basic Auth and never serialize secrets.
 8. `npm run check` passes.

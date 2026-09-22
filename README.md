@@ -7,6 +7,39 @@ a production-shaped agent system.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/render-examples/vibe-code-demo)
 
+## Architecture at a glance
+
+```
+User → Gateway (web service) → Render Workflow → Sandbox
+                                     ↓
+                              Apps Repository (GitHub)
+                                     ↓
+                              Blueprint auto-sync → Deployed App
+```
+
+| Component | Render primitive | What it does |
+|---|---|---|
+| **Gateway** | Web Service (Docker) | Authenticates users, records runs in Postgres, dispatches workflow tasks. Holds no model keys or repo credentials. |
+| **Factory DB** | Managed Postgres | Stores run state, idempotency keys, progress, concurrency claims. Enables reconnecting clients and stale-run recovery. |
+| **Orchestrator** | Render Workflow | Runs the four-agent pipeline: Architect → Curator → Builder → Deploy Manager. Owns the Sandbox, model credentials, and GitHub push. |
+| **Sandbox** | Render Sandbox | Isolated Linux environment where agents write code, install deps, run builds, boot services, and query a real Postgres — all throwaway. |
+| **Apps Repository** | GitHub repo | Every generated app is committed here. The root `render.yaml` is the Blueprint Render watches. |
+| **Generated App** | Static Site + Web Service + Postgres | The actual app that gets deployed. Blueprint sync creates these from the committed YAML. |
+
+## How the Render products come together
+
+1. **Web Services** — The gateway is a web service (Hono + Docker). Each generated app's API is also a web service, with health checks, `preDeployCommand` for migrations, and `fromDatabase` / `fromService` env-var wiring.
+
+2. **Workflows** — The orchestration engine. One task (`prompt-to-app`) runs the entire pipeline: design, build, verify, publish, deploy, smoke-test. Sub-tasks (`architect`, `curator`, `builder`, `deploy-manager`) run as Claude agents with distinct tool grants and trust boundaries.
+
+3. **Sandboxes** — Every run gets a fresh, isolated Linux sandbox. Agents execute code inside it, never on the host. Postgres 18 is installed on the fly inside the sandbox so the builder develops against a real database. The sandbox is terminated in a `finally` block.
+
+4. **Postgres** — Two roles: (a) the factory's own `runs` table for durable state, and (b) a sandbox-local Postgres the generated app builds against. Generated apps also get their own Managed Postgres on Render.
+
+5. **Blueprints** — The only write path to Render. Agents never call the Render API to create resources. The workflow writes `render.yaml`, commits to GitHub, and Render's Blueprint sync deploys everything. Every deployment is a Git diff.
+
+6. **MCP** — Read-only Render MCP gives the Architect agent visibility into the workspace (existing services, databases) and gives the Deploy Manager logs and deploy status to diagnose failures. Strictly read-only — enforced by allowlist and `PreToolUse` hook.
+
 ## Quick start
 
 ```bash
