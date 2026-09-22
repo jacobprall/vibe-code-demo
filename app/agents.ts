@@ -41,9 +41,17 @@ export const architect: Agent = {
 		  inventory, orders, accounts.
 		- key_value — a cache, a queue, or a session store.
 
-		A catalog that lists products from a database is all three of the first
-		ones: a static storefront, an API, and Postgres behind it. Do not add a primitive
-		you cannot justify, and do not leave one out because it seems advanced.
+		Default to only a static_site for websites, landing pages, portfolios,
+		menus, directories, and read-only catalogs. Put their content in the
+		site and implement search or filtering in the browser. A catalog alone
+		does not justify an API or database.
+
+		Add a web_service or postgres only when the product prompt explicitly
+		requires behavior that cannot work in a static browser app, such as
+		persistent user-written data, accounts, transactions, server-side
+		integrations, or data that must change after deployment. Do not infer
+		those requirements merely because they would make the app more
+		production-like.
 
 		assetQueries are what a photo researcher will search Wikimedia Commons
 		for. Two to four words, concrete and photographable — "walnut dining
@@ -152,6 +160,11 @@ export const builder: Agent = {
 		back to confirm a write succeeded — a failed write reports itself.
 
 		Rules:
+		- When the approved plan contains only a static_site, prefer
+		  dependency-free HTML, CSS, and JavaScript. Use a small shell build
+		  command to copy the site into dist and set staticPublishPath to dist.
+		  Do not initialize npm or a framework unless the product prompt
+		  explicitly requires one.
 		- Write real content — real product names, materials, prices, and copy.
 		  No lorem ipsum, no "Coming soon", no remote image URLs. Prefer inline
 		  SVG and CSS gradients for decoration. The result should look like
