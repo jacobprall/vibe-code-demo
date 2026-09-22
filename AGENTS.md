@@ -120,7 +120,7 @@ templates/
   fullstack/     web/ (Vite + React + Tailwind + shadcn/ui), api/ (Hono + pg)
 scripts/         migrate, doctor, demo, support
 tests/           agents, blueprint, contracts, gateway, git, github-auth,
-                 policy, render, shell, templates, tools
+                 host, policy, render, shell, templates, tools
 ```
 
 There is no `tasks.ts`, `scaffold.ts`, `shell.ts`, `github.ts`, or `format.ts`:
@@ -211,7 +211,8 @@ API is the seam. Do not rebuild a checkpoint store here.
 4. If it emits JSON, add a schema to `app/contracts.ts`, register it in
    `OUTPUT_SCHEMAS`, and call it through `agentJson()`, which retries once and
    then fails closed.
-5. Update `tests/agents.test.ts` for tool access.
+5. Update `tests/agents.test.ts` for tool access, and add the task name to
+   `tests/host.test.ts` and `scripts/doctor.ts`.
 
 ## Add a Render primitive
 
