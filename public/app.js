@@ -8,9 +8,10 @@ const activity = document.querySelector("#activity");
 const stages = document.querySelector("#stages");
 const progress = document.querySelector("#progress");
 const result = document.querySelector("#result");
+const resultName = document.querySelector("#result-name");
 const webUrl = document.querySelector("#web-url");
-const apiUrl = document.querySelector("#api-url");
 const summary = document.querySelector("#summary");
+const runDetails = document.querySelector("#run-details");
 const submit = form.querySelector("button");
 
 const stageOrder = [
@@ -153,13 +154,20 @@ function renderRun(run) {
 		}),
 	);
 
-	result.hidden = run.status !== "deployed" || !run.urls?.web;
-	apiUrl.hidden = !run.urls?.api;
-	if (run.status === "deployed" && run.urls?.web) webUrl.href = run.urls.web;
-	if (run.status === "deployed" && run.urls?.api) apiUrl.href = run.urls.api;
+	const deployed = run.status === "deployed" && Boolean(run.urls?.web);
+	result.hidden = !deployed;
+	if (deployed) {
+		resultName.textContent = titleFromSlug(run.appName) || "Your website";
+		summary.textContent = resultSummary(run.summary);
+		webUrl.href = run.urls.web;
+	}
 
-	summary.hidden = !run.summary;
-	summary.textContent = run.summary || "";
+	const showDetails =
+		run.status !== "running" &&
+		run.status !== "deployed" &&
+		Boolean(run.summary);
+	runDetails.hidden = !showDetails;
+	runDetails.textContent = showDetails ? run.summary : "";
 }
 
 function setBusy(busy) {
@@ -181,6 +189,16 @@ function label(value) {
 
 function truncate(value, length) {
 	return value.length > length ? `${value.slice(0, length - 1)}…` : value;
+}
+
+function titleFromSlug(value) {
+	return value ? label(value.replaceAll("-", " ")) : "";
+}
+
+function resultSummary(value) {
+	if (!value) return "Your website is ready.";
+	const built = value.split(/\n\s*\n/)[0].replace(/\s+/g, " ").trim();
+	return truncate(built, 220);
 }
 
 function formatDate(value) {

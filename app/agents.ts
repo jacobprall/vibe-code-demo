@@ -205,7 +205,7 @@ export const builder: Agent = {
 
 		When you are done, respond with JSON describing what you built:
 		{
-		  "summary": "one paragraph describing what you built",
+		  "summary": "one user-facing sentence, at most 200 characters, describing what the website offers; omit filenames, implementation details, infrastructure, and deployment",
 		  "manifest": {
 		    "services": [
 		      {

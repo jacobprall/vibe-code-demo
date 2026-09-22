@@ -3,6 +3,7 @@ import { parseModelJson } from "../app/claude.js";
 import {
 	appSpecSchema,
 	assetManifestSchema,
+	buildOutputSchema,
 	createAppRequestSchema,
 	deployPlanSchema,
 	manifestSchema,
@@ -236,5 +237,16 @@ describe("appSpecSchema", () => {
 			notes: [],
 		};
 		expect(appSpecSchema.parse(JSON.parse(JSON.stringify(spec)))).toEqual(spec);
+	});
+});
+
+describe("buildOutputSchema", () => {
+	it("keeps the user-facing build summary concise", () => {
+		expect(
+			buildOutputSchema.safeParse({
+				summary: "x".repeat(241),
+				manifest: validManifest,
+			}).success,
+		).toBe(false);
 	});
 });
