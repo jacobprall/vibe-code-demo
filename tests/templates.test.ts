@@ -5,7 +5,9 @@
  * template drifting away from the manifest the builder is told to return.
  */
 import { describe, expect, it } from "vitest";
+import { builder } from "../app/agents.js";
 import { extractionScript, readTemplate } from "../app/templates.js";
+import { templateLines } from "../app/workflow.js";
 
 const files = await readTemplate("fullstack");
 const byPath = new Map(files.map((file) => [file.path, file.contents]));
@@ -69,13 +71,25 @@ describe("the manifest the builder is told to return", () => {
 		expect(byPath.get("api/src/index.ts")).toContain("cors()");
 	});
 
-	// fromService gives a bare hostname, and an unset variable would otherwise
-	// be baked in as "undefined" by a build that passes.
+	// RENDER_EXTERNAL_HOSTNAME is a hostname, not a URL. Without the fallback,
+	// a build that passes would write "undefined" into the bundle.
 	it("builds the API base URL from a hostname, with a fallback", () => {
 		const api = byPath.get("web/src/lib/api.ts") ?? "";
 		expect(api).toContain("VITE_API_HOST");
 		expect(api).toMatch(/https:\/\/\$\{host\}/);
 		expect(api).toMatch(/host \?.*:.*http/s);
+	});
+
+	// `property: host` is a name on the private network, and a browser cannot
+	// connect to it. api.ts above expects the public hostname.
+	it("wires VITE_API_HOST to the public hostname of the API", () => {
+		expect(templateLines(files.map((file) => file.path))).toMatch(
+			/VITE_API_HOST fromService api\s+envVarKey RENDER_EXTERNAL_HOSTNAME/,
+		);
+		expect(builder.prompt).toContain(
+			'{ "key": "VITE_API_HOST", "fromService": { "name": "api", "envVarKey": "RENDER_EXTERNAL_HOSTNAME" } }',
+		);
+		expect(builder.prompt).not.toContain('"property": "host"');
 	});
 
 	// preDeployCommand runs on every deploy, including redeploys of an

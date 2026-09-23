@@ -1,10 +1,12 @@
 /**
  * Where the API lives.
  *
- * Render wires VITE_API_HOST with `fromService`, and that property is a bare
- * hostname — "vibe-demo-shop-api.onrender.com", not a URL — so the scheme has
- * to be added here. Vite inlines this at build time, which is why it is a
- * build-time variable on the static site rather than something fetched later.
+ * The Blueprint sets VITE_API_HOST with `fromService` and `envVarKey:
+ * RENDER_EXTERNAL_HOSTNAME`. The value is the public hostname of the API, for
+ * example "vibe-demo-shop-api.onrender.com". It is not a URL, so this code adds
+ * the scheme. Do not use `property: host`: that is a name on the private
+ * network, and a browser cannot connect to it. Vite writes the value into the
+ * bundle at build time, because a static site has no server to supply it later.
  *
  * The fallback matters: the sandbox builds this without VITE_API_HOST set, and
  * without a default the bundle would contain "https://undefined" and still

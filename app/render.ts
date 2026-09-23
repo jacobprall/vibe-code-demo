@@ -17,6 +17,9 @@ const REST_API = "https://api.render.com/v1";
 const SERVICE_ID = /^srv-[A-Za-z0-9]+$/;
 const DEPLOY_ID = /^dep-[A-Za-z0-9]+$/;
 const RENDER_URL = /^https:\/\/[A-Za-z0-9-]+\.onrender\.com\/?$/;
+const MAX_PAGE_SCRIPTS = 20;
+const MODULE_PRELOAD = /\srel\s*=\s*["']?modulepreload\b/i;
+const SCRIPT_REF = /\s(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
 
 const DEPLOY_SUCCESS = new Set(["live"]);
 const DEPLOY_FAILURE = new Set([
@@ -324,6 +327,55 @@ export async function waitForHttpOk(
 	}
 
 	return { ok: false, status, body: "", headers: new Headers() };
+}
+
+/**
+ * Whether a deployed page contains `text` in its HTML or in a script that it
+ * loads. A static site gets its env vars at build time, so its bundle is the
+ * only place that shows the values that a browser uses.
+ */
+export async function pageContains(
+	pageUrl: string,
+	text: string,
+): Promise<boolean> {
+	const html = await readText(pageUrl);
+	if (html === null) return false;
+	if (html.includes(text)) return true;
+	const scripts = await Promise.all(pageScripts(html, pageUrl).map(readText));
+	return scripts.some((script) => script?.includes(text));
+}
+
+/**
+ * The scripts that a page loads from its own origin: each `<script src>`, and
+ * each `<link rel="modulepreload">` that Vite adds for a split chunk. A chunk
+ * that only a dynamic import loads is not in the HTML, so this cannot find it.
+ *
+ * Scripts from other origins are not included. An agent wrote the page, and
+ * the page must not send the workflow to other hosts.
+ */
+export function pageScripts(html: string, pageUrl: string): string[] {
+	const origin = new URL(pageUrl).origin;
+	const scripts = new Set<string>();
+	const markup = html.replace(/<!--[\s\S]*?-->/g, "");
+	for (const [tag, element] of markup.matchAll(/<(script|link)\b[^>]*>/gi)) {
+		if (element.toLowerCase() === "link" && !MODULE_PRELOAD.test(tag)) continue;
+		const match = SCRIPT_REF.exec(tag);
+		const ref = match?.[1] ?? match?.[2] ?? match?.[3];
+		if (!ref) continue;
+		const url = URL.parse(ref, pageUrl);
+		if (url?.origin === origin) scripts.add(url.href);
+	}
+	return [...scripts].slice(0, MAX_PAGE_SCRIPTS);
+}
+
+/** The full body of a successful GET, or null. */
+async function readText(url: string): Promise<string | null> {
+	try {
+		const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+		return response.ok ? await response.text() : null;
+	} catch {
+		return null;
+	}
 }
 
 /* ── Blueprints (REST; not exposed over MCP) ──────────────────────────── */

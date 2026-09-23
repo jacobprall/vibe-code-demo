@@ -273,12 +273,18 @@ function singleServiceBlock(
 		} else if (envVar.fromService) {
 			const target = resolveFromServiceName(envVar.fromService.name, names);
 			if (!target) continue;
+			// The storefront uses envVarKey RENDER_EXTERNAL_HOSTNAME. The `host`
+			// property is a name on the private network, and a browser cannot
+			// connect to it.
+			const { property, envVarKey } = envVar.fromService;
 			envLines.push(
 				`      - key: ${envVar.key}`,
 				"        fromService:",
 				`          name: ${target}`,
 				"          type: web",
-				`          property: ${envVar.fromService.property}`,
+				envVarKey
+					? `          envVarKey: ${envVarKey}`
+					: `          property: ${property}`,
 			);
 		}
 	}

@@ -40,6 +40,7 @@ import {
 import { checkManifestCommands } from "./policy.js";
 import {
 	findBlueprint,
+	pageContains,
 	RenderMcp,
 	waitForDeploy,
 	waitForHttpOk,
@@ -867,7 +868,7 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 	await setRunStage(
 		ctx.runId,
 		"smoke_testing",
-		"Deploys are live; checking public URLs, data, and CORS",
+		"Deploys are live. The workflow checks public URLs, the API host in the storefront, data, and CORS",
 	);
 	const apiUrl = urlOf(names.api);
 	// An API-only app has no storefront, so the API is the public URL.
@@ -893,12 +894,9 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 		(service) => service.kind === "web_service",
 	);
 	if (apiUrl && apiService) {
-		const failure = await smokeApi(
-			apiUrl,
-			apiService,
-			urlOf(names.web),
-			heartbeat,
-		);
+		const failure =
+			(await smokeStorefront(urlOf(names.web), apiUrl)) ??
+			(await smokeApi(apiUrl, apiService, urlOf(names.web), heartbeat));
 		if (failure) {
 			return {
 				status: "deploy_failed",
@@ -921,6 +919,25 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 			...spec.notes,
 		].join("\n\n"),
 	};
+}
+
+/**
+ * The build of the storefront writes the API hostname into its bundle, and
+ * only a browser uses that hostname. The API checks cannot find a wrong
+ * hostname: the private-network `host`, for example, passes all of them.
+ */
+async function smokeStorefront(
+	webUrl: string | null,
+	apiUrl: string,
+): Promise<string | null> {
+	if (!webUrl) return null;
+	const apiHost = new URL(apiUrl).hostname;
+	if (await pageContains(webUrl, apiHost)) return null;
+	return (
+		`${webUrl} does not contain the API hostname ${apiHost} in its HTML or in the scripts that it loads. ` +
+		"A browser cannot find the API. Set the storefront env var with fromService envVarKey RENDER_EXTERNAL_HOSTNAME. " +
+		"The host property is a name on the private network, and a browser cannot connect to it."
+	);
 }
 
 /**
@@ -1052,7 +1069,7 @@ function builderMessage(opts: {
  * manifest it corresponds to is the point: those exact values are what
  * verification and the Blueprint are built around.
  */
-function templateLines(template: readonly string[]): string {
+export function templateLines(template: readonly string[]): string {
 	if (template.length === 0) {
 		return "Skeleton: none. Choose your own stack and lay the app out yourself.";
 	}
@@ -1074,7 +1091,9 @@ function templateLines(template: readonly string[]): string {
 		"",
 		"Return this manifest, adjusted only where you actually changed something:",
 		"  web: static_site, rootDir web, build `npm ci && npm run build`,",
-		"       staticPublishPath dist, envVar VITE_API_HOST fromService api host",
+		"       staticPublishPath dist, envVar VITE_API_HOST fromService api",
+		"       envVarKey RENDER_EXTERNAL_HOSTNAME. Do not use property host: a",
+		"       browser cannot connect to that private-network name.",
 		"  api: web_service, rootDir api, build `npm ci && npm run build`,",
 		"       preDeployCommand `npm run migrate`, start `npm start`,",
 		"       healthCheckPath /health, dataCheckPath /api/items,",

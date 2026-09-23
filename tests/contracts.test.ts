@@ -211,6 +211,33 @@ describe("manifestSchema", () => {
 		expect(parsed.services[0].envVars?.[0].fromDatabase?.name).toBe("main-db");
 	});
 
+	// Render takes one or the other. With neither, the Blueprint would get
+	// `property: undefined`.
+	it("requires exactly one of property and envVarKey on fromService", () => {
+		const accepts = (fromService: Record<string, string>) =>
+			manifestSchema.safeParse({
+				services: [
+					{
+						...validManifest.services[0],
+						envVars: [{ key: "VITE_API_HOST", fromService }],
+					},
+				],
+			}).success;
+
+		expect(
+			accepts({ name: "api", envVarKey: "RENDER_EXTERNAL_HOSTNAME" }),
+		).toBe(true);
+		expect(accepts({ name: "api", property: "hostport" })).toBe(true);
+		expect(accepts({ name: "api" })).toBe(false);
+		expect(
+			accepts({
+				name: "api",
+				property: "host",
+				envVarKey: "RENDER_EXTERNAL_HOSTNAME",
+			}),
+		).toBe(false);
+	});
+
 	it("rejects an empty services array", () => {
 		expect(manifestSchema.safeParse({ services: [] }).success).toBe(false);
 	});
