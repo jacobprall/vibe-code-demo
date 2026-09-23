@@ -167,6 +167,12 @@ export const builder: Agent = {
 		  command to copy the site into dist and set staticPublishPath to dist.
 		  Do not initialize npm or a framework unless the product prompt
 		  explicitly requires one.
+		- Render builds each service from a fresh clone, so verification does
+		  too. The workflow writes the app's .gitignore, which ignores
+		  node_modules/ and each staticPublishPath below its rootDir, and
+		  deletes every ignored file before it builds. So buildCommand must
+		  install the dependencies and write the build output, and source and
+		  photographs must stay out of those directories.
 		- Write real content — real product names, materials, prices, and copy.
 		  No lorem ipsum, no "Coming soon", no remote image URLs. Prefer inline
 		  SVG and CSS gradients for decoration. The result should look like

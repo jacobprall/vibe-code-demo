@@ -71,7 +71,8 @@ cap, no tenant-level quotas, and no teardown workflow.
    media and a builder creates the application from an empty directory or a
    contract-bearing template.
 4. Workflow-owned checks build, migrate, boot, and query the generated
-   services. Failures can return to the builder for bounded repair rounds.
+   services. They start from only the files a commit holds, as Render's fresh
+   clone does. Failures can return to the builder for bounded repair rounds.
 5. Workflow code derives `factory.json` and `render.yaml`, commits, pushes,
    and verifies the remote SHA. Blueprint sync—not an agent API call—creates
    the infrastructure.
@@ -111,6 +112,7 @@ apps/
       factory.json                     machine-readable spec for this app
       render.yaml                      this app's own Blueprint
       README.md
+      .gitignore                       node_modules/ and static build output
       web/                             static storefront (rootDir)
       api/                             Hono + pg service (rootDir)
     gopher-dates/
@@ -122,6 +124,11 @@ is why the specs are stored as JSON: appending an app never means parsing YAML
 back out. Each app also carries its own self-contained `render.yaml`, so a
 generated app can graduate out of the shared Blueprint — create a Blueprint
 pointing at `apps/<user>/<app>/render.yaml` and it stands alone.
+
+Each app's `.gitignore` comes from its manifest. It ignores `node_modules/` and
+each static site's publish directory, because the `buildCommand` makes them
+again on Render. Verification deletes every ignored file before it builds, so
+a build that needs one fails in the sandbox and not in a deploy.
 
 Resources are named `vibe-<user>-<app>-{web,api,db}`, so one workspace can hold
 every generated app without collisions. Each app is also its own Render

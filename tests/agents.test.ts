@@ -49,6 +49,17 @@ describe("agent definitions", () => {
 			"one user-facing sentence, at most 200 characters",
 		);
 	});
+
+	// Verification deletes ignored files before it builds. A builder that does
+	// not know this keeps source in dist/ and loses it.
+	it("tells the builder that build output is not committed", () => {
+		expect(agents.builder.prompt).toMatch(
+			/deletes every ignored file before it builds/,
+		);
+		expect(agents.builder.prompt).toMatch(
+			/buildCommand must\s+install the dependencies and write the\s+build output/,
+		);
+	});
 });
 
 describe("tool access", () => {

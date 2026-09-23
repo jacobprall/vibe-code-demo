@@ -108,7 +108,7 @@ app/
   sandbox.ts     Render Sandboxes, shellEscape, Postgres in the sandbox
   blueprint.ts   render.yaml generation — the only write path to Render
   render.ts      MCP client, service and deploy reads, Blueprint lookup
-  git.ts         Clone, commit, push, verify, GitHub credentials
+  git.ts         Clone, .gitignore, commit, push, verify, GitHub credentials
   store.ts       Postgres: one runs table
   templates.ts   Read a template and materialize it into the sandbox
   workflow.ts    The prompt-to-app pipeline
@@ -175,6 +175,11 @@ Do not weaken these without an explicit security-model change:
   unreachable, because Render calls it before Postgres is ready; a
   `dataCheckPath` must return rows, because nothing else proves the schema was
   applied or the seed loaded.
+- `node_modules/` and static-site build output are not committed.
+  `appGitignore()` makes each app's `.gitignore` from its manifest:
+  `node_modules/`, and each static site's publish directory below its
+  `rootDir`, never the service directory itself. `verify()` writes it and deletes every ignored file before it
+  builds, so it builds from the same files that Render's fresh clone gets.
 - The push is verified against the remote SHA before the factory waits on a
   deploy.
 - The sandbox is terminated in a `finally` block.

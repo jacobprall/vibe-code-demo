@@ -31,10 +31,12 @@ import {
 	workflowInputSchema,
 } from "./contracts.js";
 import {
+	appGitignore,
 	cloneAppsRepo,
 	commitAll,
 	githubToken,
 	pushVerified,
+	removeIgnored,
 	runVerification,
 } from "./git.js";
 import { checkManifestCommands } from "./policy.js";
@@ -370,7 +372,9 @@ function resolveServiceDir(base: string, relative: string): string {
 }
 
 /**
- * Generic verification driven by the manifest. For each service:
+ * Generic verification driven by the manifest. It starts from the files a
+ * commit holds, because a fresh clone is all that Render's build gets. For
+ * each service:
  * - Run the buildCommand in its rootDir
  * - For static sites: check staticPublishPath produced an index.html
  * - For web services with a healthCheckPath: boot it and curl the endpoint
@@ -396,6 +400,12 @@ async function verify(
 				"and do not write anywhere else.",
 		];
 	}
+
+	// Render's build gets only what the commit holds. Delete every ignored file
+	// first, so that a file the build needs but a commit leaves out fails here
+	// and not in a deploy.
+	await sandbox.writeFile(`${appDir}/.gitignore`, appGitignore(manifest));
+	await removeIgnored(sandbox, appDir);
 
 	for (const service of manifest.services) {
 		const serviceDir = resolveServiceDir(appDir, service.rootDir);
@@ -618,6 +628,8 @@ async function writeBlueprints(
 	appDir: string,
 	repoUrl: string,
 ): Promise<void> {
+	// The .gitignore is already in place: verify() writes it, because it must
+	// build from the same files that this commit holds.
 	await sandbox.writeFile(
 		`${appDir}/factory.json`,
 		`${JSON.stringify(spec, null, 2)}\n`,
