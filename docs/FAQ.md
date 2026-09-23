@@ -59,6 +59,7 @@ Architecture overview and how Render products fit together: [README.md](README.m
 - Show the apps repo on GitHub — every app is a reviewable Git diff
 - Show the `render.yaml` — it's declarative infrastructure, not API calls
 - Point out the generated app has its own `render.yaml` and can graduate to a standalone Blueprint
+- Click **Delete app** to remove it: the app leaves the Blueprint, then Render deletes its services, database, and project, then its files leave the apps repo
 
 ---
 
@@ -88,9 +89,10 @@ Architecture overview and how Render products fit together: [README.md](README.m
 | API web service | Starter | ~$7/mo |
 | Postgres | 0.1c-256mb | ~$7/mo |
 
-> **⚠️ Generated apps are never torn down automatically.** Every demo run
+> **⚠️ Generated apps keep running until you delete them.** Every demo run
 > leaves a web service and a Postgres instance running. Budget ~$14/mo per
-> generated app, and delete them after demos. There is no teardown workflow.
+> generated app, and delete them after demos with **Delete app** in the UI or
+> `DELETE /v1/apps/:runId`.
 
 ### Cost control levers
 
@@ -104,7 +106,7 @@ Architecture overview and how Render products fit together: [README.md](README.m
 
 | Boundary | How it works |
 |---|---|
-| **No direct API writes** | Agents cannot call Render APIs to create/modify resources. Only Blueprints committed to Git. |
+| **No API writes to create** | Agents cannot call Render APIs to create or change resources. Only Blueprints committed to Git create them. The only API writes are the deletes of a deleted app, which workflow code makes after the app leaves the Blueprint. |
 | **Sandbox isolation** | Agents run code only in a throwaway Sandbox. No access to the host, other services, or production databases. |
 | **Read-only MCP** | Architect and Deploy Manager get a strict allowlist of MCP tools — read-only inspection only. Enforced in code, not just prompts. |
 | **No git for agents** | Agents cannot push. Only workflow code commits and pushes, and verifies the remote SHA. |
@@ -128,11 +130,14 @@ A: The Deploy Manager agent inspects the failure via MCP (reads logs, deploy sta
 **Q: What if a run gets stuck?**
 A: The gateway reconciles stale runs by checking Workflows status. Heartbeats and deadlines prevent silent hangs. `GET /v1/apps/:runId` always shows the current stage.
 
+**Q: How do I delete a generated app?**
+A: Select one of its runs in the UI and click **Delete app**, or send `DELETE /v1/apps/:runId`. The delete removes the app with all of its runs. The workflow takes the app out of the root Blueprint, waits until Render stops managing its resources, deletes its services, database, and project, and then removes its files from the apps repo. It takes a few minutes. The files stay in the Git history. If it ends as `delete_failed`, the summary says why; fix that and delete again.
+
 **Q: Can multiple people demo at once?**
 A: Yes, up to 3 concurrent runs (configurable). Each run gets its own sandbox and app namespace (`vibe-<user>-<app>-{web,api,db}`). Concurrent runs rebase onto the same branch.
 
 **Q: Is this safe for public/untrusted users?**
-A: No. It's a demonstration. Auth is HTTP Basic, there's no tenant isolation, no quotas, no abuse controls, and no teardown. See [docs/README.md](docs/README.md#when-to-use-this-reference) and [Current limitations](docs/README.md#current-limitations).
+A: No. It's a demonstration. Auth is HTTP Basic, there's no tenant isolation, no quotas, and no abuse controls. See [docs/README.md](docs/README.md#when-to-use-this-reference) and [Current limitations](docs/README.md#current-limitations).
 
 **Q: How is this different from just using Claude to write code?**
 A: Claude writes the code, but the factory is the system around it: isolated sandboxes, real database verification, declarative deployment, MCP-based monitoring, durable state, and a deploy-repair loop. The code gets *built, migrated, booted, queried, committed, deployed, and smoke-tested* before anyone sees a URL.

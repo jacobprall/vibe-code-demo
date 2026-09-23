@@ -78,7 +78,8 @@ label {
 	font-weight: 650;
 }
 
-textarea {
+textarea,
+input {
 	width: 100%;
 	border: 1px solid #333948;
 	border-radius: 10px;
@@ -88,9 +89,15 @@ textarea {
 	outline: none;
 }
 
-textarea:focus {
+textarea:focus,
+input:focus {
 	border-color: #7886ff;
 	box-shadow: 0 0 0 3px rgb(120 134 255 / 16%);
+}
+
+input {
+	min-height: 44px;
+	padding: 0 14px;
 }
 
 textarea {
@@ -102,6 +109,8 @@ textarea {
 
 .form-actions {
 	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
 	justify-content: flex-end;
 	margin-top: 18px;
 }
@@ -142,13 +151,48 @@ button:disabled {
 	align-items: center;
 }
 
-.secondary-button {
+.secondary-button,
+.danger-button {
 	min-height: 34px;
 	padding: 0 11px;
 	border: 1px solid #333948;
 	background: transparent;
 	color: #c5cad4;
 	font-size: 0.75rem;
+}
+
+.danger-button {
+	border-color: #693942;
+	color: #ffabb8;
+}
+
+.danger-button:hover:not(:disabled) {
+	background: #3a2027;
+}
+
+.danger-button:disabled {
+	cursor: not-allowed;
+}
+
+.delete-dialog {
+	width: min(480px, calc(100% - 32px));
+	margin: auto;
+	/* Opaque, so that the page behind the dialog does not show through. */
+	background: #12151c;
+	color: inherit;
+}
+
+.delete-dialog::backdrop {
+	background: rgb(9 11 16 / 72%);
+}
+
+.delete-dialog h2 {
+	margin-bottom: 12px;
+}
+
+.delete-dialog code {
+	color: #ffabb8;
+	font: 0.85rem ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .empty-history {
@@ -201,6 +245,8 @@ button:disabled {
 
 .status-heading {
 	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
 	justify-content: space-between;
 	align-items: center;
 }
@@ -257,7 +303,9 @@ button:disabled {
 		#10151a;
 }
 
-.result[hidden] {
+.result[hidden],
+.stages[hidden],
+.danger-button[hidden] {
 	display: none;
 }
 

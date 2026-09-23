@@ -12,16 +12,21 @@ optimized to be read, not to be a framework.
 The path is: a caller POSTs a prompt, the gateway validates and dispatches it,
 and a workflow designs the app against Render primitives, gathers openly
 licensed imagery, builds a storefront and an API in an isolated sandbox,
-verifies them, and commits a Blueprint that Render deploys.
+verifies them, and commits a Blueprint that Render deploys. A delete goes
+the other way: `DELETE /v1/apps/:runId` claims every run of the run's app, and
+the `delete-app` task takes the app out of the Blueprint, deletes its Render
+resources when Render stops managing them, and removes its files.
 
 Two processes deploy independently:
 
 - `app/server.ts` — Hono gateway web service.
 - `app/host.ts` — Render Workflows host and task registration.
 
-The gateway runs no models, holds no repository token, and creates no
-infrastructure. Agents never write to GitHub and never call a Render write API.
-Repository execution happens in a Render Sandbox.
+The gateway runs no models, holds no repository token, and creates or deletes
+no infrastructure. Agents never write to GitHub and never call a Render write
+API. The only Render write calls are the deletes in `app/teardown.ts`, and only
+the `delete-app` task makes them. Repository execution happens in a Render
+Sandbox.
 
 ## Quick start
 
@@ -44,8 +49,10 @@ npm run dev:workflows
 
 The gateway listens on `0.0.0.0:${PORT:-3000}`. `GET /health` is liveness,
 `GET /ready` checks Postgres and is the Render health-check target, prompts
-arrive at `POST /v1/apps`, and runs are polled at `GET /v1/apps/:runId`. Local
-workflow runs create real Render Sandboxes and deploy real services.
+arrive at `POST /v1/apps`, runs are polled at `GET /v1/apps/:runId`, and
+`DELETE /v1/apps/:runId` deletes the app of a run, with all of its runs. Local
+workflow runs create real Render Sandboxes and deploy, and delete, real
+services.
 
 `dev:gateway` sets `RENDER_USE_LOCAL_DEV=true`, so the local gateway starts
 tasks on the `dev:workflows` task server, which finds a task by its name and
@@ -76,8 +83,9 @@ Auth (`UI_USERNAME` and `UI_PASSWORD`) and submits through `/ui/apps`, which
 keeps `FACTORY_API_KEY` server-side. Do not expose a browser route that bypasses
 this protection. The authenticated `UI_USERNAME` is a validated lowercase slug
 and is injected as the app namespace; never accept a browser-supplied `user`.
-`GET /ui/apps` lists only that namespace's runs, and the UI restores selection
-from local storage while treating Postgres as the source of truth.
+`GET /ui/apps` lists only that namespace's runs, `DELETE /ui/apps/:runId`
+deletes only a run in that namespace, and the UI restores selection from local
+storage while treating Postgres as the source of truth.
 
 ## Repository map
 
@@ -91,8 +99,9 @@ sandbox → tools → claude → agents → workflow
 ```
 
 `policy` is imported by `claude` and defines the MCP allowlist. `render` is
-imported by `claude` (for the MCP URL) and by `workflow`. `blueprint`, `git`,
-and `store` are used by `workflow`; `gateway` uses `store`, `policy`, and
+imported by `claude` (for the MCP URL), by `teardown`, and by `workflow`.
+`blueprint`, `git`, `teardown`, and `store` are used by `workflow`; `teardown`
+uses `render` and `blueprint`; `gateway` uses `store`, `policy`, and
 `contracts`. `config` and `contracts` are leaves. Adding an edge that points
 backwards is a design smell.
 
@@ -107,12 +116,13 @@ app/
   tools.ts       Sandbox tools, asset tools, and the Tool contract
   policy.ts      checkToolCall, path rules, MCP allowlist, secret redaction
   sandbox.ts     Render Sandboxes, shellEscape, Postgres in the sandbox
-  blueprint.ts   render.yaml generation — the only write path to Render
+  blueprint.ts   render.yaml generation — the only path that creates resources
   render.ts      MCP client, service and deploy reads, Blueprint lookup
+  teardown.ts    Deletes of a deleted app — the only Render write API calls
   git.ts         Clone, .gitignore, commit, push, verify, GitHub credentials
   store.ts       Postgres: one runs table
   templates.ts   Read a template and materialize it into the sandbox
-  workflow.ts    The prompt-to-app pipeline
+  workflow.ts    The prompt-to-app and delete-app pipelines
   schema.sql     Schema, applied by scripts/migrate.ts
   server.ts      Gateway entrypoint
   host.ts        Workflows entrypoint
@@ -121,7 +131,8 @@ templates/
   fullstack/     web/ (Vite + React + Tailwind + shadcn/ui), api/ (Hono + pg)
 scripts/         migrate, doctor, demo, support
 tests/           agents, blueprint, contracts, gateway, git, github-auth,
-                 host, policy, render, shell, templates, tools, workflow
+                 host, policy, render, shell, teardown, templates, tools,
+                 workflow
 ```
 
 There is no `tasks.ts`, `scaffold.ts`, `shell.ts`, `github.ts`, or `format.ts`:
@@ -171,8 +182,17 @@ Do not weaken these without an explicit security-model change:
 - `asset__fetch` accepts HTTPS only, allowlisted hosts only, `image/*` only,
   under the size cap, and only into an `assets/` directory in the checkout.
 - `sandboxId` comes from workflow code, never from the model.
-- Infrastructure is created only by committing a Blueprint. No code path calls
-  a Render write API, and agents cannot run git.
+- Infrastructure is created only by committing a Blueprint, and agents cannot
+  run git. The only Render write API calls are the deletes in
+  `app/teardown.ts`, and only `delete-app` makes them. They come after a push
+  has taken the app out of the root Blueprint, and after the Blueprint manages
+  none of the app's resources and no sync runs. They delete only a service or
+  database in the app's own project whose name starts with the app's stem, and
+  then the project, which Render deletes only when it is empty.
+- A delete claims every run of one app, and `claimRunApp` claims an app name
+  for a run. Both take the same Postgres advisory lock. So no run builds an app
+  while a delete of it is in progress, and a delete is refused while a run of
+  the app is running.
 - Verification is workflow-owned and runs the same install, build, and
   pre-deploy commands the Blueprint gives Render, against a real Postgres
   running in the sandbox. A health endpoint must answer with the database
@@ -220,6 +240,12 @@ and the conditional insert in `claimRun` caps concurrent runs at
 If you add resumability, `ctx.step()` from Render Workflows' Durability 2.0
 API is the seam. Do not rebuild a checkpoint store here.
 
+`delete-app` sets `maxRetries: 0`. A failed delete marks the runs of the app
+`delete_failed`, and the next `DELETE` starts the task again. Each step reads
+the state that an earlier attempt left, so a new attempt does only what is
+left. A delete that succeeds removes the rows. The gateway reconciles a
+`deleting` row against the delete task in the same way as a `running` row.
+
 ## Add an agent
 
 1. Add it to `app/agents.ts`. `id`, `model`, and `prompt` are required; `id` is
@@ -258,6 +284,9 @@ API is the seam. Do not rebuild a checkpoint store here.
    A primitive nothing verifies is a primitive that fails in production.
 6. Add assertions to `tests/blueprint.test.ts`. That suite is the contract for
    what gets deployed.
+7. Make `deleteAppResources()` in `app/teardown.ts` list and delete it. A
+   resource that the teardown does not know stays in the app's project, and
+   Render then refuses to delete the project.
 
 `key_value` is in `TIER_KINDS` and goes no further: the manifest cannot
 declare one and `blueprint.ts` cannot emit one, so an architect that asks for
@@ -326,13 +355,33 @@ specs have been migrated, or their Render resources will be renamed.
 Helpers that outgrow the workflow file belong in a new `app/<concern>.ts`, not
 in a subdirectory.
 
+## Delete an app
+
+A delete removes an app, not only a run: the runs of one app share its files
+and its resources. `removeApp()` in `app/workflow.ts` sets the order, and
+`tests/workflow.test.ts` tests it:
+
+1. Write `deletedAt` into the app's `factory.json`, regenerate the root
+   Blueprint, which leaves the app out, and push. Change no source file: a
+   commit that touches a service's files starts a build of the service.
+2. Wait until the Blueprint manages none of the app's resources and no sync
+   runs. A sync recreates a declared resource that is missing, and a sync
+   that started before the push can still create one.
+3. Delete the app's services, then its databases, then its project.
+4. Remove the app's directory and push.
+
+Do not change this order. A resource that is deleted before step 1 comes back
+on the next sync. The spec gives the names of the resources, so if step 4 comes
+before step 3, a failed delete loses them. The files stay in the Git history.
+
 ## Checklist
 
 1. Trust boundaries between gateway, workflow, and agents are preserved.
 2. New agents are registered at the bottom of `app/agents.ts` and task names
    match between definition, dispatch, `doctor`, and tests.
 3. New external input is validated and task values stay JSON-serializable.
-4. Infrastructure changes go through `app/blueprint.ts`, not an API call.
+4. Infrastructure is created through `app/blueprint.ts`, not an API call, and
+   deleted only through `app/teardown.ts`.
 5. Sandbox cleanup and repeated side effects are safe.
 6. `.env.example`, `render.yaml`, `docs/README.md`, `README.md`, `AGENTS.md`,
    and `scripts/doctor.ts` updated if configuration changed.

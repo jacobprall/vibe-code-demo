@@ -1,9 +1,9 @@
 /**
  * The public API.
  *
- * The gateway runs no models, creates no infrastructure, and holds no
- * repository credential. It authenticates the caller, claims the run in
- * Postgres, and dispatches a prompt.
+ * The gateway runs no models, creates or deletes no infrastructure, and holds
+ * no repository credential. It authenticates the caller, claims the run in
+ * Postgres, and dispatches a prompt, or the delete of the run's app.
  */
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -16,14 +16,18 @@ import {
 } from "./contracts.js";
 import { redactSecrets } from "./policy.js";
 import {
+	claimDelete,
 	claimRun,
 	claimWorkflowCheck,
+	deleteRunWithoutApp,
+	failDelete,
 	finishRun,
 	getRun,
 	listRunsByUser,
 	ping,
 	reopenPausedRun,
 	type RunRecord,
+	setDeleteWorkflowRunId,
 	setRunApp,
 	setRunUrls,
 	setWorkflowRunId,
@@ -32,6 +36,7 @@ import {
 const MAX_BODY_BYTES = 64 * 1024;
 const RUN_ID = /^[0-9a-f-]{36}$/;
 const TASK_NAME = "prompt-to-app";
+const DELETE_TASK_NAME = "delete-app";
 
 export function createGateway(): Hono {
 	const app = new Hono();
@@ -55,11 +60,15 @@ export function createGateway(): Hono {
 
 	app.post("/v1/apps", (c) => createRun(c, true));
 	app.get("/v1/apps/:runId", (c) => readRun(c, true));
+	app.delete("/v1/apps/:runId", (c) => deleteRun(c, true));
 
 	app.use("/ui/*", uiAuth);
 	app.get("/ui/apps", (c) => listRuns(c, credentials.username));
 	app.post("/ui/apps", (c) => createRun(c, false, credentials.username));
 	app.get("/ui/apps/:runId", (c) => readRun(c, false));
+	app.delete("/ui/apps/:runId", (c) =>
+		deleteRun(c, false, credentials.username),
+	);
 	app.get("/", uiAuth, serveStatic({ path: "./public/index.html" }));
 	app.get("/app.js", uiAuth, serveStatic({ path: "./public/app.js" }));
 	app.get("/style.css", uiAuth, serveStatic({ path: "./public/style.css" }));
@@ -165,13 +174,99 @@ async function readRun(c: Context, requireBearer: boolean): Promise<Response> {
 			await reopenPausedRun(run.id);
 			run = (await getRun(runId)) ?? run;
 		}
-		if (run.status === "running" && run.workflowRunId) {
+		if (
+			(run.status === "running" || run.status === "deleting") &&
+			run.workflowRunId
+		) {
 			await reconcileWorkflowRun(run);
-			run = (await getRun(runId)) ?? run;
+			const current = await getRun(runId);
+			// A delete that finished removed the run.
+			if (!current) return c.json({ error: "not found" }, 404);
+			run = current;
 		}
 		return c.json(runResponse(run));
 	} catch (error) {
 		console.error("Failed to read run:", error);
+		return c.json({ error: "store unavailable" }, 503);
+	}
+}
+
+/**
+ * Delete a run and the app that it built. The runs of one app share its files
+ * and resources, so they are deleted together. This claims the runs and
+ * dispatches the delete-app task, which does the work.
+ */
+async function deleteRun(
+	c: Context,
+	requireBearer: boolean,
+	namespace?: string,
+): Promise<Response> {
+	if (requireBearer && !authorized(c.req.raw.headers)) {
+		return c.json({ error: "unauthorized" }, 401);
+	}
+
+	const runId = c.req.param("runId");
+	if (!runId || !RUN_ID.test(runId)) return c.json({ error: "not found" }, 404);
+
+	try {
+		const run = await getRun(runId);
+		// The UI can delete only the runs in its own namespace.
+		if (!run || (namespace && run.user !== namespace)) {
+			return c.json({ error: "not found" }, 404);
+		}
+
+		if (!run.appName) {
+			// A run that did not choose an app created nothing but its row.
+			return (await deleteRunWithoutApp(run.id))
+				? c.json({ runId, status: "deleted" }, 200)
+				: c.json({ error: "the run is still running" }, 409);
+		}
+
+		const appName = run.appName;
+		const statusBase = requireBearer ? "/v1/apps" : "/ui/apps";
+		const accepted = (runIds: string[]) =>
+			c.json(
+				{
+					runId,
+					status: "deleting",
+					appName,
+					runIds,
+					statusUrl: `${statusBase}/${runId}`,
+				},
+				202,
+			);
+
+		const claim = await claimDelete(run.user, appName);
+		if (!claim.claimed) {
+			if (claim.reason === "missing")
+				return c.json({ error: "not found" }, 404);
+			if (claim.reason === "running") {
+				return c.json({ error: "a run of this app is still running" }, 409);
+			}
+			// A delete is already in progress, so there is nothing to dispatch.
+			return accepted(claim.runIds);
+		}
+
+		const workflowRunId = await dispatchWorkflow(DELETE_TASK_NAME, {
+			user: run.user,
+			appName,
+		});
+		if (!workflowRunId) {
+			await failDelete(
+				run.user,
+				appName,
+				"The delete did not start, because dispatch failed. Nothing was deleted.",
+			).catch((error) =>
+				console.error("Failed to release delete claim:", error),
+			);
+			return c.json({ error: "dispatch failed" }, 502);
+		}
+		await setDeleteWorkflowRunId(run.user, appName, workflowRunId).catch(
+			(error) => console.error("Failed to save workflow run id:", error),
+		);
+		return accepted(claim.runIds);
+	} catch (error) {
+		console.error("Failed to delete run:", error);
 		return c.json({ error: "store unavailable" }, 503);
 	}
 }
@@ -215,6 +310,22 @@ async function reconcileWorkflowRun(run: RunRecord): Promise<void> {
 	try {
 		const { Render } = await import("@renderinc/sdk");
 		const taskRun = await new Render().workflows.getTaskRun(run.workflowRunId);
+		if (run.status === "deleting") {
+			// A delete that succeeded removed the rows. Only a failure is left.
+			if (
+				run.appName &&
+				(taskRun.status === "failed" || taskRun.status === "canceled")
+			) {
+				await failDelete(
+					run.user,
+					run.appName,
+					`Delete ${taskRun.status}: ${taskRun.error ?? "no error was reported"}`,
+					run.workflowRunId,
+				);
+			}
+			return;
+		}
+
 		if (taskRun.status === "succeeded" || taskRun.status === "completed") {
 			const result = workflowResult(taskRun.results?.[0]);
 			if (result) {
@@ -266,7 +377,8 @@ function workflowResult(value: unknown): WorkflowResult | null {
 	}
 	if (
 		candidate.status === "build_failed" ||
-		candidate.status === "deploy_failed"
+		candidate.status === "deploy_failed" ||
+		candidate.status === "failed"
 	) {
 		return { status: candidate.status, summary: candidate.summary };
 	}
@@ -341,7 +453,7 @@ export async function readBody(request: Request): Promise<string | null> {
 /** Start a Render Workflows task by name. */
 export async function dispatchWorkflow(
 	taskName: string,
-	payload: { prompt: string; user: string; runId: string },
+	payload: Record<string, string>,
 ): Promise<string | null> {
 	const slug = process.env.RENDER_WORKFLOW_SLUG;
 	if (!slug) {

@@ -5,6 +5,7 @@ import {
 	assetManifestSchema,
 	buildOutputSchema,
 	createAppRequestSchema,
+	deleteAppInputSchema,
 	deployPlanSchema,
 	manifestSchema,
 	workflowInputSchema,
@@ -251,7 +252,37 @@ describe("manifestSchema", () => {
 	});
 });
 
+describe("deleteAppInputSchema", () => {
+	it("names an app with two slugs, because they become a path in the repository", () => {
+		expect(
+			deleteAppInputSchema.safeParse({ user: "demo", appName: "shop" }).success,
+		).toBe(true);
+		expect(
+			deleteAppInputSchema.safeParse({ user: "demo", appName: "../shop" })
+				.success,
+		).toBe(false);
+		expect(deleteAppInputSchema.safeParse({ user: "demo" }).success).toBe(
+			false,
+		);
+	});
+});
+
 describe("appSpecSchema", () => {
+	it("keeps deletedAt, which takes an app out of the root Blueprint", () => {
+		const spec = {
+			user: "demo",
+			appName: "furniture-catalog",
+			prompt: "Create an online catalog to sell handcrafted furniture",
+			summary: "A catalog.",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			tiers: ["static_site"],
+			manifest: validManifest,
+			notes: [],
+			deletedAt: "2026-02-01T00:00:00.000Z",
+		};
+		expect(appSpecSchema.parse(spec).deletedAt).toBe(spec.deletedAt);
+	});
+
 	it("round-trips the spec committed beside a generated app", () => {
 		const spec = {
 			user: "demo",

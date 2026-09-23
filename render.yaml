@@ -68,7 +68,8 @@ projects:
                   property: connectionString
               - key: APPS_REPO
                 sync: false
-              # Sandboxes, the Render MCP server, and Blueprint reads.
+              # Sandboxes, the Render MCP server, Blueprint reads, and the
+              # deletes of a deleted app's resources.
               - key: RENDER_API_KEY
                 sync: false
               - key: RENDER_WORKSPACE_ID

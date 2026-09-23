@@ -1,4 +1,7 @@
-/** prompt-to-app — one API call to a deployed app on Render. */
+/**
+ * prompt-to-app — one API call to a deployed app on Render.
+ * delete-app — one API call to remove that app again.
+ */
 import { type TaskContext, task } from "@renderinc/sdk/workflows";
 import {
 	factoryConfig,
@@ -27,6 +30,7 @@ import {
 	type AssetManifest,
 	assetManifestSchema,
 	buildOutputSchema,
+	deleteAppInputSchema,
 	type DeployPlan,
 	deployDiagnosisSchema,
 	deployPlanSchema,
@@ -62,12 +66,16 @@ import {
 	shellEscape,
 } from "./sandbox.js";
 import {
+	claimRunApp,
+	deleteRuns,
+	failDelete,
 	finishRun,
-	setRunApp,
+	setDeleteProgress,
 	setRunStage,
 	setRunUrls,
 	touchRun,
 } from "./store.js";
+import { deleteAppResources } from "./teardown.js";
 import { materializeTemplate } from "./templates.js";
 
 const SANDBOX_TIMEOUT_SECONDS = 2 * 60 * 60;
@@ -76,6 +84,10 @@ const MAX_DEPLOY_REPAIR_ROUNDS = 2;
 const SERVICE_TIMEOUT_MS = 6 * 60 * 1000;
 const DEPLOY_TIMEOUT_MS = 15 * 60 * 1000;
 const SITE_TIMEOUT_MS = 3 * 60 * 1000;
+/** A delete needs a sandbox for its two pushes and one wait for a sync. */
+const DELETE_TIMEOUT_SECONDS = 30 * 60;
+/** How long the apps Blueprint gets to stop managing a deleted app. */
+const RELEASE_TIMEOUT_MS = 6 * 60 * 1000;
 const SMOKE_PORT = 8099;
 const BOOT_ATTEMPTS = 15;
 /** Directory under templates/ that a multi-service app starts from. */
@@ -146,7 +158,14 @@ async function run(
 
 	const appName = plan.appName;
 	const blueprintPath = `${appRelativePath(user, appName)}/render.yaml`;
-	await setRunApp(runId, { appName, blueprintPath });
+	// Returned, not thrown: Render would retry a throw at once, and the delete
+	// would still be in progress.
+	if (!(await claimRunApp(runId, user, { appName, blueprintPath }))) {
+		return {
+			status: "failed",
+			summary: `${user}/${appName} is being deleted. Submit the prompt again when the delete finishes.`,
+		};
+	}
 
 	const sandbox = await createSandbox({
 		timeoutSeconds: SANDBOX_TIMEOUT_SECONDS,
@@ -1193,6 +1212,204 @@ function runHeartbeat(runId: string): (detail: string) => Promise<void> {
 		lastUpdate = Date.now();
 		await touchRun(runId, detail.slice(0, 500));
 	};
+}
+
+/* ── Delete ───────────────────────────────────────────────────────────── */
+
+interface DeleteResult {
+	status: "deleted";
+	user: string;
+	appName: string;
+	/** The Render resources that the delete removed. */
+	deleted: string[];
+}
+
+/**
+ * Render does not retry this task. A delete that fails marks the runs of the
+ * app delete_failed, and a new request starts it again. Each step reads the
+ * state that an earlier attempt left, so a new attempt does only what is left.
+ * The task starts no subtasks, so it does not use its TaskContext.
+ */
+export const deleteApp = task(
+	{
+		name: "delete-app",
+		plan: "starter",
+		timeoutSeconds: DELETE_TIMEOUT_SECONDS,
+		retry: { maxRetries: 0, waitDurationMs: 0 },
+	},
+	async function deleteApp(
+		_tasks: TaskContext,
+		rawInput: unknown,
+	): Promise<DeleteResult> {
+		const { user, appName } = deleteAppInputSchema.parse(rawInput);
+
+		try {
+			const deleted = await remove(user, appName);
+			await deleteRuns(user, appName);
+			return { status: "deleted", user, appName, deleted };
+		} catch (error) {
+			const summary = error instanceof Error ? error.message : String(error);
+			await failDelete(user, appName, summary.slice(0, 1_000)).catch(
+				(storeError) =>
+					console.error("Failed to record delete failure:", storeError),
+			);
+			throw error;
+		}
+	},
+);
+
+/** Git runs in a sandbox, as it does for a build. */
+async function remove(user: string, appName: string): Promise<string[]> {
+	const repo = appsRepo();
+	const workspaceId = renderWorkspaceId();
+	const sandbox = await createSandbox({
+		timeoutSeconds: DELETE_TIMEOUT_SECONDS,
+	});
+	try {
+		const token = await githubToken();
+		const remoteUrl = await cloneAppsRepo(
+			sandbox,
+			token,
+			repo,
+			factoryConfig.branch,
+		);
+		return await removeApp({
+			sandbox,
+			token,
+			remoteUrl,
+			repoUrl: repo.url,
+			workspaceId,
+			user,
+			appName,
+			onProgress: (detail) => setDeleteProgress(user, appName, detail),
+		});
+	} finally {
+		await sandbox
+			.terminate()
+			.catch((error) => console.error("Failed to terminate sandbox:", error));
+	}
+}
+
+export interface RemoveContext {
+	sandbox: Sandbox;
+	token: string;
+	remoteUrl: string;
+	repoUrl: string;
+	workspaceId: string;
+	user: string;
+	appName: string;
+	onProgress: (detail: string) => Promise<void>;
+}
+
+/**
+ * Delete one app in the order that a Blueprint allows. A sync recreates a
+ * declared resource that is missing, and it never deletes a resource that
+ * leaves the file. So the first commit takes the app out of the root
+ * Blueprint, the resources are deleted when Render stops managing them, and
+ * the second commit removes the files. Until then factory.json stays, with
+ * deletedAt set, because a new attempt reads it to find the resources.
+ *
+ * The first commit changes only factory.json and the root Blueprint. A commit
+ * that removed the source of a service would start a build of it, and that
+ * build would fail before the service is deleted.
+ */
+export async function removeApp(ctx: RemoveContext): Promise<string[]> {
+	const { sandbox, user, appName } = ctx;
+	const appDir = appPath(user, appName);
+	const spec = await readSpec(sandbox, user, appName);
+
+	let deleted: string[] = [];
+	if (spec) {
+		await ctx.onProgress("Removing the app from the Blueprint");
+		const deleting: AppSpec = {
+			...spec,
+			deletedAt: spec.deletedAt ?? new Date().toISOString(),
+		};
+		await sandbox.writeFile(
+			`${appDir}/factory.json`,
+			`${JSON.stringify(deleting, null, 2)}\n`,
+		);
+		await writeRootBlueprint(sandbox);
+		await commitAndPush(
+			ctx,
+			`Delete ${user}/${appName}: remove it from the Blueprint`,
+		);
+
+		// Not caught, as it is in awaitDeployment: a delete without the wait
+		// for the Blueprint lets a sync bring the resources back.
+		const blueprint = await findBlueprint({
+			workspaceId: ctx.workspaceId,
+			repo: ctx.repoUrl,
+			branch: factoryConfig.branch,
+			path: factoryConfig.blueprintPath,
+		});
+		deleted = await deleteAppResources(deleting, {
+			workspaceId: ctx.workspaceId,
+			blueprintId: blueprint?.id ?? null,
+			releaseTimeoutMs: RELEASE_TIMEOUT_MS,
+			onProgress: ctx.onProgress,
+		});
+	}
+
+	await ctx.onProgress("Removing the app's files from the apps repository");
+	await sandbox.mustRun(
+		`rm -rf ${shellEscape(appDir)}`,
+		"Remove the app directory",
+	);
+	await commitAndPush(ctx, `Delete ${user}/${appName}`);
+	return deleted;
+}
+
+/**
+ * The spec of one app in the clone, or null when the repository has no spec
+ * for it. The names of the resources to delete come from this file, so a
+ * file that names a different app stops the delete.
+ */
+async function readSpec(
+	sandbox: Sandbox,
+	user: string,
+	appName: string,
+): Promise<AppSpec | null> {
+	for (const file of ["factory.json", "airo.json"]) {
+		const path = `${appPath(user, appName)}/${file}`;
+		const exists = await sandbox.run(`test -e ${shellEscape(path)}`);
+		if (exists.exitCode !== 0) continue;
+
+		const raw = await sandbox.readFile(path);
+		let value: unknown = null;
+		try {
+			value = JSON.parse(raw);
+		} catch {
+			// Reported below with the schema failure.
+		}
+		const parsed = appSpecSchema.safeParse(value);
+		if (
+			!parsed.success ||
+			parsed.data.user !== user ||
+			parsed.data.appName !== appName
+		) {
+			throw new Error(
+				`${appRelativePath(user, appName)}/${file} is not a valid spec of ${user}/${appName}, so the delete stopped.`,
+			);
+		}
+		return parsed.data;
+	}
+	return null;
+}
+
+/** A commit that changes nothing is not made, and there is nothing to push. */
+async function commitAndPush(
+	ctx: RemoveContext,
+	message: string,
+): Promise<void> {
+	if (!(await commitAll(ctx.sandbox, message))) return;
+	await pushVerified(
+		ctx.sandbox,
+		ctx.token,
+		ctx.remoteUrl,
+		factoryConfig.branch,
+		() => writeRootBlueprint(ctx.sandbox),
+	);
 }
 
 /* ── Prompts ──────────────────────────────────────────────────────────── */
