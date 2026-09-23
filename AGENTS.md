@@ -47,6 +47,11 @@ The gateway listens on `0.0.0.0:${PORT:-3000}`. `GET /health` is liveness,
 arrive at `POST /v1/apps`, and runs are polled at `GET /v1/apps/:runId`. Local
 workflow runs create real Render Sandboxes and deploy real services.
 
+`dev:gateway` sets `RENDER_USE_LOCAL_DEV=true`, so the local gateway starts
+tasks on the `dev:workflows` task server, which finds a task by its name and
+ignores the slug. Set that variable only in `dev:gateway`, never in `.env`:
+the workflows host loads `.env` too and must use the Render API.
+
 Verify a change with `npm run check` (Biome, `tsc`, Vitest). For one file:
 `npx vitest run tests/blueprint.test.ts`. Validate this repository's own
 Blueprint with `render blueprints validate` when `render.yaml` changes.
@@ -115,7 +120,7 @@ templates/
   fullstack/     web/ (Vite + React + Tailwind + shadcn/ui), api/ (Hono + pg)
 scripts/         migrate, doctor, demo, support
 tests/           agents, blueprint, contracts, gateway, git, github-auth,
-                 policy, render, shell, templates, tools
+                 host, policy, render, shell, templates, tools
 ```
 
 There is no `tasks.ts`, `scaffold.ts`, `shell.ts`, `github.ts`, or `format.ts`:
@@ -206,7 +211,8 @@ API is the seam. Do not rebuild a checkpoint store here.
 4. If it emits JSON, add a schema to `app/contracts.ts`, register it in
    `OUTPUT_SCHEMAS`, and call it through `agentJson()`, which retries once and
    then fails closed.
-5. Update `tests/agents.test.ts` for tool access.
+5. Update `tests/agents.test.ts` for tool access, and add the task name to
+   `tests/host.test.ts` and `scripts/doctor.ts`.
 
 ## Add a Render primitive
 

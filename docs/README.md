@@ -172,6 +172,19 @@ npm run dev:gateway    # http://localhost:3000
 npm run dev:workflows  # needs the authenticated Render CLI
 ```
 
+`dev:workflows` starts the Render CLI's local task server on port 8120.
+`dev:gateway` sets `RENDER_USE_LOCAL_DEV=true`, so the gateway starts and
+reads tasks on that server, not on a deployed Workflows service. The local
+server finds a task by its name and ignores the slug, so the `.env.example`
+value of `RENDER_WORKFLOW_SLUG` works. Do not put `RENDER_USE_LOCAL_DEV` in
+`.env`: the workflows host loads that file too, and it must use the Render
+API. If `dev:workflows` is not running, a submission fails with
+`dispatch failed`. To see the tasks that the local server registered:
+
+```bash
+render workflows tasks list --local
+```
+
 `dev:workflows` runs locally but creates real Render Sandboxes and can deploy
 real, billable resources. Local development changes where orchestration runs;
 it does not emulate the Render data plane.
