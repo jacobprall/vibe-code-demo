@@ -259,6 +259,38 @@ export const deleteResourcesInputSchema = appSpecSchema.pick({
 
 export type DeleteResourcesInput = z.infer<typeof deleteResourcesInputSchema>;
 
+/* ── Verify and publish ───────────────────────────────────────────────── */
+
+/**
+ * The input of verify-app. The sandbox holds the builder's files, and
+ * workflow code gives its id, never a model. The app directory comes from
+ * user and appName, so the input names no path.
+ */
+export const verifyAppInputSchema = z.object({
+	sandboxId: z.string().min(1),
+	user: slug,
+	appName: slug,
+	manifest: manifestSchema,
+	/** The Postgres in the sandbox, or null when the app has no database. */
+	databaseUrl: z.string().min(1).nullable(),
+});
+
+export type VerifyAppInput = z.infer<typeof verifyAppInputSchema>;
+
+/**
+ * The input of publish-app. The spec gives factory.json and both
+ * Blueprints. The repository and the GitHub token come from the
+ * configuration of the workflow, never from the input: the Render Dashboard
+ * shows the input of each task run.
+ */
+export const publishAppInputSchema = z.object({
+	sandboxId: z.string().min(1),
+	spec: appSpecSchema,
+	message: z.string().min(1),
+});
+
+export type PublishAppInput = z.infer<typeof publishAppInputSchema>;
+
 /* ── Terminal results ─────────────────────────────────────────────────── */
 
 export type WorkflowResult =

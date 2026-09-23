@@ -78,23 +78,35 @@ cap, and no tenant-level quotas.
 3. One sandbox receives the apps repository. A curator supplies constrained
    media and a builder creates the application from an empty directory or a
    contract-bearing template.
-4. Workflow-owned checks build, migrate, boot, and query the generated
-   services. They start from only the files a commit holds, as Render's fresh
-   clone does. Failures can return to the builder for bounded repair rounds.
-5. Workflow code derives `factory.json` and `render.yaml`, commits, pushes,
-   and verifies the remote SHA. Blueprint sync—not an agent API call—creates
-   the infrastructure.
+4. The `verify-app` subtask builds, migrates, boots, and queries the
+   generated services. Its checks start from only the files a commit holds, as
+   Render's fresh clone does. Failures can return to the builder for bounded
+   repair rounds.
+5. The `publish-app` subtask derives `factory.json` and `render.yaml`,
+   commits, pushes, and verifies the remote SHA. Blueprint sync—not an agent
+   API call—creates the infrastructure.
 6. The workflow waits for deployment. On failure, a deploy manager uses
    read-only Render MCP data to diagnose the deploy and can request bounded
-   builder repairs. Workflow code verifies each repair, rewrites
-   `factory.json` and `render.yaml` from its manifest, and pushes again. Then
-   it waits for a new deploy of each failed service, not for the deploy that
-   failed. A repair cannot add or remove a resource: a Blueprint sync never
-   deletes one, and the loop watches only the services of the first push. Live
-   services still must pass public storefront, API hostname, health, data, and
-   CORS checks.
+   builder repairs. `verify-app` verifies each repair, and `publish-app`
+   rewrites `factory.json` and `render.yaml` from its manifest and pushes
+   again. Then the workflow waits for a new deploy of each failed service, not
+   for the deploy that failed. A repair cannot add or remove a resource: a
+   Blueprint sync never deletes one, and the loop watches only the services of
+   the first push. Live services still must pass public storefront, API
+   hostname, health, data, and CORS checks.
 7. Postgres exposes progress and final URLs to reconnecting clients; a
    `finally` block terminates the sandbox.
+
+Each agent, `verify-app`, and `publish-app` is a subtask of `prompt-to-app`.
+In the Render Dashboard, each one is a run of its own under the
+`prompt-to-app` run, with its input, its result, and its logs. The curator,
+the builder, `verify-app`, and `publish-app` work in the sandbox of the run.
+They find it by the `sandboxId` in their input.
+
+| Task | Result | Events |
+| --- | --- | --- |
+| `verify-app` | `failures`: the full text of each check that failed, or `[]` | `app_verified`; `app_verification_failed`, with the first line of each failure |
+| `publish-app` | `commit`: the pushed commit, or `null` when no file changed | `app_published`, with the commit |
 
 ## Delete an app
 
@@ -360,6 +372,7 @@ Copy `.env.example` when setting up locally.
 `GET /v1/apps/:runId` returns both a coarse `stage` and a human-readable
 `progress` value:
 
+- `verifying`: `verify-app` builds, boots, and queries the app in the sandbox. If it does not finish in 30 minutes, for example because a build command does not exit, the run ends as `failed`.
 - `waiting_for_services`: Blueprint sync has not created every expected service.
 - `waiting_for_deploys`: at least one Render deploy has not reached a terminal state. After a repair push, it can also mean that Render has not started the new deploy of a failed service yet. If Render does not start one in 15 minutes, the run ends as `deploy_failed`.
 - `smoke_testing`: deploys are live; public URL, API hostname, data, or CORS checks are still running.

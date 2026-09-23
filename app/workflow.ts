@@ -37,8 +37,12 @@ import {
 	type DeployPlan,
 	deployDiagnosisSchema,
 	deployPlanSchema,
+	type PublishAppInput,
+	publishAppInputSchema,
 	type Service,
 	type TierKind,
+	type VerifyAppInput,
+	verifyAppInputSchema,
 	type WaitForSyncsInput,
 	type WorkflowResult,
 	waitForSyncsInputSchema,
@@ -48,6 +52,7 @@ import {
 	appGitignore,
 	cloneAppsRepo,
 	commitAll,
+	githubRemoteUrl,
 	githubToken,
 	pushVerified,
 	removeIgnored,
@@ -65,6 +70,7 @@ import {
 	waitForServices,
 } from "./render.js";
 import {
+	connectSandbox,
 	createSandbox,
 	ensureSandboxPostgres,
 	type Sandbox,
@@ -89,6 +95,10 @@ const MAX_DEPLOY_REPAIR_ROUNDS = 2;
 const SERVICE_TIMEOUT_MS = 6 * 60 * 1000;
 const DEPLOY_TIMEOUT_MS = 15 * 60 * 1000;
 const SITE_TIMEOUT_MS = 3 * 60 * 1000;
+/** verify-app builds each service and boots each web service. */
+const VERIFY_TIMEOUT_SECONDS = 30 * 60;
+/** publish-app makes one commit and one push. */
+const PUBLISH_TIMEOUT_SECONDS = 10 * 60;
 /**
  * A step of a delete makes one push, waits for the syncs of the Blueprint, or
  * makes the deletes on Render.
@@ -145,7 +155,9 @@ export const promptToApp = task(
 
 /**
  * The pipeline. Each agent runs as a subtask on its own compute, through
- * `tasks`, the context that Render Workflows gives to prompt-to-app.
+ * `tasks`, the context that Render Workflows gives to prompt-to-app. So do
+ * the verification of the app and its publish. On Render, each subtask has
+ * its own run, with its input, its result, and its logs.
  */
 async function run(
 	tasks: TaskContext,
@@ -181,10 +193,9 @@ async function run(
 		timeoutSeconds: SANDBOX_TIMEOUT_SECONDS,
 	});
 	try {
-		const token = await githubToken();
-		const remoteUrl = await cloneAppsRepo(
+		await cloneAppsRepo(
 			sandbox,
-			token,
+			await githubToken(),
 			repo,
 			factoryConfig.branch,
 		);
@@ -222,6 +233,7 @@ async function run(
 			tasks,
 			sandbox,
 			appDir,
+			user,
 			plan,
 			prompt,
 			runId,
@@ -249,17 +261,14 @@ async function run(
 
 		// ── Publish ─────────────────────────────────────────────────────
 		await setRunStage(runId, "publishing");
-		await writeBlueprints(sandbox, spec, appDir, repo.url);
-		const sha = await commitAll(
-			sandbox,
-			`${user}/${appName}: ${oneLine(prompt)}`,
-		);
-		if (!sha) {
+		const { commit } = await tasks.run(publishAppTask, {
+			sandboxId: sandbox.id,
+			spec,
+			message: `${user}/${appName}: ${oneLine(prompt)}`,
+		});
+		if (!commit) {
 			return { status: "build_failed", summary: "The run produced no files." };
 		}
-		await pushVerified(sandbox, token, remoteUrl, factoryConfig.branch, () =>
-			writeRootBlueprint(sandbox),
-		);
 
 		// ── Deploy ──────────────────────────────────────────────────────
 		await setRunStage(runId, "deploying");
@@ -267,8 +276,6 @@ async function run(
 			tasks,
 			mcp,
 			sandbox,
-			token,
-			remoteUrl,
 			workspaceId,
 			repoUrl: repo.url,
 			spec,
@@ -361,6 +368,7 @@ async function buildAndVerify(opts: {
 	tasks: TaskContext;
 	sandbox: Sandbox;
 	appDir: string;
+	user: string;
 	plan: DeployPlan;
 	prompt: string;
 	runId: string;
@@ -389,12 +397,13 @@ async function buildAndVerify(opts: {
 		}
 
 		await setRunStage(opts.runId, "verifying");
-		const failures = await verify(
-			opts.sandbox,
-			opts.appDir,
-			buildOutput.manifest,
-			opts.databaseUrl,
-		);
+		const { failures } = await opts.tasks.run(verifyAppTask, {
+			sandboxId: opts.sandbox.id,
+			user: opts.user,
+			appName: opts.plan.appName,
+			manifest: buildOutput.manifest,
+			databaseUrl: opts.databaseUrl,
+		});
 		if (failures.length === 0) {
 			return {
 				passed: true,
@@ -441,6 +450,52 @@ function resolveServiceDir(base: string, relative: string): string {
 	if (base.endsWith(`/${cleaned}`)) return base;
 	return `${base}/${cleaned}`;
 }
+
+/**
+ * Verify the builder's files in the sandbox. A check that fails is a result,
+ * not an error: the parent gives the failures to the builder, or it ends the
+ * run.
+ *
+ * Render does not retry it. A retry after a timeout runs every build again.
+ * And a service that the failed attempt started can still answer on the port
+ * of the next boot, so a retry can pass a check that failed.
+ */
+export const verifyAppTask = task(
+	{
+		name: "verify-app",
+		// The builds run in the sandbox, not on the compute of this task.
+		plan: "starter",
+		timeoutSeconds: VERIFY_TIMEOUT_SECONDS,
+		retry: { maxRetries: 0, waitDurationMs: 0 },
+	},
+	async function verifyApp(
+		_tasks: TaskContext,
+		input: VerifyAppInput,
+	): Promise<{ failures: string[] }> {
+		const { sandboxId, user, appName, manifest, databaseUrl } =
+			verifyAppInputSchema.parse(input);
+		const failures = await verify(
+			connectSandbox(sandboxId),
+			appPath(user, appName),
+			manifest,
+			databaseUrl,
+		);
+		console.log(
+			JSON.stringify(
+				failures.length === 0
+					? { event: "app_verified", user, appName }
+					: {
+							event: "app_verification_failed",
+							user,
+							appName,
+							// The first line of each. The result has all of the text.
+							failures: failures.map((failure) => failure.split("\n", 1)[0]),
+						},
+			),
+		);
+		return { failures };
+	},
+);
 
 /**
  * Generic verification driven by the manifest. It starts from the files a
@@ -732,6 +787,57 @@ function runBuilder(
 
 /* ── Publish ──────────────────────────────────────────────────────────── */
 
+/**
+ * Write factory.json, the app's render.yaml and README, and the root
+ * Blueprint from the spec, commit them with the app, and push. Render deploys
+ * the push, so the parent starts this only after verify-app passes. Returns
+ * the pushed commit, or null when no file changed.
+ *
+ * Render does not retry it. A retry after the push finds nothing to commit,
+ * and the run then ends as if the push changed no files.
+ */
+export const publishAppTask = task(
+	{
+		name: "publish-app",
+		plan: "starter",
+		timeoutSeconds: PUBLISH_TIMEOUT_SECONDS,
+		retry: { maxRetries: 0, waitDurationMs: 0 },
+	},
+	async function publishApp(
+		_tasks: TaskContext,
+		input: PublishAppInput,
+	): Promise<{ commit: string | null }> {
+		const { sandboxId, spec, message } = publishAppInputSchema.parse(input);
+		const repo = appsRepo();
+		const sandbox = connectSandbox(sandboxId);
+		await writeBlueprints(
+			sandbox,
+			spec,
+			appPath(spec.user, spec.appName),
+			repo.url,
+		);
+		const commit = await commitAndPush(
+			{
+				sandbox,
+				// Get the token here, not at the start of the run: an installation
+				// token expires after an hour, and a run can take two hours.
+				token: await githubToken(),
+				remoteUrl: githubRemoteUrl(repo.owner, repo.repo),
+			},
+			message,
+		);
+		console.log(
+			JSON.stringify({
+				event: "app_published",
+				user: spec.user,
+				appName: spec.appName,
+				commit,
+			}),
+		);
+		return { commit };
+	},
+);
+
 async function writeBlueprints(
 	sandbox: Sandbox,
 	spec: AppSpec,
@@ -789,15 +895,38 @@ async function readAllSpecs(sandbox: Sandbox): Promise<AppSpec[]> {
 	return [...specs.values()].map(({ spec }) => spec);
 }
 
-/* ── Deploy ───────────────────────────────────────────────────────────── */
-
-export interface DeployContext {
-	/** Runs the deploy manager and the builder as subtasks. */
-	tasks: TaskContext;
-	mcp: RenderMcp;
+/** A sandbox that holds a clone of the apps repository, and how to push it. */
+interface AppsClone {
 	sandbox: Sandbox;
 	token: string;
 	remoteUrl: string;
+}
+
+/**
+ * A commit that changes nothing is not made, and there is nothing to push.
+ * Returns the commit that it pushed, or null.
+ */
+async function commitAndPush(
+	clone: AppsClone,
+	message: string,
+): Promise<string | null> {
+	if (!(await commitAll(clone.sandbox, message))) return null;
+	return pushVerified(
+		clone.sandbox,
+		clone.token,
+		clone.remoteUrl,
+		factoryConfig.branch,
+		() => writeRootBlueprint(clone.sandbox),
+	);
+}
+
+/* ── Deploy ───────────────────────────────────────────────────────────── */
+
+export interface DeployContext {
+	/** Runs the deploy manager, the builder, verify-app, and publish-app. */
+	tasks: TaskContext;
+	mcp: RenderMcp;
+	sandbox: Sandbox;
 	workspaceId: string;
 	repoUrl: string;
 	spec: AppSpec;
@@ -813,9 +942,10 @@ export interface DeployContext {
  * 2. Wait for deploys to reach a terminal state
  * 3. If any fail, the deploy-manager agent diagnoses via MCP
  * 4. The builder fixes what the deploy-manager diagnosed
- * 5. Re-verify, rewrite factory.json and the Blueprints from the repaired
- *    manifest, and re-push. Then wait for a new deploy of each service that
- *    failed. Repeat up to MAX_DEPLOY_REPAIR_ROUNDS
+ * 5. verify-app verifies the repair. publish-app rewrites factory.json and
+ *    the Blueprints from the repaired manifest, and pushes. Then wait for a
+ *    new deploy of each service that failed. Repeat up to
+ *    MAX_DEPLOY_REPAIR_ROUNDS
  */
 export async function awaitDeployment(
 	ctx: DeployContext,
@@ -984,17 +1114,14 @@ export async function awaitDeployment(
 			};
 		}
 
-		const failures = await verify(
-			ctx.sandbox,
-			ctx.appDir,
-			repaired.manifest,
-			ctx.databaseUrl,
-		);
+		const { failures } = await ctx.tasks.run(verifyAppTask, {
+			sandboxId: ctx.sandbox.id,
+			user: spec.user,
+			appName: spec.appName,
+			manifest: repaired.manifest,
+			databaseUrl: ctx.databaseUrl,
+		});
 		if (failures.length > 0) {
-			console.error(
-				"Deploy repair failed verification:",
-				failures.join("\n"),
-			);
 			return {
 				status: "deploy_failed",
 				summary: `Deploy repair round ${round + 1} failed local verification: ${failures.join("; ").slice(0, 1_000)}`,
@@ -1005,28 +1132,20 @@ export async function awaitDeployment(
 		// factory.json. If these files keep the old manifest, Render keeps the
 		// old commands, paths, and env vars.
 		spec = repaired;
-		await writeBlueprints(ctx.sandbox, spec, ctx.appDir, ctx.repoUrl);
-		const sha = await commitAll(
-			ctx.sandbox,
-			`Fix Render deploy for ${spec.user}/${spec.appName} (round ${round + 1})`,
-		);
+		const { commit } = await ctx.tasks.run(publishAppTask, {
+			sandboxId: ctx.sandbox.id,
+			spec,
+			message: `Fix Render deploy for ${spec.user}/${spec.appName} (round ${round + 1})`,
+		});
 		// With no commit, Render deploys nothing, and the failed deploys stay.
 		// Render keeps the last live deploy of a failed service, so the smoke
 		// checks can pass against the old code.
-		if (!sha) {
+		if (!commit) {
 			return {
 				status: "deploy_failed",
 				summary: `Deploy repair round ${round + 1} changed no files, so Render has no new commit to deploy. ${deployFailures(failed)}`,
 			};
 		}
-
-		await pushVerified(
-			ctx.sandbox,
-			ctx.token,
-			ctx.remoteUrl,
-			factoryConfig.branch,
-			() => writeRootBlueprint(ctx.sandbox),
-		);
 
 		// Right after the push, the newest deploy of each failed service is
 		// still the deploy that failed.
@@ -1459,12 +1578,6 @@ export const removeFilesTask = task(
 	},
 );
 
-interface AppsClone {
-	sandbox: Sandbox;
-	token: string;
-	remoteUrl: string;
-}
-
 /**
  * Git runs in a sandbox, as it does for a build. Each step that pushes makes
  * its own clone, so it starts from the newest commit, and no sandbox stays up
@@ -1528,24 +1641,6 @@ async function readSpec(
 		return parsed.data;
 	}
 	return null;
-}
-
-/**
- * A commit that changes nothing is not made, and there is nothing to push.
- * Returns the commit that it pushed, or null.
- */
-async function commitAndPush(
-	clone: AppsClone,
-	message: string,
-): Promise<string | null> {
-	if (!(await commitAll(clone.sandbox, message))) return null;
-	return pushVerified(
-		clone.sandbox,
-		clone.token,
-		clone.remoteUrl,
-		factoryConfig.branch,
-		() => writeRootBlueprint(clone.sandbox),
-	);
 }
 
 /* ── Prompts ──────────────────────────────────────────────────────────── */
