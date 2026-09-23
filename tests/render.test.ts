@@ -9,12 +9,14 @@ import {
 	findDeploys,
 	findLogMessages,
 	findServiceUrl,
+	McpError,
 	pageContains,
 	pageScripts,
 	parseToolText,
-	type RenderMcp,
+	RenderMcp,
 	serviceRecords,
 	waitForDeploy,
+	waitForServices,
 } from "../app/render.js";
 
 /**
@@ -123,18 +125,26 @@ describe("waitForDeploy", () => {
 
 	beforeEach(() => {
 		vi.useFakeTimers();
+		vi.spyOn(console, "warn").mockImplementation(() => {});
 	});
 
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
 	});
 
-	/** Each list_deploys call returns the next deploy, then the last again. */
-	function renderReturns(...deploys: DeployRecord[]) {
+	/**
+	 * Each list_deploys call returns the next deploy, or throws the next
+	 * error. After the last one, each call does the last one again.
+	 */
+	function renderReturns(...results: (DeployRecord | Error)[]) {
 		let calls = 0;
-		const callTool = vi.fn(async () => [
-			deploys[Math.min(calls++, deploys.length - 1)],
-		]);
+		const callTool = vi.fn(async () => {
+			const result = results[Math.min(calls++, results.length - 1)];
+			if (result instanceof Error) throw result;
+			return [result];
+		});
 		return { mcp: { callTool } as unknown as RenderMcp, callTool };
 	}
 
@@ -217,6 +227,276 @@ describe("waitForDeploy", () => {
 			status: "timed out while build_in_progress",
 			result: "timed_out",
 		});
+	});
+
+	/*
+	 * A deploy wait can poll for 15 minutes, after the push. One failed poll
+	 * once ended the run as "failed", although the deploy went live.
+	 */
+	it("polls again after a poll fails", async () => {
+		const onPoll = vi.fn();
+		const { mcp, callTool } = renderReturns(
+			new McpError("Render MCP responded 502: Bad Gateway", { status: 502 }),
+			new DOMException(
+				"The operation was aborted due to timeout",
+				"TimeoutError",
+			),
+			{ id: "dep-2", status: "live" },
+		);
+
+		expect(await waitForApi(mcp, { onPoll })).toEqual({
+			deployId: "dep-2",
+			status: "live",
+			result: "live",
+		});
+		expect(callTool).toHaveBeenCalledTimes(3);
+		expect(onPoll.mock.calls.map(([detail]) => detail)).toEqual([
+			"list_deploys for srv-api failed (attempt 1 of 5): Render MCP responded 502: Bad Gateway",
+			"list_deploys for srv-api failed (attempt 2 of 5): The operation was aborted due to timeout",
+		]);
+	});
+
+	it("counts only the failures in sequence", async () => {
+		const failure = new McpError("Render MCP responded 503: ", { status: 503 });
+		const failures = Array.from({ length: 4 }, () => failure);
+		const { mcp } = renderReturns(
+			...failures,
+			{ id: "dep-2", status: "build_in_progress" },
+			...failures,
+			{ id: "dep-2", status: "live" },
+		);
+
+		expect(await waitForApi(mcp)).toMatchObject({ result: "live" });
+	});
+
+	it("fails with the last error when 5 polls in sequence fail", async () => {
+		const { mcp, callTool } = renderReturns(
+			{ id: "dep-2", status: "build_in_progress" },
+			...Array.from(
+				{ length: 4 },
+				() => new McpError("Render MCP responded 503: ", { status: 503 }),
+			),
+			new TypeError("fetch failed", { cause: new Error("other side closed") }),
+		);
+
+		await expect(waitForApi(mcp)).rejects.toThrow(
+			"list_deploys for srv-api failed 5 times in sequence. " +
+				"The last error: fetch failed: other side closed",
+		);
+		expect(callTool).toHaveBeenCalledTimes(6);
+	});
+
+	// A new attempt cannot repair the API key, so the wait does not continue
+	// until its deadline.
+	it.each([401, 403])("fails at once on a %i", async (status) => {
+		const error = new McpError(`Render MCP responded ${status}: `, { status });
+		const { mcp, callTool } = renderReturns(error);
+
+		await expect(waitForApi(mcp)).rejects.toBe(error);
+		expect(callTool).toHaveBeenCalledTimes(1);
+	});
+
+	/**
+	 * These tests use the real MCP client. A fake Render MCP server gives a
+	 * new session to each initialize request, and `answer` can replace the
+	 * answer to a request. `answer` must answer each tools/call request.
+	 */
+	describe("through the MCP client", () => {
+		const LIVE: DeployRecord = { id: "dep-2", status: "live" };
+
+		interface McpRequest {
+			method: string;
+			id: number;
+			session: string | null;
+			/** The number of requests with this method, this one included. */
+			count: number;
+		}
+
+		function fakeMcpServer(answer: (request: McpRequest) => Response | null) {
+			const requests: McpRequest[] = [];
+			let sessions = 0;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+					const { method, id } = JSON.parse(String(init?.body));
+					const request: McpRequest = {
+						method,
+						id,
+						session: new Headers(init?.headers).get("mcp-session-id"),
+						count: requests.filter((r) => r.method === method).length + 1,
+					};
+					requests.push(request);
+
+					const answered = answer(request);
+					if (answered) return answered;
+					if (method === "initialize") {
+						sessions++;
+						return Response.json(
+							{ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18" } },
+							{ headers: { "mcp-session-id": `session-${sessions}` } },
+						);
+					}
+					if (method === "notifications/initialized") {
+						return new Response(null, { status: 202 });
+					}
+					throw new Error(`No answer to ${method}`);
+				}),
+			);
+			return requests;
+		}
+
+		/** The answer to a tools/call request, as the Render MCP server gives it. */
+		function toolAnswer(id: number, result: object): Response {
+			return Response.json({ jsonrpc: "2.0", id, result });
+		}
+
+		function deploys(id: number, deploy: DeployRecord): Response {
+			return toolAnswer(id, {
+				content: [
+					{ type: "text", text: `${JSON.stringify([deploy])}\n\n cursor: ""` },
+				],
+			});
+		}
+
+		function newClient(): RenderMcp {
+			return new RenderMcp("https://mcp.render.test/mcp", "rnd_test");
+		}
+
+		/* The server ends a session that is idle for 30 minutes, and a restart
+		 * ends all sessions. A deploy repair can take longer than 30 minutes. */
+		it("continues in a new session when the server ends the session", async () => {
+			const requests = fakeMcpServer(({ method, id, session, count }) => {
+				if (method !== "tools/call") return null;
+				if (count === 1) {
+					return deploys(id, { id: "dep-2", status: "build_in_progress" });
+				}
+				if (session === "session-1") {
+					return new Response("Session terminated", { status: 404 });
+				}
+				return deploys(id, LIVE);
+			});
+			const onPoll = vi.fn();
+
+			expect(await waitForApi(newClient(), { onPoll })).toMatchObject({
+				result: "live",
+			});
+			expect(
+				requests.map(({ method, session }) => `${method} ${session ?? "-"}`),
+			).toEqual([
+				"initialize -",
+				"notifications/initialized session-1",
+				"tools/call session-1",
+				"tools/call session-1",
+				"initialize -",
+				"notifications/initialized session-2",
+				"tools/call session-2",
+			]);
+			expect(onPoll).toHaveBeenCalledWith(
+				"list_deploys for srv-api failed (attempt 1 of 5): Render MCP responded 404: Session terminated",
+			);
+		});
+
+		it("does the handshake again after it fails", async () => {
+			const requests = fakeMcpServer(({ method, id, count }) => {
+				if (method === "initialize" && count === 1) {
+					throw new TypeError("fetch failed", {
+						cause: new Error("getaddrinfo ENOTFOUND mcp.render.test"),
+					});
+				}
+				return method === "tools/call" ? deploys(id, LIVE) : null;
+			});
+			const onPoll = vi.fn();
+
+			expect(await waitForApi(newClient(), { onPoll })).toMatchObject({
+				result: "live",
+			});
+			expect(requests.map(({ method }) => method)).toEqual([
+				"initialize",
+				"initialize",
+				"notifications/initialized",
+				"tools/call",
+			]);
+			expect(onPoll).toHaveBeenCalledWith(
+				"list_deploys for srv-api failed (attempt 1 of 5): fetch failed: getaddrinfo ENOTFOUND mcp.render.test",
+			);
+		});
+
+		/* The server sends an API key on to the Render API. So a key that is not
+		 * valid fails in the tool call, and the MCP request gets a 200. */
+		it.each([
+			["service srv-api: unauthorized", 401],
+			["cannot access workspace tea-test: forbidden", 403],
+		])(
+			"fails at once when the tool call fails with %s",
+			async (text, status) => {
+				const requests = fakeMcpServer(({ method, id }) =>
+					method === "tools/call"
+						? toolAnswer(id, {
+								isError: true,
+								content: [{ type: "text", text }],
+							})
+						: null,
+				);
+
+				await expect(waitForApi(newClient())).rejects.toMatchObject({
+					name: "McpError",
+					message: `list_deploys: ${text}`,
+					status,
+				});
+				expect(
+					requests.filter(({ method }) => method === "tools/call"),
+				).toHaveLength(1);
+			},
+		);
+	});
+});
+
+describe("waitForServices", () => {
+	const web = { id: "srv-web", name: "acme-demo-shop-web" };
+	const api = { id: "srv-api", name: "acme-demo-shop-api" };
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it("polls again after a poll fails, until each service is there", async () => {
+		const results = [
+			[web],
+			new McpError("list_services: received response code 503: ", {
+				tool: "list_services",
+			}),
+			[web, api],
+		];
+		let calls = 0;
+		const callTool = vi.fn(async () => {
+			const result = results[calls++];
+			if (result instanceof Error) throw result;
+			return result;
+		});
+		const onPoll = vi.fn();
+
+		const [services] = await Promise.all([
+			waitForServices(
+				{ callTool } as unknown as RenderMcp,
+				"tea-test",
+				[web.name, api.name],
+				60_000,
+				onPoll,
+			),
+			vi.runAllTimersAsync(),
+		]);
+
+		expect([...services.keys()]).toEqual([web.name, api.name]);
+		expect(onPoll.mock.calls.map(([detail]) => detail)).toEqual([
+			"Found 1/2 services",
+			"list_services failed (attempt 1 of 5): list_services: received response code 503: ",
+		]);
 	});
 });
 
@@ -349,24 +629,41 @@ describe("findBlueprint", () => {
 		cursor: `cursor-${n}`,
 	});
 
-	/** Serve these pages in order, and record each URL. */
-	function servePages(pages: unknown[][]) {
+	/**
+	 * Serve these pages in order, and record each URL. A Response in the list
+	 * is the answer to its request.
+	 */
+	function servePages(pages: (unknown[] | Response)[]) {
 		const urls: URL[] = [];
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (url: string | URL | Request) => {
 				urls.push(new URL(String(url)));
-				return Response.json(pages[urls.length - 1] ?? []);
+				const page = pages[urls.length - 1] ?? [];
+				return page instanceof Response ? page : Response.json(page);
 			}),
 		);
 		return urls;
 	}
 
+	/** Look up the Blueprint, and do the waits between attempts at once. */
+	async function lookUp() {
+		vi.useFakeTimers();
+		const [blueprint] = await Promise.all([
+			findBlueprint(target),
+			vi.runAllTimersAsync(),
+		]);
+		return blueprint;
+	}
+
 	beforeEach(() => {
 		vi.stubEnv("RENDER_API_KEY", "rnd_test");
+		vi.spyOn(console, "warn").mockImplementation(() => {});
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
 		vi.unstubAllEnvs();
 	});
@@ -395,6 +692,39 @@ describe("findBlueprint", () => {
 		const urls = servePages([[other(1), other(2)]]);
 
 		expect(await findBlueprint(target)).toBeNull();
+		expect(urls).toHaveLength(1);
+	});
+
+	it("requests a page again after a request fails", async () => {
+		const urls = servePages([
+			new Response("upstream error", { status: 503 }),
+			[{ blueprint: ours, cursor: "cursor-ours" }],
+		]);
+
+		expect(await lookUp()).toEqual(ours);
+		expect(urls).toHaveLength(2);
+	});
+
+	// Null tells the run that no Blueprint exists, and the run then tells the
+	// user to create one. A lookup that failed cannot know that.
+	it("fails with the last error when 5 requests in sequence fail", async () => {
+		const urls = servePages(
+			Array.from({ length: 5 }, () => new Response("", { status: 500 })),
+		);
+
+		await expect(lookUp()).rejects.toThrow(
+			"The Blueprint lookup failed 5 times in sequence. " +
+				"The last error: Listing Blueprints failed with 500.",
+		);
+		expect(urls).toHaveLength(5);
+	});
+
+	it.each([401, 403])("fails at once on a %i", async (status) => {
+		const urls = servePages([new Response("", { status })]);
+
+		await expect(lookUp()).rejects.toThrow(
+			`Listing Blueprints failed with ${status}. The API key needs read access to the workspace.`,
+		);
 		expect(urls).toHaveLength(1);
 	});
 });

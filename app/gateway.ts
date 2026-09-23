@@ -286,13 +286,16 @@ export interface RunResponse {
 	updatedAt: string;
 }
 
-/** The public shape of a run. Summaries are model text, so redact them. */
+/**
+ * The public shape of a run. Summaries are model text, and progress can hold
+ * the error of a failed Render read, so redact both.
+ */
 export function runResponse(run: RunRecord): RunResponse {
 	return {
 		runId: run.id,
 		status: run.status,
 		stage: run.stage,
-		progress: run.progress,
+		progress: run.progress ? redactSecrets(run.progress) : null,
 		prompt: run.prompt,
 		user: run.user,
 		appName: run.appName,

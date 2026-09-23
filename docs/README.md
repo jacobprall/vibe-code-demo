@@ -357,6 +357,14 @@ gateway also stores the Render task-run ID and periodically reconciles a
 was canceled without finalizing Postgres, the next status poll repairs the row
 and releases its concurrency slot.
 
+A service or deploy wait does a failed Render read again after five seconds,
+and `progress` shows the attempt and the error. Five failures in sequence end
+the run as `failed`, with the last error in `summary`. An authentication
+failure (401 or 403) ends the run at once, because a new attempt cannot repair
+the API key. The Blueprint lookup does a failed request again in the same way.
+If the lookup cannot finish, the run ends as `failed`, not as
+`awaiting_blueprint`.
+
 While a delete runs, the status is `deleting`, and `progress` names the step. A
 `delete_failed` run keeps the reason in `summary`. Two causes need you to act
 before you delete again:
@@ -453,9 +461,10 @@ Implementation details and invariants for contributors are in [AGENTS.md](../AGE
   reconciled.
 - A failed run is final. Render Workflows does not retry `prompt-to-app`,
   because a retry starts the full pipeline again after the run is `failed`.
-  A transient GitHub or Render API error also ends the run, for example in the
-  clone or in a deploy wait. Call the API again for a new run, which starts
-  from the beginning.
+  The service and deploy waits and the Blueprint lookup do a failed Render
+  read again, up to five attempts in sequence. A transient GitHub or Render
+  API error in a different step still ends the run, for example in the clone.
+  Call the API again for a new run, which starts from the beginning.
 
 ## Related
 
