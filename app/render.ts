@@ -553,8 +553,9 @@ export async function listBlueprintSyncs(id: string): Promise<BlueprintSync[]> {
 		`/blueprints/${encodeURIComponent(id)}/syncs?limit=20`,
 	);
 	if (!response.ok) {
-		throw new Error(
+		throw new RenderApiError(
 			`Listing the syncs of Blueprint ${id} failed with ${response.status}.`,
+			response.status,
 		);
 	}
 	const page = (await response.json()) as unknown;
@@ -580,17 +581,18 @@ function normalizeRepo(repo: string): string {
 /* ── Failed reads ─────────────────────────────────────────────────────── */
 
 /**
- * Do one read of Render state, and do it again if it fails. A run reads
- * Render for many minutes after its push, and most failures are temporary: a
- * network error, a timeout, a 429 or a 5xx, or an MCP session that the
- * server ended. Without this, one failed poll ends the run.
+ * Do one read of Render state, and do it again if it fails. A run or a delete
+ * reads Render for many minutes after its push, and most failures are
+ * temporary: a network error, a timeout, a 429 or a 5xx, or an MCP session
+ * that the server ended. Without this, one failed poll ends the run or the
+ * delete.
  *
  * An authentication failure is thrown at once, because a new attempt cannot
  * repair the API key. A different error is thrown when READ_ATTEMPTS
  * attempts in sequence fail. Thus a wait does not hide a permanent error
  * until its deadline. `onRetry` gets each failure before the next attempt.
  */
-async function retryRead<T>(
+export async function retryRead<T>(
 	what: string,
 	read: () => Promise<T>,
 	onRetry?: (detail: string) => void | Promise<void>,

@@ -232,13 +232,14 @@ that failed, with a limit, as `pushVerified` does when another run pushed
 first. Agent subtasks keep the default retries: the parent waits for each one,
 so the row stays `running` and inside the concurrency limit.
 
-The service and deploy waits read Render through `retryRead()` in
-`app/render.ts`. It does a failed read again after the poll interval, and it
-fails after five failures in sequence, with the last error. It fails at once
-for a 401 or 403, because a new attempt cannot repair the API key.
-`findBlueprint` uses it too, so only a lookup that finds no Blueprint gives
-`awaiting_blueprint`. `RenderMcp` starts a new MCP session after a failed
-handshake, and after a 404 that tells it that the server ended the session.
+The service and deploy waits, and the sync wait of a delete in
+`app/teardown.ts`, read Render through `retryRead()` in `app/render.ts`. It
+does a failed read again after the poll interval, and it fails after five
+failures in sequence, with the last error. It fails at once for a 401 or 403,
+because a new attempt cannot repair the API key. `findBlueprint` uses it too,
+so only a lookup that finds no Blueprint gives `awaiting_blueprint`.
+`RenderMcp` starts a new MCP session after a failed handshake, and after a
+404 that tells it that the server ended the session.
 
 Postgres enforces two things through constraints rather than application code:
 `runs.idempotency_key` is unique, so a retried curl cannot start a second run,

@@ -365,9 +365,11 @@ the API key. The Blueprint lookup does a failed request again in the same way.
 If the lookup cannot finish, the run ends as `failed`, not as
 `awaiting_blueprint`.
 
-While a delete runs, the status is `deleting`, and `progress` names the step. A
-`delete_failed` run keeps the reason in `summary`. Two causes need you to act
-before you delete again:
+While a delete runs, the status is `deleting`, and `progress` names the step.
+The wait for the syncs of the apps Blueprint does a failed Render read again in
+the same way. Five failures in sequence, or a 401 or 403, end the delete as
+`delete_failed`. A `delete_failed` run keeps the reason in `summary`. Two
+causes need you to act before you delete again:
 
 - A sync of the apps Blueprint did not finish in six minutes. Let it finish,
   or fix it, in the Render Dashboard.

@@ -17,7 +17,12 @@
  */
 import { resourceStem } from "./blueprint.js";
 import type { AppSpec } from "./contracts.js";
-import { type BlueprintSync, listBlueprintSyncs, renderApi } from "./render.js";
+import {
+	type BlueprintSync,
+	listBlueprintSyncs,
+	renderApi,
+	retryRead,
+} from "./render.js";
 
 const POLL_INTERVAL_MS = 5_000;
 const PROJECT_DELETE_ATTEMPTS = 12;
@@ -104,6 +109,9 @@ export async function deleteAppResources(
  * of resources that the Blueprint manages is no signal: a push that only
  * removes resources starts no sync, and the Blueprint keeps the resources in
  * its list.
+ *
+ * A read of the syncs that fails is tried again, as retryRead() describes.
+ * Each failed attempt goes to the progress of the delete.
  */
 async function waitForSyncs(
 	blueprintId: string,
@@ -117,8 +125,14 @@ async function waitForSyncs(
 		}
 	}
 
+	const readSyncs = () =>
+		retryRead(
+			"The Blueprint sync lookup",
+			() => listBlueprintSyncs(blueprintId),
+			opts.onProgress,
+		);
 	const deadline = Date.now() + opts.syncTimeoutMs;
-	let unfinished = unfinishedSyncs(await listBlueprintSyncs(blueprintId));
+	let unfinished = unfinishedSyncs(await readSyncs());
 	while (unfinished.length > 0) {
 		if (Date.now() >= deadline) {
 			throw new Error(
@@ -130,7 +144,7 @@ async function waitForSyncs(
 			`Waiting for a sync of Blueprint ${blueprintId} to finish`,
 		);
 		await sleep(POLL_INTERVAL_MS);
-		unfinished = unfinishedSyncs(await listBlueprintSyncs(blueprintId));
+		unfinished = unfinishedSyncs(await readSyncs());
 	}
 }
 
