@@ -20,8 +20,12 @@ import {
 	awaitDeployment,
 	checkStaticSiteEnvVars,
 	deleteApp,
+	deleteResourcesTask,
 	promptToApp,
 	removeApp,
+	removeFilesTask,
+	removeFromBlueprintTask,
+	waitForSyncsTask,
 } from "../app/workflow.js";
 
 const mocks = vi.hoisted(() => ({
@@ -39,6 +43,7 @@ const mocks = vi.hoisted(() => ({
 	waitForDeploy: vi.fn(),
 	waitForHttpOk: vi.fn(),
 	deleteAppResources: vi.fn(),
+	waitForBlueprintSyncs: vi.fn(),
 	claimRunApp: vi.fn(async () => true),
 	deleteRuns: vi.fn(async () => {}),
 	failDelete: vi.fn(async () => {}),
@@ -52,10 +57,17 @@ vi.mock("../app/agents.js", () => ({
 	deployManagerTask: { name: "deploy-manager", func: mocks.deployManagerTask },
 }));
 
-/** Runs each subtask in this process, with the body of its task definition. */
+/**
+ * Runs each subtask in this process, with the body of its task definition. As
+ * on Render, the input and the result go through JSON.
+ */
 const tasks: TaskContext = {
-	run: async (task, ...args) => task.func(tasks, ...args),
+	run: async (task, ...args) => wire(await task.func(tasks, ...wire(args))),
 };
+
+function wire<T>(value: T): T {
+	return value === undefined ? value : JSON.parse(JSON.stringify(value));
+}
 
 vi.mock("../app/store.js", () => ({
 	claimRunApp: mocks.claimRunApp,
@@ -86,6 +98,7 @@ vi.mock("../app/sandbox.js", async (importOriginal) => ({
 
 vi.mock("../app/teardown.js", () => ({
 	deleteAppResources: mocks.deleteAppResources,
+	waitForBlueprintSyncs: mocks.waitForBlueprintSyncs,
 }));
 
 vi.mock("../app/render.js", async (importOriginal) => ({
@@ -779,39 +792,46 @@ function sameFiles(a: Map<string, string>, b: Map<string, string>): boolean {
 	);
 }
 
-function remove() {
-	return removeApp({
-		sandbox: fake.sandbox,
-		token: "token",
-		remoteUrl: "https://github.com/acme/apps.git",
-		repoUrl: "https://github.com/acme/apps",
-		workspaceId: "tea-test",
-		user: "demo",
-		appName: "shop",
-		onProgress: async () => {},
-	});
+/** What the gateway gives delete-app for the shop app. */
+const SHOP_APP = { user: "demo", appName: "shop" };
+
+/** The JSON events that the delete writes with one console method, in order. */
+function logged(method: "log" | "warn" | "error"): Record<string, unknown>[] {
+	return vi
+		.mocked(console[method])
+		.mock.calls.flatMap(([line]) =>
+			typeof line === "string" && line.startsWith("{")
+				? [JSON.parse(line)]
+				: [],
+		);
 }
 
 /**
  * A Blueprint sync recreates a declared resource that is missing, and it
  * never deletes a resource. So the order is the contract: the app leaves the
- * Blueprint, then Render deletes its resources, then its files go.
+ * Blueprint, the syncs of earlier commits finish, then Render deletes its
+ * resources, then its files go.
  */
 describe("removeApp", () => {
-	/** Each commit, push, and Render delete, in order. */
+	/** Each commit, push, wait, and Render delete, in order. */
 	let steps: string[];
 	/** The files of the last commit. */
 	let head: Map<string, string>;
 
-	/** The apps repository as the sandbox clones it. */
+	/** The apps repository as the sandbox of each step clones it. */
 	function clone(entries: [string, string][]): void {
 		files = new Map(entries);
 		fake = fakeSandbox(files);
 		head = new Map(files);
+		mocks.createSandbox.mockResolvedValue(fake.sandbox);
 	}
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		process.env.APPS_REPO = "acme/apps";
+		process.env.RENDER_WORKSPACE_ID = "tea-test";
 		steps = [];
 		commits = [];
 		clone([
@@ -819,6 +839,8 @@ describe("removeApp", () => {
 			[APP_SOURCE, STOREFRONT_HTML],
 			[CAFE_SPEC, json(cafe)],
 		]);
+		mocks.githubToken.mockResolvedValue("token");
+		mocks.cloneAppsRepo.mockResolvedValue("https://github.com/acme/apps.git");
 
 		// As git does, make no commit when nothing changed.
 		mocks.commitAll.mockImplementation(async () => {
@@ -841,18 +863,26 @@ describe("removeApp", () => {
 			branch: "main",
 			path: "render.yaml",
 		});
+		mocks.waitForBlueprintSyncs.mockImplementation(async () => {
+			steps.push("wait for syncs");
+		});
 		mocks.deleteAppResources.mockImplementation(async () => {
 			steps.push("delete resources");
 			return SHOP_RESOURCES;
 		});
 	});
 
-	it("deletes the resources after the app leaves the Blueprint, and the files last", async () => {
-		await expect(remove()).resolves.toEqual(SHOP_RESOURCES);
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("deletes the resources after the app leaves the Blueprint and the syncs finish, and the files last", async () => {
+		await expect(removeApp(tasks, SHOP_APP)).resolves.toEqual(SHOP_RESOURCES);
 
 		expect(steps).toEqual([
 			"commit",
 			"push",
+			"wait for syncs",
 			"delete resources",
 			"commit",
 			"push",
@@ -875,27 +905,72 @@ describe("removeApp", () => {
 		expect(removal.get(CAFE_SPEC)).toBe(json(cafe));
 	});
 
-	it("gives the teardown the app's spec and the Blueprint to wait for", async () => {
-		await remove();
-
-		expect(mocks.findBlueprint).toHaveBeenCalledWith(
-			expect.objectContaining({
-				workspaceId: "tea-test",
-				repo: "https://github.com/acme/apps",
-			}),
+	// On Render, each step then has its own run, with its own logs.
+	it("runs each step as a subtask", async () => {
+		const names: string[] = [];
+		await removeApp(
+			{
+				run: (task, ...args) => {
+					names.push(task.name);
+					return tasks.run(task, ...args);
+				},
+			},
+			SHOP_APP,
 		);
-		expect(mocks.deleteAppResources).toHaveBeenCalledWith(
+
+		expect(names).toEqual([
+			"remove-app-from-blueprint",
+			"wait-for-blueprint-syncs",
+			"delete-app-resources",
+			"remove-app-files",
+		]);
+	});
+
+	it("waits for the syncs of the Blueprint that watches the apps repository", async () => {
+		await removeApp(tasks, SHOP_APP);
+
+		expect(mocks.findBlueprint).toHaveBeenCalledWith({
+			workspaceId: "tea-test",
+			repo: "https://github.com/acme/apps",
+			branch: factoryConfig.branch,
+			path: factoryConfig.blueprintPath,
+		});
+		expect(mocks.waitForBlueprintSyncs).toHaveBeenCalledWith(
+			"exs-test",
 			expect.objectContaining({
-				appName: "shop",
-				resourcePrefix: "acme",
-				deletedAt: expect.any(String),
-			}),
-			expect.objectContaining({
-				workspaceId: "tea-test",
-				blueprintId: "exs-test",
-				// The teardown gives Render time to receive this push.
+				// The wait gives Render time to receive this push.
 				pushedAt: expect.any(Number),
 			}),
+		);
+	});
+
+	// The spec stays in the apps repository, so the task input stays small.
+	it("gives the teardown only the fields of the spec that name the resources", async () => {
+		await removeApp(tasks, SHOP_APP);
+
+		expect(mocks.deleteAppResources).toHaveBeenCalledWith(
+			{ user: "demo", appName: "shop", resourcePrefix: "acme" },
+			expect.objectContaining({ workspaceId: "tea-test" }),
+		);
+	});
+
+	// Only a Blueprint creates the resources of an app, so without one no sync
+	// can bring a resource back.
+	it("deletes without a wait when no Blueprint watches the apps repository", async () => {
+		mocks.findBlueprint.mockResolvedValue(null);
+
+		await expect(removeApp(tasks, SHOP_APP)).resolves.toEqual(SHOP_RESOURCES);
+
+		expect(mocks.waitForBlueprintSyncs).not.toHaveBeenCalled();
+		expect(steps).toEqual([
+			"commit",
+			"push",
+			"delete resources",
+			"commit",
+			"push",
+		]);
+		expect(logged("warn")).toContainEqual(
+			expect.objectContaining({ event: "blueprint_not_found" }),
 		);
 	});
 
@@ -909,23 +984,41 @@ describe("removeApp", () => {
 			[ROOT_BLUEPRINT, rootBlueprint([cafe])],
 		]);
 
-		await remove();
+		await removeApp(tasks, SHOP_APP);
 
-		expect(steps).toEqual(["delete resources", "commit", "push"]);
-		expect(mocks.deleteAppResources).toHaveBeenCalledWith(
-			expect.objectContaining({ deletedAt }),
+		expect(steps).toEqual([
+			"wait for syncs",
+			"delete resources",
+			"commit",
+			"push",
+		]);
+		expect(mocks.waitForBlueprintSyncs).toHaveBeenCalledWith(
+			"exs-test",
 			expect.objectContaining({ pushedAt: null }),
 		);
+		expect(logged("log")).toContainEqual({
+			event: "app_removed_from_blueprint",
+			user: "demo",
+			appName: "shop",
+			deletedAt,
+			commit: null,
+		});
 	});
 
 	it("deletes nothing on Render for an app that has no spec", async () => {
 		clone([[CAFE_SPEC, json(cafe)]]);
 
-		await expect(remove()).resolves.toEqual([]);
+		await expect(removeApp(tasks, SHOP_APP)).resolves.toEqual([]);
 
 		expect(mocks.findBlueprint).not.toHaveBeenCalled();
+		expect(mocks.waitForBlueprintSyncs).not.toHaveBeenCalled();
 		expect(mocks.deleteAppResources).not.toHaveBeenCalled();
 		expect(steps).toEqual([]);
+		expect(logged("log")).toContainEqual({
+			event: "app_spec_not_found",
+			user: "demo",
+			appName: "shop",
+		});
 	});
 
 	it("keeps the files and the spec when Render does not delete a resource", async () => {
@@ -933,9 +1026,9 @@ describe("removeApp", () => {
 			new Error("Render did not delete acme-demo-shop-api (403)"),
 		);
 
-		await expect(remove()).rejects.toThrow("(403)");
+		await expect(removeApp(tasks, SHOP_APP)).rejects.toThrow("(403)");
 
-		expect(steps).toEqual(["commit", "push"]);
+		expect(steps).toEqual(["commit", "push", "wait for syncs"]);
 		expect(files.get(APP_SOURCE)).toBe(STOREFRONT_HTML);
 		expect(JSON.parse(files.get(APP_SPEC) ?? "").deletedAt).toEqual(
 			expect.any(String),
@@ -950,10 +1043,13 @@ describe("removeApp", () => {
 			[APP_SOURCE, STOREFRONT_HTML],
 		]);
 
-		await expect(remove()).rejects.toThrow("is not a valid spec of demo/shop");
+		await expect(removeApp(tasks, SHOP_APP)).rejects.toThrow(
+			"is not a valid spec of demo/shop",
+		);
 
 		expect(steps).toEqual([]);
 		expect(files.get(APP_SOURCE)).toBe(STOREFRONT_HTML);
+		expect(fake.sandbox.terminate).toHaveBeenCalledTimes(1);
 	});
 
 	it("deletes an app that has only the legacy spec", async () => {
@@ -963,20 +1059,55 @@ describe("removeApp", () => {
 			[CAFE_SPEC, json(cafe)],
 		]);
 
-		await remove();
+		await removeApp(tasks, SHOP_APP);
 
-		const [target] = mocks.deleteAppResources.mock.calls[0];
-		expect(target).toMatchObject({ appName: "shop" });
-		expect(target.resourcePrefix).toBeUndefined();
+		// The task input has no resourcePrefix, as JSON drops an unset field.
+		expect(mocks.deleteAppResources).toHaveBeenCalledWith(
+			{ user: "demo", appName: "shop" },
+			expect.anything(),
+		);
 		expect(
 			[...files.keys()].filter((path) => path.startsWith(APP_DIR)),
 		).toEqual([]);
+	});
+
+	// So that each push starts from the newest commit, and no sandbox runs
+	// while the other steps wait.
+	it("clones the apps repository in a new sandbox for each push, and terminates it", async () => {
+		await removeApp(tasks, SHOP_APP);
+
+		expect(mocks.createSandbox).toHaveBeenCalledTimes(2);
+		expect(mocks.cloneAppsRepo).toHaveBeenCalledTimes(2);
+		expect(fake.sandbox.terminate).toHaveBeenCalledTimes(2);
+	});
+
+	it("logs the commit of each step that pushes", async () => {
+		await removeApp(tasks, SHOP_APP);
+
+		expect(logged("log")).toEqual([
+			{
+				event: "app_removed_from_blueprint",
+				user: "demo",
+				appName: "shop",
+				deletedAt: expect.any(String),
+				commit: "c".repeat(40),
+			},
+			{
+				event: "app_files_removed",
+				user: "demo",
+				appName: "shop",
+				commit: "c".repeat(40),
+			},
+		]);
 	});
 });
 
 describe("deleteApp", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
 		process.env.APPS_REPO = "acme/apps";
 		process.env.RENDER_WORKSPACE_ID = "tea-test";
 		files = new Map([
@@ -993,14 +1124,24 @@ describe("deleteApp", () => {
 		mocks.deleteAppResources.mockResolvedValue([]);
 	});
 
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	it("deletes the runs of the app after the app is gone", async () => {
-		await expect(
-			deleteApp.func(tasks, { user: "demo", appName: "shop" }),
-		).resolves.toMatchObject({ status: "deleted" });
+		await expect(deleteApp.func(tasks, SHOP_APP)).resolves.toMatchObject({
+			status: "deleted",
+		});
 
 		expect(mocks.deleteRuns).toHaveBeenCalledWith("demo", "shop");
 		expect(mocks.failDelete).not.toHaveBeenCalled();
 		expect(fake.sandbox.terminate).toHaveBeenCalled();
+		expect(logged("log").at(-1)).toEqual({
+			event: "app_deleted",
+			user: "demo",
+			appName: "shop",
+			deleted: [],
+		});
 	});
 
 	it("keeps the runs, marked delete_failed, when the delete fails", async () => {
@@ -1008,9 +1149,7 @@ describe("deleteApp", () => {
 			new Error("Render did not delete acme-demo-shop-db (403)"),
 		);
 
-		await expect(
-			deleteApp.func(tasks, { user: "demo", appName: "shop" }),
-		).rejects.toThrow("(403)");
+		await expect(deleteApp.func(tasks, SHOP_APP)).rejects.toThrow("(403)");
 
 		expect(mocks.failDelete).toHaveBeenCalledWith(
 			"demo",
@@ -1019,6 +1158,14 @@ describe("deleteApp", () => {
 		);
 		expect(mocks.deleteRuns).not.toHaveBeenCalled();
 		expect(fake.sandbox.terminate).toHaveBeenCalled();
+		expect(logged("error")).toEqual([
+			{
+				event: "app_delete_failed",
+				user: "demo",
+				appName: "shop",
+				error: "Render did not delete acme-demo-shop-db (403)",
+			},
+		]);
 	});
 
 	it("starts no sandbox for an app name that is not a slug", async () => {
@@ -1026,6 +1173,23 @@ describe("deleteApp", () => {
 			deleteApp.func(tasks, { user: "demo", appName: "../shop" }),
 		).rejects.toThrow();
 		expect(mocks.createSandbox).not.toHaveBeenCalled();
+	});
+
+	// A failed step fails the delete, and the next DELETE starts again at the
+	// first step, which reads what the failed attempt left.
+	it("registers the delete and each of its steps with no retries", () => {
+		for (const definition of [
+			deleteApp,
+			removeFromBlueprintTask,
+			waitForSyncsTask,
+			deleteResourcesTask,
+			removeFilesTask,
+		]) {
+			expect(
+				TaskRegistry.getInstance().get(definition.name)?.options?.retry,
+				definition.name,
+			).toEqual({ max_retries: 0, wait_duration_ms: 0 });
+		}
 	});
 });
 
