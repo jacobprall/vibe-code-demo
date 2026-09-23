@@ -6,5 +6,6 @@ dist
 *.tsbuildinfo
 .turbo
 .git
+.claude
 docs
 v2
