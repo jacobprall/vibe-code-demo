@@ -8,7 +8,17 @@ export type RunStatus =
 	| "awaiting_blueprint"
 	| "build_failed"
 	| "deploy_failed"
-	| "failed";
+	| "failed"
+	// While a delete of the run's app runs, and after it fails. A delete that
+	// succeeds removes the row.
+	| "deleting"
+	| "delete_failed";
+
+/** The statuses a prompt-to-app run ends in. */
+export type FinishedStatus = Exclude<
+	RunStatus,
+	"running" | "deleting" | "delete_failed"
+>;
 
 /** Coarse progress for GET /v1/apps/:runId. Cosmetic; never gates a run. */
 export type RunStage =
@@ -47,6 +57,14 @@ export type ClaimResult =
 	| { claimed: false; reason: "duplicate"; runId: string }
 	| { claimed: false; reason: "at_capacity" };
 
+export type DeleteClaim =
+	| { claimed: true; runIds: string[] }
+	/** A delete of the app is already in progress. */
+	| { claimed: false; reason: "deleting"; runIds: string[] }
+	/** A running run would publish the app again. */
+	| { claimed: false; reason: "running" }
+	| { claimed: false; reason: "missing" };
+
 const COLUMNS = `id, idempotency_key, prompt, user_name, status, stage, progress,
 	                workflow_run_id,
 	                app_name, web_url, api_url, blueprint_path, summary,
@@ -73,6 +91,36 @@ export function db(): pg.Pool {
 
 export async function ping(): Promise<void> {
 	await db().query("select 1");
+}
+
+/**
+ * Run statements in one transaction that holds the lock of one app. A delete
+ * takes the lock to claim the runs of the app, and a run takes it to claim an
+ * app name. So a run cannot start to build an app while it is being deleted.
+ */
+async function withAppLock<T>(
+	user: string,
+	appName: string,
+	work: (client: pg.PoolClient) => Promise<T>,
+): Promise<T> {
+	const client = await db().connect();
+	try {
+		await client.query("begin");
+		// The lock must come before the reads: a statement sees only the rows
+		// that were committed when it started.
+		await client.query(
+			"select pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+			[user, appName],
+		);
+		const result = await work(client);
+		await client.query("commit");
+		return result;
+	} catch (error) {
+		await client.query("rollback").catch(() => {});
+		throw error;
+	} finally {
+		client.release();
+	}
 }
 
 /**
@@ -145,7 +193,7 @@ export async function claimWorkflowCheck(id: string): Promise<boolean> {
 		`update runs
 		 set workflow_checked_at = now()
 		 where id = $1
-		   and status = 'running'
+		   and status in ('running', 'deleting')
 		   and (workflow_checked_at is null or workflow_checked_at < now() - interval '30 seconds')`,
 		[id],
 	);
@@ -175,6 +223,127 @@ export async function setRunApp(
 	);
 }
 
+/**
+ * Record the app that a run builds. Refused while a delete of the same app is
+ * in progress, because the delete removes what this run publishes.
+ */
+export async function claimRunApp(
+	id: string,
+	user: string,
+	app: { appName: string; blueprintPath: string },
+): Promise<boolean> {
+	return withAppLock(user, app.appName, async (client) => {
+		const result = await client.query(
+			`update runs set app_name = $3, blueprint_path = $4, updated_at = now()
+			 where id = $1
+			   and not exists (
+			     select 1 from runs
+			     where user_name = $2 and app_name = $3 and status = 'deleting'
+			   )`,
+			[id, user, app.appName, app.blueprintPath],
+		);
+		return result.rowCount === 1;
+	});
+}
+
+/**
+ * Mark every run of one app as deleting. The runs share the app's files and
+ * resources, so they are deleted together. A second request while the delete
+ * is in progress changes nothing.
+ */
+export async function claimDelete(
+	user: string,
+	appName: string,
+): Promise<DeleteClaim> {
+	return withAppLock(user, appName, async (client) => {
+		const { rows } = await client.query<{ id: string; status: RunStatus }>(
+			"select id, status from runs where user_name = $1 and app_name = $2",
+			[user, appName],
+		);
+		if (rows.length === 0) return { claimed: false, reason: "missing" };
+		if (rows.some((row) => row.status === "running")) {
+			return { claimed: false, reason: "running" };
+		}
+		const runIds = rows.map((row) => row.id);
+		if (rows.some((row) => row.status === "deleting")) {
+			return { claimed: false, reason: "deleting", runIds };
+		}
+
+		await client.query(
+			`update runs
+			 set status = 'deleting', progress = 'Waiting for the delete to start',
+			     workflow_run_id = null, updated_at = now()
+			 where user_name = $1 and app_name = $2`,
+			[user, appName],
+		);
+		return { claimed: true, runIds };
+	});
+}
+
+/**
+ * Delete a run that never chose an app. It created nothing but its row, so
+ * no task is necessary. Returns false for a run that is still running.
+ */
+export async function deleteRunWithoutApp(id: string): Promise<boolean> {
+	const result = await db().query(
+		"delete from runs where id = $1 and app_name is null and status <> 'running'",
+		[id],
+	);
+	return result.rowCount === 1;
+}
+
+/** Reconciliation reads this task run while the rows are deleting. */
+export async function setDeleteWorkflowRunId(
+	user: string,
+	appName: string,
+	workflowRunId: string,
+): Promise<void> {
+	await db().query(
+		`update runs set workflow_run_id = $3, updated_at = now()
+		 where user_name = $1 and app_name = $2 and status = 'deleting'`,
+		[user, appName, workflowRunId],
+	);
+}
+
+export async function setDeleteProgress(
+	user: string,
+	appName: string,
+	progress: string,
+): Promise<void> {
+	await db().query(
+		`update runs set progress = $3, updated_at = now()
+		 where user_name = $1 and app_name = $2 and status = 'deleting'`,
+		[user, appName, progress.slice(0, 500)],
+	);
+}
+
+/**
+ * The runs stay, so that the user can read why and delete them again. With a
+ * task run ID, only the runs of that task change: a newer delete may own them.
+ */
+export async function failDelete(
+	user: string,
+	appName: string,
+	summary: string,
+	workflowRunId?: string,
+): Promise<void> {
+	await db().query(
+		`update runs set status = 'delete_failed', progress = null, summary = $3,
+		                 updated_at = now()
+		 where user_name = $1 and app_name = $2 and status = 'deleting'
+		   and ($4::text is null or workflow_run_id = $4)`,
+		[user, appName, summary, workflowRunId ?? null],
+	);
+}
+
+/** The last step of a delete: the app is gone, so its runs go too. */
+export async function deleteRuns(user: string, appName: string): Promise<void> {
+	await db().query(
+		"delete from runs where user_name = $1 and app_name = $2 and status = 'deleting'",
+		[user, appName],
+	);
+}
+
 export async function setRunUrls(
 	id: string,
 	urls: { webUrl: string | null; apiUrl: string | null },
@@ -189,7 +358,7 @@ export async function setRunUrls(
 /** Moving off 'running' frees a concurrency slot. */
 export async function finishRun(
 	id: string,
-	status: Exclude<RunStatus, "running">,
+	status: FinishedStatus,
 	details: { summary?: string } = {},
 ): Promise<void> {
 	await db().query(

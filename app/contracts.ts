@@ -33,6 +33,12 @@ export const workflowInputSchema = z.object({
 
 export type WorkflowInput = z.infer<typeof workflowInputSchema>;
 
+/** Every run of one app shares its files and resources, so a delete names the app. */
+export const deleteAppInputSchema = z.object({
+	user: slug,
+	appName: slug,
+});
+
 /* ── Architect ────────────────────────────────────────────────────────── */
 
 /**
@@ -218,6 +224,12 @@ export const appSpecSchema = z.object({
 	tiers: z.array(z.enum(TIER_KINDS)).min(1),
 	manifest: manifestSchema,
 	notes: z.array(z.string()).max(20),
+	/**
+	 * Set when a delete of the app starts. The root Blueprint leaves the app
+	 * out, and this file stays until the app's Render resources are gone,
+	 * because a retry of the delete reads it to find them.
+	 */
+	deletedAt: z.string().min(1).optional(),
 });
 
 export type AppSpec = z.infer<typeof appSpecSchema>;
@@ -241,4 +253,6 @@ export type WorkflowResult =
 			summary: string;
 	  }
 	| { status: "build_failed"; summary: string }
-	| { status: "deploy_failed"; summary: string };
+	| { status: "deploy_failed"; summary: string }
+	/** The run stopped before it built, for a reason that a retry cannot fix. */
+	| { status: "failed"; summary: string };

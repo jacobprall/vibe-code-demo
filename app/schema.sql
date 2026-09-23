@@ -10,6 +10,8 @@ create table if not exists runs (
     -- Where the run is right now, for GET /v1/apps/:runId.
     stage            text,
     progress         text,
+    -- The Workflows task run that owns the status: prompt-to-app while the
+    -- run is running, and delete-app while its app is deleting.
     workflow_run_id  text,
     workflow_checked_at timestamptz,
     app_name         text,
