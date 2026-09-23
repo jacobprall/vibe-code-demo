@@ -176,7 +176,7 @@ A: Yes, `npm run dev:gateway` and `npm run dev:workflows` in separate terminals.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `npm run doctor` fails | Missing or wrong env vars | Read the doctor output — it tells you exactly what's missing and how to fix it |
-| Run stays at `awaiting_blueprint` | No Blueprint watching the apps repo | Create one in Dashboard: New → Blueprint, pick the apps repo, branch `main`, path `render.yaml` |
+| Run stays at `awaiting_blueprint` | No Blueprint in the `RENDER_WORKSPACE_ID` workspace watches the apps repo | Create one in that workspace in Dashboard: New → Blueprint, pick the apps repo, branch `main`, path `render.yaml` |
 | Run stays at `waiting_for_services` | Blueprint Auto Sync is off | Turn it on in Blueprint Settings |
 | Deploy fails with port binding error | Generated app not binding to `0.0.0.0:$PORT` | This is a builder bug — the repair loop should catch it, but check the template |
 | CORS errors in the deployed app | API not sending `Access-Control-Allow-Origin` | The builder prompt requires it; check the generated API code |

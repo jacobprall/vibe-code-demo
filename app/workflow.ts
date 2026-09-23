@@ -769,6 +769,7 @@ export async function awaitDeployment(
 	const heartbeat = runHeartbeat(ctx.runId);
 
 	const blueprint = await findBlueprint({
+		workspaceId,
 		repo: ctx.repoUrl,
 		branch: factoryConfig.branch,
 		path: factoryConfig.blueprintPath,
@@ -783,8 +784,8 @@ export async function awaitDeployment(
 			appName: spec.appName,
 			summary: [
 				ctx.summary,
-				`Committed to ${ctx.repoUrl} on ${factoryConfig.branch}, but no Blueprint is watching ${factoryConfig.blueprintPath}.`,
-				"Create one once in the Render Dashboard (New > Blueprint) and every later run deploys on push.",
+				`Committed to ${ctx.repoUrl} on ${factoryConfig.branch}, but no Blueprint in workspace ${workspaceId} is watching ${factoryConfig.blueprintPath}.`,
+				"Create one once in that workspace in the Render Dashboard (New > Blueprint) and every later run deploys on push.",
 				...spec.notes,
 			].join("\n\n"),
 		};

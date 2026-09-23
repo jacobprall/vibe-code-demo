@@ -211,11 +211,14 @@ async function checkGitHub(): Promise<void> {
 async function checkBlueprint(): Promise<void> {
 	heading("Blueprint");
 
-	if (!process.env.RENDER_API_KEY?.trim()) {
+	if (
+		!process.env.RENDER_API_KEY?.trim() ||
+		!process.env.RENDER_WORKSPACE_ID?.trim()
+	) {
 		record({
 			level: "warn",
-			message: "Skipped — RENDER_API_KEY is not set",
-			fix: "Set it, then run this again.",
+			message: "Skipped — RENDER_API_KEY or RENDER_WORKSPACE_ID is not set",
+			fix: "Set them, then run this again.",
 		});
 		return;
 	}
@@ -228,8 +231,10 @@ async function checkBlueprint(): Promise<void> {
 		return;
 	}
 
+	const workspaceId = renderWorkspaceId();
 	try {
 		const blueprint = await findBlueprint({
+			workspaceId,
 			repo: repo.url,
 			branch: factoryConfig.branch,
 			path: factoryConfig.blueprintPath,
@@ -237,9 +242,9 @@ async function checkBlueprint(): Promise<void> {
 		if (!blueprint) {
 			record({
 				level: "fail",
-				message: `No Blueprint watches ${repo.fullName} (${factoryConfig.branch}:${factoryConfig.blueprintPath})`,
+				message: `No Blueprint in workspace ${workspaceId} watches ${repo.fullName} (${factoryConfig.branch}:${factoryConfig.blueprintPath})`,
 				fix:
-					"Create it once in the Render Dashboard: New > Blueprint, pick the apps " +
+					"Create it once in that workspace in the Render Dashboard: New > Blueprint, pick the apps " +
 					`repository, branch ${factoryConfig.branch}, Blueprint Path ${factoryConfig.blueprintPath}. ` +
 					"Until then runs commit their app but stop at awaiting_blueprint.",
 			});

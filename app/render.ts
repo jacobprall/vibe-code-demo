@@ -13,6 +13,8 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 5_000;
 const MAX_LOG_CHARS = 8_000;
 const REST_API = "https://api.render.com/v1";
+/** The largest page that the Render API sends. */
+const BLUEPRINT_PAGE_SIZE = 100;
 
 const SERVICE_ID = /^srv-[A-Za-z0-9]+$/;
 const DEPLOY_ID = /^dep-[A-Za-z0-9]+$/;
@@ -404,29 +406,47 @@ export interface BlueprintRecord {
 	path: string;
 }
 
-/** The Blueprint watching a repository, branch, and file — if one exists. */
+/**
+ * The Blueprint in a workspace that watches a repository, branch, and file —
+ * if one exists.
+ *
+ * An API key can read all the workspaces of its user, and the API sends the
+ * list in pages. Read only the factory workspace: waitForServices looks for
+ * services only there. Then read each page, because the first page can stop
+ * before the Blueprint.
+ */
 export async function findBlueprint(target: {
+	workspaceId: string;
 	repo: string;
 	branch: string;
 	path: string;
 }): Promise<BlueprintRecord | null> {
-	const response = await fetch(`${REST_API}/blueprints?limit=100`, {
-		headers: {
-			authorization: `Bearer ${requireEnv("RENDER_API_KEY")}`,
-			accept: "application/json",
-		},
-		signal: AbortSignal.timeout(30_000),
-	});
-	if (!response.ok) {
-		throw new Error(
-			`Listing Blueprints failed with ${response.status}. The API key needs read access to the workspace.`,
-		);
-	}
-
-	const body = (await response.json()) as { blueprint?: BlueprintRecord }[];
 	const wanted = normalizeRepo(target.repo);
-	return (
-		body
+	let cursor: string | undefined;
+	do {
+		const query = new URLSearchParams({
+			ownerId: target.workspaceId,
+			limit: String(BLUEPRINT_PAGE_SIZE),
+		});
+		if (cursor) query.set("cursor", cursor);
+		const response = await fetch(`${REST_API}/blueprints?${query}`, {
+			headers: {
+				authorization: `Bearer ${requireEnv("RENDER_API_KEY")}`,
+				accept: "application/json",
+			},
+			signal: AbortSignal.timeout(30_000),
+		});
+		if (!response.ok) {
+			throw new Error(
+				`Listing Blueprints failed with ${response.status}. The API key needs read access to the workspace.`,
+			);
+		}
+
+		const page = (await response.json()) as {
+			blueprint?: BlueprintRecord;
+			cursor?: string;
+		}[];
+		const match = page
 			.map((entry) => entry.blueprint)
 			.find(
 				(blueprint): blueprint is BlueprintRecord =>
@@ -434,8 +454,13 @@ export async function findBlueprint(target: {
 					normalizeRepo(blueprint.repo) === wanted &&
 					blueprint.branch === target.branch &&
 					blueprint.path === target.path,
-			) ?? null
-	);
+			);
+		if (match) return match;
+		// A short page is the last page.
+		cursor =
+			page.length === BLUEPRINT_PAGE_SIZE ? page.at(-1)?.cursor : undefined;
+	} while (cursor);
+	return null;
 }
 
 function normalizeRepo(repo: string): string {

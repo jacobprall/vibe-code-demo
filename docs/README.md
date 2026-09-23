@@ -250,8 +250,10 @@ and it happens once, not per app.
 
 1. Run the factory once. The run commits its app and finishes as
    `awaiting_blueprint`, because nothing is watching the repository yet.
-2. In the Render Dashboard: **New > Blueprint**, pick the apps repository,
-   branch `main`, and leave Blueprint Path as `render.yaml`.
+2. In the Render Dashboard, open the workspace that `RENDER_WORKSPACE_ID`
+   names. The factory looks for the Blueprint only there. Then **New >
+   Blueprint**, pick the apps repository, branch `main`, and leave Blueprint
+   Path as `render.yaml`.
 3. Confirm **Auto Sync** is on.
 
 From then on every run deploys on push. `npm run doctor` checks all of this and

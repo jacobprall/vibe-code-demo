@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type DeployRecord,
+	findBlueprint,
 	findDeploys,
 	findLogMessages,
 	findServiceUrl,
@@ -320,5 +321,80 @@ describe("findLogMessages", () => {
 			"running npm install",
 			"error: exit 1",
 		]);
+	});
+});
+
+describe("findBlueprint", () => {
+	const target = {
+		workspaceId: "tea-factory",
+		repo: "https://github.com/acme/apps",
+		branch: "main",
+		path: "render.yaml",
+	};
+	const ours = {
+		id: "exs-ours",
+		name: "apps",
+		status: "in_sync",
+		autoSync: true,
+		repo: "https://github.com/acme/apps",
+		branch: "main",
+		path: "render.yaml",
+	};
+	const other = (n: number) => ({
+		blueprint: {
+			...ours,
+			id: `exs-other-${n}`,
+			repo: `https://github.com/acme/other-${n}`,
+		},
+		cursor: `cursor-${n}`,
+	});
+
+	/** Serve these pages in order, and record each URL. */
+	function servePages(pages: unknown[][]) {
+		const urls: URL[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request) => {
+				urls.push(new URL(String(url)));
+				return Response.json(pages[urls.length - 1] ?? []);
+			}),
+		);
+		return urls;
+	}
+
+	beforeEach(() => {
+		vi.stubEnv("RENDER_API_KEY", "rnd_test");
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+	});
+
+	// An API key can see many workspaces. Before this, the lookup read one page
+	// of all of them, and missed a Blueprint that was number 128 of 128.
+	it("reads the factory workspace, and follows the cursor to a later page", async () => {
+		const first = Array.from({ length: 100 }, (_, n) => other(n));
+		const urls = servePages([
+			first,
+			[{ blueprint: ours, cursor: "cursor-ours" }],
+		]);
+
+		expect(await findBlueprint(target)).toEqual(ours);
+		expect(urls.map((url) => url.searchParams.get("ownerId"))).toEqual([
+			"tea-factory",
+			"tea-factory",
+		]);
+		expect(urls.map((url) => url.searchParams.get("cursor"))).toEqual([
+			null,
+			"cursor-99",
+		]);
+	});
+
+	it("stops after a short page", async () => {
+		const urls = servePages([[other(1), other(2)]]);
+
+		expect(await findBlueprint(target)).toBeNull();
+		expect(urls).toHaveLength(1);
 	});
 });
