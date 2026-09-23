@@ -227,8 +227,8 @@ function singleServiceBlock(
 		lines.push(`    region: ${factoryConfig.render.region}`);
 	}
 	lines.push(
-		`    rootDir: ${serviceDir}`,
-		`    buildCommand: ${service.buildCommand}`,
+		`    rootDir: ${yamlString(serviceDir)}`,
+		`    buildCommand: ${yamlString(service.buildCommand)}`,
 	);
 
 	// Runs after the build with the service's env vars wired, which makes it
@@ -236,23 +236,25 @@ function singleServiceBlock(
 	// a pre_deploy_failed deploy, so a broken migration is a visible failure
 	// rather than an app serving an empty database.
 	if (service.preDeployCommand) {
-		lines.push(`    preDeployCommand: ${service.preDeployCommand}`);
+		lines.push(`    preDeployCommand: ${yamlString(service.preDeployCommand)}`);
 	}
 	if (!isStatic && service.startCommand) {
-		lines.push(`    startCommand: ${service.startCommand}`);
+		lines.push(`    startCommand: ${yamlString(service.startCommand)}`);
 	}
 	if (isStatic && service.staticPublishPath) {
-		lines.push(`    staticPublishPath: ${service.staticPublishPath}`);
+		lines.push(
+			`    staticPublishPath: ${yamlString(service.staticPublishPath)}`,
+		);
 	}
 	if (!isStatic && service.healthCheckPath) {
-		lines.push(`    healthCheckPath: ${service.healthCheckPath}`);
+		lines.push(`    healthCheckPath: ${yamlString(service.healthCheckPath)}`);
 	}
 
 	lines.push(
 		"    autoDeployTrigger: commit",
 		"    buildFilter:",
 		"      paths:",
-		`        - ${serviceDir}/**`,
+		`        - ${yamlString(`${serviceDir}/**`)}`,
 	);
 
 	// Wire env vars declared by the manifest.
@@ -265,10 +267,10 @@ function singleServiceBlock(
 				names.db;
 			if (!target) continue;
 			envLines.push(
-				`      - key: ${envVar.key}`,
+				`      - key: ${yamlString(envVar.key)}`,
 				"        fromDatabase:",
 				`          name: ${target}`,
-				`          property: ${envVar.fromDatabase.property}`,
+				`          property: ${yamlString(envVar.fromDatabase.property)}`,
 			);
 		} else if (envVar.fromService) {
 			const target = resolveFromServiceName(envVar.fromService.name, names);
@@ -278,13 +280,13 @@ function singleServiceBlock(
 			// connect to it.
 			const { property, envVarKey } = envVar.fromService;
 			envLines.push(
-				`      - key: ${envVar.key}`,
+				`      - key: ${yamlString(envVar.key)}`,
 				"        fromService:",
 				`          name: ${target}`,
 				"          type: web",
 				envVarKey
-					? `          envVarKey: ${envVarKey}`
-					: `          property: ${property}`,
+					? `          envVarKey: ${yamlString(envVarKey)}`
+					: `          property: ${yamlString(property ?? "")}`,
 			);
 		}
 	}
@@ -344,6 +346,36 @@ function joinServiceDir(root: string, rootDir: string): string {
 	return `${root}/${cleaned}`;
 }
 
+/**
+ * Write a free-form value as a double-quoted YAML scalar.
+ *
+ * The builder writes these values, and they can contain YAML syntax. Without
+ * quotes, `echo "build: done"` stops the parse of the full root Blueprint,
+ * `npm ci # install` loses the text after `#`, and `true` becomes a boolean.
+ *
+ * A JSON string is also a double-quoted YAML scalar, but JSON does not escape
+ * all characters. YAML 1.1 parsers, such as go-yaml and PyYAML, do not accept
+ * a raw DEL, C1 control, U+FFFE, or U+FFFF. They read a raw NEL, U+2028, or
+ * U+2029 as a line break. This function escapes these characters too. A lone
+ * surrogate becomes U+FFFD, because go-yaml does not accept the `\udXXX`
+ * escape that JSON gives it.
+ *
+ * Resource names and keywords such as `runtime` and `plan` do not use this
+ * function. They are slugs or values from a fixed set, so they cannot contain
+ * YAML syntax.
+ */
+function yamlString(value: string): string {
+	return JSON.stringify(value.replace(/\p{Cs}/gu, "\u{fffd}")).replace(
+		/[\u{7f}-\u{9f}\u{2028}\u{2029}\u{fffe}\u{ffff}]/gu,
+		(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
+}
+
+/**
+ * The prompt goes in a comment, and a comment stops at a line break. YAML 1.1
+ * parsers also read NEL as a line break, and they do not accept control
+ * characters, U+FFFE, or U+FFFF. This function changes all of them to spaces.
+ */
 function oneLine(value: string): string {
-	return value.replace(/\s+/g, " ").slice(0, 160);
+	return value.replace(/[\s\p{Cc}\u{fffe}\u{ffff}]+/gu, " ").slice(0, 160);
 }

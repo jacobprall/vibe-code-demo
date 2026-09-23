@@ -136,6 +136,9 @@ skeleton to scaffold — the manifest it returns is what gets deployed.
 - Use `md` for dedented multi-line prompts.
 - Escape shell arguments with `shellEscape`; use `execGitWithToken` for
   authenticated Git.
+- Write each free-form manifest value into a Blueprint with `yamlString`. One
+  value that breaks the YAML stops the deploy of every app in the root
+  Blueprint.
 - Keep dispatch payloads small and JSON-serializable.
 - Comments explain intent and constraints, not what the next line does.
 - Add or update tests with behavior changes. Never call live Render, GitHub,

@@ -4,12 +4,13 @@
  * agent-declared service manifest.
  */
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import {
 	appBlueprint,
 	resourceNames,
 	rootBlueprint,
 } from "../app/blueprint.js";
-import type { AppSpec, Manifest } from "../app/contracts.js";
+import type { AppSpec, Manifest, Service } from "../app/contracts.js";
 
 const fullManifest: Manifest = {
 	services: [
@@ -107,6 +108,28 @@ function spec(overrides: Partial<AppSpec> = {}): AppSpec {
 	};
 }
 
+/** The full app, with some fields of its API and its storefront replaced. */
+function withServices(
+	api: Partial<Service>,
+	web: Partial<Service> = {},
+): AppSpec {
+	const [apiService, webService] = fullManifest.services;
+	return spec({
+		manifest: {
+			...fullManifest,
+			services: [
+				{ ...apiService, ...api },
+				{ ...webService, ...web },
+			],
+		},
+	});
+}
+
+/** The services of the first app in a Blueprint, after a YAML parse. */
+function parsedServices(yaml: string) {
+	return parse(yaml).projects[0].environments[0].services;
+}
+
 describe("resourceNames", () => {
 	it("preserves the prefix used by specs created before the rename", () => {
 		const names = resourceNames(spec({ resourcePrefix: undefined }));
@@ -170,25 +193,25 @@ describe("appBlueprint", () => {
 	});
 
 	it("scopes both services to the app's directory", () => {
-		expect(yaml).toContain("rootDir: apps/demo/furniture-catalog/api");
-		expect(yaml).toContain("rootDir: apps/demo/furniture-catalog/web");
+		expect(yaml).toContain('rootDir: "apps/demo/furniture-catalog/api"');
+		expect(yaml).toContain('rootDir: "apps/demo/furniture-catalog/web"');
 	});
 
 	it("uses commands from the manifest", () => {
-		expect(yaml).toContain("buildCommand: npm install && npm run build");
-		expect(yaml).toContain("startCommand: npm start");
-		expect(yaml).toContain("healthCheckPath: /health");
+		expect(yaml).toContain('buildCommand: "npm install && npm run build"');
+		expect(yaml).toContain('startCommand: "npm start"');
+		expect(yaml).toContain('healthCheckPath: "/health"');
 	});
 
 	it("declares the storefront as a static site", () => {
 		expect(yaml).toContain("runtime: static");
-		expect(yaml).toContain("staticPublishPath: ./dist");
+		expect(yaml).toContain('staticPublishPath: "./dist"');
 	});
 
 	it("wires the database into the API and the API into the storefront", () => {
 		expect(yaml).toContain("fromDatabase:");
-		expect(yaml).toContain("property: connectionString");
-		expect(yaml).toContain("key: VITE_API_HOST");
+		expect(yaml).toContain('property: "connectionString"');
+		expect(yaml).toContain('key: "VITE_API_HOST"');
 	});
 
 	// `property: host` is a name on the private network. A static site is not
@@ -196,14 +219,14 @@ describe("appBlueprint", () => {
 	it("gives the storefront the public hostname of the API", () => {
 		expect(yaml).toContain(
 			[
-				"              - key: VITE_API_HOST",
+				'              - key: "VITE_API_HOST"',
 				"                fromService:",
 				"                  name: vibe-demo-furniture-catalog-api",
 				"                  type: web",
-				"                  envVarKey: RENDER_EXTERNAL_HOSTNAME",
+				'                  envVarKey: "RENDER_EXTERNAL_HOSTNAME"',
 			].join("\n"),
 		);
-		expect(yaml).not.toContain("property: host");
+		expect(yaml).not.toContain('property: "host"');
 	});
 
 	it("keeps a property reference for wiring on the private network", () => {
@@ -231,11 +254,11 @@ describe("appBlueprint", () => {
 		);
 		expect(wired).toContain(
 			[
-				"              - key: API_HOSTPORT",
+				'              - key: "API_HOSTPORT"',
 				"                fromService:",
 				"                  name: vibe-demo-furniture-catalog-api",
 				"                  type: web",
-				"                  property: hostport",
+				'                  property: "hostport"',
 			].join("\n"),
 		);
 	});
@@ -248,7 +271,7 @@ describe("appBlueprint", () => {
 	// Without this the schema is never applied and the app deploys against an
 	// empty database, which no other check would notice.
 	it("emits the pre-deploy command that creates the schema", () => {
-		expect(yaml).toContain("preDeployCommand: npm run migrate");
+		expect(yaml).toContain('preDeployCommand: "npm run migrate"');
 		expect(yaml.indexOf("preDeployCommand:")).toBeLessThan(
 			yaml.indexOf("startCommand:"),
 		);
@@ -268,6 +291,15 @@ describe("appBlueprint", () => {
 		expect(simple).not.toContain("databases:");
 		expect(simple).not.toContain("runtime: node");
 		expect(simple).toContain("runtime: static");
+	});
+
+	// A comment stops at a line break. YAML 1.1 parsers also read NEL as a line
+	// break, and they do not accept control characters.
+	it("keeps the prompt comment on one line", () => {
+		const text = appBlueprint(
+			spec({ prompt: "Sell\u{7}\u{7f} chairs\u{85}services: []" }),
+		);
+		expect(text.split("\n")[1]).toBe("# Prompt: Sell chairs services: []");
 	});
 });
 
@@ -312,5 +344,45 @@ describe("rootBlueprint", () => {
 		const a = spec({ user: "alice", appName: "aaa" });
 		const b = spec({ user: "bob", appName: "bbb" });
 		expect(rootBlueprint([a, b])).toBe(rootBlueprint([b, a]));
+	});
+});
+
+// The builder writes the manifest values, and one value that breaks the YAML
+// stops the deploy of every app in the root Blueprint.
+describe("manifest values", () => {
+	// Without quotes, the first command stops the parse, the second loses the
+	// text after `#`, and the third becomes a boolean.
+	it("keeps commands that contain YAML syntax exactly as written", () => {
+		const [api, web] = parsedServices(
+			rootBlueprint([
+				withServices(
+					{
+						buildCommand: 'npm ci && echo "build: done"',
+						startCommand: "node server.js # Render sets PORT",
+					},
+					{ buildCommand: "true" },
+				),
+			]),
+		);
+		expect(api.buildCommand).toBe('npm ci && echo "build: done"');
+		expect(api.startCommand).toBe("node server.js # Render sets PORT");
+		expect(web.buildCommand).toBe("true");
+	});
+
+	// JSON keeps these characters raw and gives a lone surrogate a `\udXXX`
+	// escape. go-yaml stops the parse of the full file at each of them. The
+	// parser in this test accepts them all, so the test also checks the text.
+	it("escapes the characters that YAML 1.1 parsers do not accept", () => {
+		const raw =
+			"\u{7f}\u{80}\u{9f} \u{85}--- \u{2028}--- \u{2029}... \u{fffe}\u{ffff}";
+		const yaml = rootBlueprint([
+			withServices({
+				buildCommand: `echo ${raw}${String.fromCharCode(0xd800)}`,
+			}),
+		]);
+		expect(yaml).not.toMatch(
+			/[\u{7f}-\u{9f}\u{2028}\u{2029}\u{fffe}\u{ffff}]|\\ud[89a-f]/iu,
+		);
+		expect(parsedServices(yaml)[0].buildCommand).toBe(`echo ${raw}\u{fffd}`);
 	});
 });
