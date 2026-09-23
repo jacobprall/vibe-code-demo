@@ -15,7 +15,7 @@ licensed imagery, builds a storefront and an API in an isolated sandbox,
 verifies them, and commits a Blueprint that Render deploys. A delete goes
 the other way: `DELETE /v1/apps/:runId` claims every run of the run's app, and
 the `delete-app` task takes the app out of the Blueprint, deletes its Render
-resources when Render stops managing them, and removes its files.
+resources when no Blueprint sync can bring them back, and removes its files.
 
 Two processes deploy independently:
 
@@ -185,8 +185,8 @@ Do not weaken these without an explicit security-model change:
 - Infrastructure is created only by committing a Blueprint, and agents cannot
   run git. The only Render write API calls are the deletes in
   `app/teardown.ts`, and only `delete-app` makes them. They come after a push
-  has taken the app out of the root Blueprint, and after the Blueprint manages
-  none of the app's resources and no sync runs. They delete only a service or
+  has taken the app out of the root Blueprint, and when no sync of the
+  Blueprint waits or runs. They delete only a service or
   database in the app's own project whose name starts with the app's stem, and
   then the project, which Render deletes only when it is empty.
 - A delete claims every run of one app, and `claimRunApp` claims an app name
@@ -362,17 +362,24 @@ and its resources. `removeApp()` in `app/workflow.ts` sets the order, and
 `tests/workflow.test.ts` tests it:
 
 1. Write `deletedAt` into the app's `factory.json`, regenerate the root
-   Blueprint, which leaves the app out, and push. Change no source file: a
-   commit that touches a service's files starts a build of the service.
-2. Wait until the Blueprint manages none of the app's resources and no sync
-   runs. A sync recreates a declared resource that is missing, and a sync
-   that started before the push can still create one.
+   Blueprint, which leaves the app out, and push. Remove no source file yet:
+   a commit that removes the files of a service starts a build of it, and
+   that build fails.
+2. Wait a minute for the push event of an earlier push, and then until no
+   sync of the Blueprint waits or runs. From the commit of step 1 on, the file
+   does not declare the app, and a sync recreates only a declared resource.
+   So only a sync of an earlier commit can bring a deleted resource back.
 3. Delete the app's services, then its databases, then its project.
 4. Remove the app's directory and push.
 
 Do not change this order. A resource that is deleted before step 1 comes back
 on the next sync. The spec gives the names of the resources, so if step 4 comes
 before step 3, a failed delete loses them. The files stay in the Git history.
+
+Do not wait for the resources to leave the list of resources of the Blueprint.
+A push that only removes resources starts no sync, and Render keeps them in
+that list. The first version of the delete waited for that, and it never
+finished.
 
 ## Checklist
 
