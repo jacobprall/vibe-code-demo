@@ -1,5 +1,5 @@
 /** prompt-to-app — one API call to a deployed app on Render. */
-import { task } from "@renderinc/sdk/workflows";
+import { type TaskContext, task } from "@renderinc/sdk/workflows";
 import {
 	factoryConfig,
 	appPath,
@@ -91,11 +91,14 @@ export const promptToApp = task(
 		plan: "standard",
 		timeoutSeconds: SANDBOX_TIMEOUT_SECONDS,
 	},
-	async function promptToApp(rawInput: unknown): Promise<WorkflowResult> {
+	async function promptToApp(
+		tasks: TaskContext,
+		rawInput: unknown,
+	): Promise<WorkflowResult> {
 		const { prompt, user, runId } = workflowInputSchema.parse(rawInput);
 
 		try {
-			const result = await run(prompt, user, runId);
+			const result = await run(tasks, prompt, user, runId);
 			await finishRun(runId, result.status, {
 				summary: result.summary.slice(0, 4_000),
 			});
@@ -112,8 +115,12 @@ export const promptToApp = task(
 	},
 );
 
-/** The pipeline. */
+/**
+ * The pipeline. Each agent runs as a subtask on its own compute, through
+ * `tasks`, the context that Render Workflows gives to prompt-to-app.
+ */
 async function run(
+	tasks: TaskContext,
 	prompt: string,
 	user: string,
 	runId: string,
@@ -125,7 +132,7 @@ async function run(
 	// ── Design ──────────────────────────────────────────────────────────
 	await setRunStage(runId, "designing");
 	const plan = await agentJson(
-		(message) => architectTask({ message }),
+		(message) => tasks.run(architectTask, { message }),
 		deployPlanSchema,
 		`Product prompt:\n${prompt}`,
 		"architect",
@@ -172,11 +179,12 @@ async function run(
 
 		// ── Imagery ─────────────────────────────────────────────────────
 		await setRunStage(runId, "curating");
-		const assetManifest = await curate(sandbox, appDir, plan);
+		const assetManifest = await curate(tasks, sandbox, appDir, plan);
 
 		// ── Build and verify ────────────────────────────────────────────
 		await setRunStage(runId, "building");
 		const built = await buildAndVerify({
+			tasks,
 			sandbox,
 			appDir,
 			plan,
@@ -221,6 +229,7 @@ async function run(
 		// ── Deploy ──────────────────────────────────────────────────────
 		await setRunStage(runId, "deploying");
 		return await awaitDeployment({
+			tasks,
 			mcp,
 			sandbox,
 			token,
@@ -274,6 +283,7 @@ function withManifest(spec: AppSpec, manifest: Manifest): AppSpec {
  * degrades the storefront rather than failing a deploy.
  */
 async function curate(
+	tasks: TaskContext,
 	sandbox: Sandbox,
 	appDir: string,
 	plan: DeployPlan,
@@ -283,7 +293,11 @@ async function curate(
 	try {
 		return await agentJson(
 			(message) =>
-				curatorTask({ message, sandboxId: sandbox.id, workDir: appDir }),
+				tasks.run(curatorTask, {
+					message,
+					sandboxId: sandbox.id,
+					workDir: appDir,
+				}),
 			assetManifestSchema,
 			curatorMessage(plan, appDir),
 			"curator",
@@ -309,6 +323,7 @@ interface BuildOutcome {
 }
 
 async function buildAndVerify(opts: {
+	tasks: TaskContext;
 	sandbox: Sandbox;
 	appDir: string;
 	plan: DeployPlan;
@@ -319,6 +334,7 @@ async function buildAndVerify(opts: {
 	template: readonly string[];
 }): Promise<BuildOutcome> {
 	let buildOutput = await runBuilder(
+		opts.tasks,
 		opts.sandbox,
 		opts.appDir,
 		builderMessage(opts),
@@ -363,6 +379,7 @@ async function buildAndVerify(opts: {
 
 		await setRunStage(opts.runId, "building");
 		buildOutput = await runBuilder(
+			opts.tasks,
 			opts.sandbox,
 			opts.appDir,
 			`Verification failed. Fix exactly what this output names:\n\n${failures.join("\n\n")}`,
@@ -659,6 +676,7 @@ async function probeService(
 }
 
 function runBuilder(
+	tasks: TaskContext,
 	sandbox: Sandbox,
 	appDir: string,
 	message: string,
@@ -666,7 +684,11 @@ function runBuilder(
 ): Promise<BuildOutput> {
 	return agentJson(
 		(text) =>
-			buildTask({ message: text, sandboxId: sandbox.id, workDir: appDir }),
+			tasks.run(buildTask, {
+				message: text,
+				sandboxId: sandbox.id,
+				workDir: appDir,
+			}),
 		buildOutputSchema,
 		message,
 		stage,
@@ -735,6 +757,8 @@ async function readAllSpecs(sandbox: Sandbox): Promise<AppSpec[]> {
 /* ── Deploy ───────────────────────────────────────────────────────────── */
 
 export interface DeployContext {
+	/** Runs the deploy manager and the builder as subtasks. */
+	tasks: TaskContext;
 	mcp: RenderMcp;
 	sandbox: Sandbox;
 	token: string;
@@ -871,7 +895,7 @@ export async function awaitDeployment(
 			.join("\n");
 
 		const diagnosis = await agentJson(
-			(message) => deployManagerTask({ message }),
+			(message) => ctx.tasks.run(deployManagerTask, { message }),
 			deployDiagnosisSchema,
 			[
 				`Workspace: ${workspaceId}`,
@@ -895,6 +919,7 @@ export async function awaitDeployment(
 			.join("\n\n");
 
 		const buildOutput = await runBuilder(
+			ctx.tasks,
 			ctx.sandbox,
 			ctx.appDir,
 			[

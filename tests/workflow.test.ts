@@ -2,6 +2,7 @@
  * The pipeline in app/workflow.ts. No test calls a live service: the agents,
  * the store, Git commit and push, and the Render reads are fakes.
  */
+import type { TaskContext } from "@renderinc/sdk/workflows";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { appPath, factoryConfig } from "../factory.config.js";
@@ -23,11 +24,16 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../app/agents.js", () => ({
-	architectTask: vi.fn(),
-	curatorTask: vi.fn(),
-	buildTask: mocks.buildTask,
-	deployManagerTask: mocks.deployManagerTask,
+	architectTask: { name: "architect", func: vi.fn() },
+	curatorTask: { name: "curator", func: vi.fn() },
+	buildTask: { name: "builder", func: mocks.buildTask },
+	deployManagerTask: { name: "deploy-manager", func: mocks.deployManagerTask },
 }));
+
+/** Runs each subtask in this process, with the body of its task definition. */
+const tasks: TaskContext = {
+	run: async (task, ...args) => task.func(tasks, ...args),
+};
 
 vi.mock("../app/store.js", () => ({
 	finishRun: vi.fn(async () => {}),
@@ -277,6 +283,7 @@ let commits: Map<string, string>[];
 
 function deploy(mcp = {} as RenderMcp) {
 	return awaitDeployment({
+		tasks,
 		mcp,
 		sandbox: fake.sandbox,
 		token: "token",
@@ -533,7 +540,7 @@ describe("awaitDeployment repairs", () => {
 		/** The deploy status that the deploy manager got in each round. */
 		function diagnosedStatuses(): string[] {
 			return mocks.deployManagerTask.mock.calls.map(
-				([input]) => input.message.match(/deploy status "([^"]+)"/)?.[1],
+				([, input]) => input.message.match(/deploy status "([^"]+)"/)?.[1],
 			);
 		}
 
