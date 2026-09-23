@@ -169,7 +169,11 @@ export interface ServiceRecord {
 export interface DeployOutcome {
 	deployId: string | null;
 	status: string;
-	live: boolean;
+	/**
+	 * `not_started`: no deploy after `after` started before the deadline, so
+	 * `deployId` and `status` are those of the `after` deploy.
+	 */
+	result: "live" | "failed" | "timed_out" | "not_started";
 }
 
 export async function listServices(
@@ -208,19 +212,31 @@ export async function waitForServices(
 	return found;
 }
 
-/** Poll until a service's newest deploy reaches a terminal state. */
+/**
+ * Poll until the newest deploy of a service is in a terminal state.
+ *
+ * A push does not start a deploy immediately. Render gets the GitHub webhook,
+ * syncs the Blueprint, and then creates the deploy. Until then, the newest
+ * deploy is the deploy from before the push. Give its ID as `after`, and the
+ * poll continues until a newer deploy is terminal. If no newer deploy starts
+ * before the deadline, the result is `not_started`: the push did not deploy
+ * the service.
+ */
 export async function waitForDeploy(
 	mcp: RenderMcp,
 	serviceId: string,
 	opts: {
 		workspaceId: string;
 		timeoutMs: number;
+		/** The deploy from before the push. Only a newer deploy is a result. */
+		after?: string | null;
 		onPoll?: (detail: string) => void | Promise<void>;
 	},
 ): Promise<DeployOutcome> {
 	const deadline = Date.now() + opts.timeoutMs;
 	let status = "unknown";
 	let deployId: string | null = null;
+	let stale = false;
 
 	while (Date.now() < deadline) {
 		const [latest] = findDeploys(
@@ -233,26 +249,24 @@ export async function waitForDeploy(
 		if (latest) {
 			deployId = latest.id;
 			status = latest.status;
-			if (DEPLOY_SUCCESS.has(status)) return { deployId, status, live: true };
-			if (DEPLOY_FAILURE.has(status)) return { deployId, status, live: false };
+			stale = deployId === opts.after;
 		}
-		await opts.onPoll?.(`Service ${serviceId}: ${status}`);
+		if (!stale && DEPLOY_SUCCESS.has(status)) {
+			return { deployId, status, result: "live" };
+		}
+		if (!stale && DEPLOY_FAILURE.has(status)) {
+			return { deployId, status, result: "failed" };
+		}
+		await opts.onPoll?.(
+			stale
+				? `Service ${serviceId}: waiting for a deploy after ${deployId}`
+				: `Service ${serviceId}: ${status}`,
+		);
 		await sleep(POLL_INTERVAL_MS);
 	}
 
-	return { deployId, status: `timed out while ${status}`, live: false };
-}
-
-/**
- * Ask for a new deploy. Blueprint services deploy on commit, so this is only
- * needed to redeploy without a code change.
- */
-export async function triggerDeploy(
-	mcp: RenderMcp,
-	serviceId: string,
-	workspaceId: string,
-): Promise<void> {
-	await mcp.callTool("trigger_deploy", { serviceId, workspaceId });
+	if (stale) return { deployId, status, result: "not_started" };
+	return { deployId, status: `timed out while ${status}`, result: "timed_out" };
 }
 
 /** Build logs for a failing deploy, for the builder agent to read. */

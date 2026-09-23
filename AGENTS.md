@@ -289,7 +289,17 @@ can change commands, paths, and env wiring, but not the list from
 `declaredResources()`. Render does not delete a resource that leaves the
 Blueprint, it cannot change the runtime of a service, and the loop watches only
 the services of the first push. For this reason, the workflow fails such a
-repair and pushes nothing. `tests/workflow.test.ts` tests this loop.
+repair and pushes nothing.
+
+Right after a push, the newest deploy of a service is still the deploy from
+before the push. Render creates the new deploy only after the GitHub webhook
+and the Blueprint sync. So a repair round waits only for the services that
+failed, and gives each failed deploy to `waitForDeploy()` as `after`. A repair
+that changes no files, or that starts no new deploy in `DEPLOY_TIMEOUT_MS`,
+ends the run as `deploy_failed`. Do not send such a run to the smoke checks:
+Render keeps the last live deploy of a failed service, so those checks can
+pass on old code. Do not call `trigger_deploy` to start the deploy either;
+only a commit deploys. `tests/workflow.test.ts` tests this loop.
 
 New generated apps write `factory.json` with `resourcePrefix`. Root Blueprint
 regeneration also reads the legacy filename and treats a missing prefix as the

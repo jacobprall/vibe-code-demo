@@ -2,11 +2,11 @@
  * The pipeline in app/workflow.ts. No test calls a live service: the agents,
  * the store, Git commit and push, and the Render reads are fakes.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { appPath, factoryConfig } from "../factory.config.js";
 import type { AppSpec, Manifest, Service } from "../app/contracts.js";
-import type { DeployOutcome, RenderMcp } from "../app/render.js";
+import type { DeployOutcome, DeployRecord, RenderMcp } from "../app/render.js";
 import type { ExecResult, Sandbox } from "../app/sandbox.js";
 import { awaitDeployment, checkStaticSiteEnvVars } from "../app/workflow.js";
 
@@ -139,11 +139,15 @@ const API_URL = "https://acme-demo-shop-api.onrender.com";
 
 const STOREFRONT_HTML = `<!doctype html><html><body>${"<p>Walnut chairs, oak tables, and ash stools, made by hand in Portland.</p>".repeat(5)}</body></html>`;
 
-const LIVE: DeployOutcome = { deployId: "dep-2", status: "live", live: true };
+const LIVE: DeployOutcome = {
+	deployId: "dep-2",
+	status: "live",
+	result: "live",
+};
 const FAILED: DeployOutcome = {
 	deployId: "dep-1",
 	status: "pre_deploy_failed",
-	live: false,
+	result: "failed",
 };
 
 const manifest: Manifest = {
@@ -271,9 +275,9 @@ let fake: ReturnType<typeof fakeSandbox>;
 /** The checkout at each commit, which is what the push sends to Render. */
 let commits: Map<string, string>[];
 
-function deploy() {
+function deploy(mcp = {} as RenderMcp) {
 	return awaitDeployment({
-		mcp: {} as RenderMcp,
+		mcp,
 		sandbox: fake.sandbox,
 		token: "token",
 		remoteUrl: "https://github.com/acme/apps.git",
@@ -465,5 +469,166 @@ describe("awaitDeployment repairs", () => {
 			false,
 		);
 		expect(mocks.commitAll).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * Right after a repair push, the newest deploy of the failed service is
+	 * still the failed deploy: Render creates the new deploy only after the
+	 * GitHub webhook and the Blueprint sync. The loop once took that failed
+	 * deploy as the result of the repair. It then repaired again, and at the
+	 * end it reported a status from before the repair.
+	 *
+	 * These tests use the real waitForDeploy(). A fake MCP server gives the
+	 * result of each list_deploys poll.
+	 */
+	describe("after a repair push", () => {
+		const WEB_ID = "srv-acme-demo-shop-web";
+		const API_ID = "srv-acme-demo-shop-api";
+		const LIVE_WEB: DeployRecord = { id: "dep-web1", status: "live" };
+		const FAILED_API: DeployRecord = {
+			id: "dep-api1",
+			status: "pre_deploy_failed",
+		};
+
+		beforeEach(async () => {
+			const render =
+				await vi.importActual<typeof import("../app/render.js")>(
+					"../app/render.js",
+				);
+			mocks.waitForDeploy.mockImplementation(render.waitForDeploy);
+			vi.useFakeTimers();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		/**
+		 * Each list_deploys call for a service returns the next deploy in its
+		 * script, then the last again.
+		 */
+		function fakeRender(scripts: Record<string, DeployRecord[]>) {
+			const polls = new Map<string, number>();
+			const callTool = vi.fn(
+				async (tool: string, args: Record<string, unknown>) => {
+					const serviceId = String(args.serviceId);
+					const script = scripts[serviceId];
+					if (tool !== "list_deploys" || !script) {
+						throw new Error(`Unexpected ${tool} call for ${serviceId}`);
+					}
+					const poll = polls.get(serviceId) ?? 0;
+					polls.set(serviceId, poll + 1);
+					return [script[Math.min(poll, script.length - 1)]];
+				},
+			);
+			return { mcp: { callTool } as unknown as RenderMcp, polls };
+		}
+
+		/** Deploy, and run the sleeps between the polls at once. */
+		async function deployOn(mcp: RenderMcp) {
+			const [result] = await Promise.all([deploy(mcp), vi.runAllTimersAsync()]);
+			return result;
+		}
+
+		/** The deploy status that the deploy manager got in each round. */
+		function diagnosedStatuses(): string[] {
+			return mocks.deployManagerTask.mock.calls.map(
+				([input]) => input.message.match(/deploy status "([^"]+)"/)?.[1],
+			);
+		}
+
+		it("waits past the failed deploy that is still the newest", async () => {
+			builderReturns(repair);
+			const render = fakeRender({
+				[WEB_ID]: [LIVE_WEB],
+				[API_ID]: [
+					FAILED_API,
+					// The first poll after the push. Render has not created the
+					// deploy of the repair yet.
+					FAILED_API,
+					{ id: "dep-api2", status: "build_in_progress" },
+					{ id: "dep-api2", status: "live" },
+				],
+			});
+
+			const result = await deployOn(render.mcp);
+
+			expect(result.status, result.summary).toBe("deployed");
+			expect(mocks.buildTask).toHaveBeenCalledTimes(1);
+			expect(mocks.pushVerified).toHaveBeenCalledTimes(1);
+			expect(render.polls.get(API_ID)).toBe(4);
+			// The storefront was live, and the repair did not change it.
+			expect(render.polls.get(WEB_ID)).toBe(1);
+		});
+
+		it("reports the status of the deploy of the last repair", async () => {
+			builderReturns(repair);
+			const render = fakeRender({
+				[WEB_ID]: [LIVE_WEB],
+				[API_ID]: [
+					FAILED_API,
+					FAILED_API,
+					{ id: "dep-api2", status: "build_failed" },
+					{ id: "dep-api2", status: "build_failed" },
+					{ id: "dep-api3", status: "update_failed" },
+				],
+			});
+
+			const result = await deployOn(render.mcp);
+
+			expect(result).toEqual({
+				status: "deploy_failed",
+				summary: 'acme-demo-shop-api ended as "update_failed".',
+			});
+			expect(mocks.pushVerified).toHaveBeenCalledTimes(2);
+			expect(diagnosedStatuses()).toEqual([
+				"pre_deploy_failed",
+				"build_failed",
+			]);
+		});
+
+		it("reports a repair push that started no new deploy", async () => {
+			builderReturns(repair);
+			const render = fakeRender({
+				[WEB_ID]: [LIVE_WEB],
+				[API_ID]: [FAILED_API],
+			});
+
+			const result = await deployOn(render.mcp);
+
+			expect(result).toEqual({
+				status: "deploy_failed",
+				summary:
+					"acme-demo-shop-api: the repair push did not start a new deploy in 15 minutes. " +
+					'The newest deploy is still dep-api1 ("pre_deploy_failed"). ' +
+					"Render deploys a service again when a commit changes files in its rootDir or its entry in the Blueprint.",
+			});
+			// Another round diagnoses the same failed deploy, so none starts.
+			expect(mocks.deployManagerTask).toHaveBeenCalledTimes(1);
+			expect(mocks.buildTask).toHaveBeenCalledTimes(1);
+			expect(mocks.waitForHttpOk).not.toHaveBeenCalled();
+		});
+
+		// Render keeps the last live deploy of a failed service. The smoke
+		// checks must not test that deploy as if it were the repair.
+		it("fails when the repair changes no files", async () => {
+			builderReturns(manifest);
+			mocks.commitAll.mockResolvedValue(null);
+			const render = fakeRender({
+				[WEB_ID]: [LIVE_WEB],
+				[API_ID]: [FAILED_API],
+			});
+
+			const result = await deployOn(render.mcp);
+
+			expect(result).toEqual({
+				status: "deploy_failed",
+				summary:
+					"Deploy repair round 1 changed no files, so Render has no new commit to deploy. " +
+					'acme-demo-shop-api ended as "pre_deploy_failed".',
+			});
+			expect(mocks.pushVerified).not.toHaveBeenCalled();
+			expect(mocks.waitForHttpOk).not.toHaveBeenCalled();
+		});
 	});
 });
