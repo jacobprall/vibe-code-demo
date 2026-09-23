@@ -199,6 +199,19 @@ reconciles terminal Workflows state while polling, so an interrupted task
 cannot leave a database row `running` forever. Long service, deploy, and HTTP
 waits heartbeat `progress`; keep those waits bounded.
 
+Render Workflows does not retry a failed run either: `prompt-to-app` sets
+`retry: { maxRetries: 0, waitDurationMs: 0 }` in place of the default three
+retries. Each retry starts again at the architect with a new sandbox, and after
+a push it can deploy a second app with a new name. The catch in `promptToApp`
+sets the row to `failed` before the retry starts. Thus `claimRun` does not
+count the retry, the gateway does not reconcile it, and its result can replace
+a terminal status. Do not turn these retries on without resumability.
+
+A transient fault is not a reason to retry the full run. Retry the one call
+that failed, with a limit, as `pushVerified` does when another run pushed
+first. Agent subtasks keep the default retries: the parent waits for each one,
+so the row stays `running` and inside the concurrency limit.
+
 Postgres enforces two things through constraints rather than application code:
 `runs.idempotency_key` is unique, so a retried curl cannot start a second run,
 and the conditional insert in `claimRun` caps concurrent runs at

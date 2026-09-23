@@ -2,18 +2,24 @@
  * The pipeline in app/workflow.ts. No test calls a live service: the agents,
  * the store, Git commit and push, and the Render reads are fakes.
  */
-import type { TaskContext } from "@renderinc/sdk/workflows";
+import { type TaskContext, TaskRegistry } from "@renderinc/sdk/workflows";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { appPath, factoryConfig } from "../factory.config.js";
 import type { AppSpec, Manifest, Service } from "../app/contracts.js";
 import type { DeployOutcome, DeployRecord, RenderMcp } from "../app/render.js";
 import type { ExecResult, Sandbox } from "../app/sandbox.js";
-import { awaitDeployment, checkStaticSiteEnvVars } from "../app/workflow.js";
+import {
+	awaitDeployment,
+	checkStaticSiteEnvVars,
+	promptToApp,
+} from "../app/workflow.js";
 
 const mocks = vi.hoisted(() => ({
+	architectTask: vi.fn(),
 	buildTask: vi.fn(),
 	deployManagerTask: vi.fn(),
+	finishRun: vi.fn(async () => {}),
 	commitAll: vi.fn(),
 	pushVerified: vi.fn(),
 	findBlueprint: vi.fn(),
@@ -24,7 +30,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../app/agents.js", () => ({
-	architectTask: { name: "architect", func: vi.fn() },
+	architectTask: { name: "architect", func: mocks.architectTask },
 	curatorTask: { name: "curator", func: vi.fn() },
 	buildTask: { name: "builder", func: mocks.buildTask },
 	deployManagerTask: { name: "deploy-manager", func: mocks.deployManagerTask },
@@ -36,7 +42,7 @@ const tasks: TaskContext = {
 };
 
 vi.mock("../app/store.js", () => ({
-	finishRun: vi.fn(async () => {}),
+	finishRun: mocks.finishRun,
 	setRunApp: vi.fn(async () => {}),
 	setRunStage: vi.fn(async () => {}),
 	setRunUrls: vi.fn(async () => {}),
@@ -59,6 +65,47 @@ vi.mock("../app/render.js", async (importOriginal) => ({
 	waitForDeploy: mocks.waitForDeploy,
 	waitForHttpOk: mocks.waitForHttpOk,
 }));
+
+/**
+ * A failed run is final. The task sets its runs row to "failed" and throws,
+ * and Render then records a failed task run. A retry by Render starts the
+ * pipeline again outside the concurrency limit, and its result can replace
+ * the terminal status that the UI and the demo already showed.
+ */
+describe("promptToApp", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.stubEnv("APPS_REPO", "acme/apps");
+		vi.stubEnv("RENDER_WORKSPACE_ID", "tea-test");
+		vi.stubEnv("RENDER_API_KEY", "fake");
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	it("records a failure once, and Render does not run the task again", async () => {
+		const reason = 'Subtask failed: Agent "architect" failed: error_max_turns';
+		mocks.architectTask.mockRejectedValue(new Error(reason));
+
+		await expect(
+			promptToApp.func(tasks, {
+				prompt: "Sell handmade walnut furniture online",
+				user: "demo",
+				runId: "run-1",
+			}),
+		).rejects.toThrow(reason);
+
+		expect(mocks.finishRun).toHaveBeenCalledTimes(1);
+		expect(mocks.finishRun).toHaveBeenCalledWith("run-1", "failed", {
+			summary: reason,
+		});
+		// The options that the host sends to Render when it registers tasks.
+		expect(
+			TaskRegistry.getInstance().get(promptToApp.name)?.options?.retry,
+		).toEqual({ max_retries: 0, wait_duration_ms: 0 });
+	});
+});
 
 const PRIVATE_NETWORK_PROPERTIES = ["host", "port", "hostport"];
 
