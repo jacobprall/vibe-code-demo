@@ -30,7 +30,7 @@ User → Gateway (web service) → Render Workflow → Sandbox
 
 1. **Web Services** — The gateway is a web service (Hono + Docker). Each generated app's API is also a web service, with health checks, `preDeployCommand` for migrations, and `fromDatabase` / `fromService` env-var wiring.
 
-2. **Workflows** — The orchestration engine. One task (`prompt-to-app`) runs the entire pipeline: design, build, verify, publish, deploy, smoke-test. Sub-tasks (`architect`, `curator`, `builder`, `deploy-manager`) run as Claude agents with distinct tool grants and trust boundaries. A second task, `delete-app`, deletes an app: it takes the app out of the Blueprint, deletes its Render resources when no Blueprint sync can bring them back, and removes its files.
+2. **Workflows** — The orchestration engine. One task (`prompt-to-app`) runs the entire pipeline: design, build, verify, publish, deploy, smoke-test. Sub-tasks (`architect`, `curator`, `builder`, `deploy-manager`) run as Claude agents with distinct tool grants and trust boundaries. A second task, `delete-app`, deletes an app in four sub-tasks, each with its own run and logs: `remove-app-from-blueprint` takes the app out of the Blueprint, `wait-for-blueprint-syncs` waits until no Blueprint sync can bring its Render resources back, `delete-app-resources` deletes them, and `remove-app-files` removes its files.
 
 3. **Sandboxes** — Every run gets a fresh, isolated Linux sandbox. Agents execute code inside it, never on the host. Postgres 18 is installed on the fly inside the sandbox so the builder develops against a real database. The sandbox is terminated in a `finally` block.
 

@@ -22,8 +22,12 @@ const TASKS = [
 	"builder",
 	"curator",
 	"delete-app",
+	"delete-app-resources",
 	"deploy-manager",
 	"prompt-to-app",
+	"remove-app-files",
+	"remove-app-from-blueprint",
+	"wait-for-blueprint-syncs",
 ];
 
 // Fake values that pass assertWorkflowEnv(). Register mode calls no service.

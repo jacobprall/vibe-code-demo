@@ -388,6 +388,10 @@ async function checkTasks(): Promise<void> {
 			"deploy-manager",
 			"prompt-to-app",
 			"delete-app",
+			"remove-app-from-blueprint",
+			"wait-for-blueprint-syncs",
+			"delete-app-resources",
+			"remove-app-files",
 		];
 		const missing = expected.filter((name) => !registered.has(name));
 
@@ -397,7 +401,7 @@ async function checkTasks(): Promise<void> {
 				: {
 						level: "fail",
 						message: `Not registered: ${missing.join(", ")}`,
-						fix: "Every agent must be wrapped with agentTask() in app/agents.ts, and prompt-to-app and delete-app defined in app/workflow.ts.",
+						fix: "Every agent must be wrapped with agentTask() in app/agents.ts, and prompt-to-app, delete-app, and the four steps of delete-app defined in app/workflow.ts.",
 					},
 		);
 	} catch (error) {
