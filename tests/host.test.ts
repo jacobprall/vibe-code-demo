@@ -21,6 +21,7 @@ const TASKS = [
 	"architect",
 	"builder",
 	"curator",
+	"delete-app",
 	"deploy-manager",
 	"prompt-to-app",
 ];

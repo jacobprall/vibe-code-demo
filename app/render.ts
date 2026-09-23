@@ -4,7 +4,8 @@
  * Reads go over the hosted Render MCP server — the same server the architect
  * agent talks to, on a read-only allowlist. The one exception is Blueprints,
  * which MCP does not expose; those come from the REST API. Nothing in this
- * file creates a service: that is app/blueprint.ts plus a Git push.
+ * file creates or deletes a resource: creation is app/blueprint.ts plus a Git
+ * push, and deletion is app/teardown.ts.
  */
 import { requireEnv } from "./config.js";
 
@@ -396,6 +397,21 @@ async function readText(url: string): Promise<string | null> {
 
 /* ── Blueprints (REST; not exposed over MCP) ──────────────────────────── */
 
+/** One call to the Render REST API, for what the MCP server does not expose. */
+export function renderApi(
+	path: string,
+	method: "GET" | "DELETE" = "GET",
+): Promise<Response> {
+	return fetch(`${REST_API}${path}`, {
+		method,
+		headers: {
+			authorization: `Bearer ${requireEnv("RENDER_API_KEY")}`,
+			accept: "application/json",
+		},
+		signal: AbortSignal.timeout(30_000),
+	});
+}
+
 export interface BlueprintRecord {
 	id: string;
 	name: string;
@@ -404,6 +420,14 @@ export interface BlueprintRecord {
 	repo: string;
 	branch: string;
 	path: string;
+}
+
+export interface BlueprintDetail {
+	id: string;
+	status: string;
+	autoSync: boolean;
+	/** The resources that the Blueprint manages now. */
+	resources: { id: string; name: string; type: string }[];
 }
 
 /**
@@ -429,13 +453,7 @@ export async function findBlueprint(target: {
 			limit: String(BLUEPRINT_PAGE_SIZE),
 		});
 		if (cursor) query.set("cursor", cursor);
-		const response = await fetch(`${REST_API}/blueprints?${query}`, {
-			headers: {
-				authorization: `Bearer ${requireEnv("RENDER_API_KEY")}`,
-				accept: "application/json",
-			},
-			signal: AbortSignal.timeout(30_000),
-		});
+		const response = await renderApi(`/blueprints?${query}`);
 		if (!response.ok) {
 			throw new Error(
 				`Listing Blueprints failed with ${response.status}. The API key needs read access to the workspace.`,
@@ -461,6 +479,15 @@ export async function findBlueprint(target: {
 			page.length === BLUEPRINT_PAGE_SIZE ? page.at(-1)?.cursor : undefined;
 	} while (cursor);
 	return null;
+}
+
+/** The state of one Blueprint and the resources that it manages. */
+export async function getBlueprint(id: string): Promise<BlueprintDetail> {
+	const response = await renderApi(`/blueprints/${encodeURIComponent(id)}`);
+	if (!response.ok) {
+		throw new Error(`Reading Blueprint ${id} failed with ${response.status}.`);
+	}
+	return (await response.json()) as BlueprintDetail;
 }
 
 function normalizeRepo(repo: string): string {

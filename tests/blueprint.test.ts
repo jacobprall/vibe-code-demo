@@ -389,6 +389,31 @@ describe("rootBlueprint", () => {
 		);
 	});
 
+	// A sync recreates a declared resource that is missing, so the resources of
+	// an app must leave the Blueprint before the delete removes them.
+	it("leaves out an app that is being deleted", () => {
+		const yaml = rootBlueprint([
+			spec(),
+			spec({
+				appName: "gopher-dates",
+				tiers: ["static_site"],
+				manifest: staticOnlyManifest,
+				deletedAt: "2026-02-01T00:00:00.000Z",
+			}),
+		]);
+		expect(yaml).toContain("# Apps: 1");
+		expect(yaml).toMatch(/^ {2}- name: vibe-demo-furniture-catalog$/m);
+		expect(yaml).not.toContain("gopher-dates");
+	});
+
+	it("is valid when the last app is being deleted", () => {
+		const yaml = rootBlueprint([
+			spec({ deletedAt: "2026-02-01T00:00:00.000Z" }),
+		]);
+		expect(yaml).toContain("services: []");
+		expect(yaml).not.toContain("furniture-catalog");
+	});
+
 	it("orders apps deterministically so a rerun does not churn the file", () => {
 		const a = spec({ user: "alice", appName: "aaa" });
 		const b = spec({ user: "bob", appName: "bbb" });

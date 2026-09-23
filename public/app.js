@@ -13,6 +13,20 @@ const webUrl = document.querySelector("#web-url");
 const summary = document.querySelector("#summary");
 const runDetails = document.querySelector("#run-details");
 const submit = form.querySelector("button");
+const deleteButton = document.querySelector("#delete-run");
+const deleteDialog = document.querySelector("#delete-dialog");
+const deleteForm = document.querySelector("#delete-form");
+const deleteTitle = document.querySelector("#delete-title");
+const deleteDescription = document.querySelector("#delete-description");
+const deleteConfirmField = document.querySelector("#delete-confirm-field");
+const deleteAppName = document.querySelector("#delete-app-name");
+const deleteConfirm = document.querySelector("#delete-confirm");
+const deleteSubmit = document.querySelector("#delete-submit");
+const deleteCancel = document.querySelector("#delete-cancel");
+
+/** A task still owns these runs, so the page keeps polling them. */
+const activeStatuses = ["running", "deleting"];
+const healthyStatuses = [...activeStatuses, "deployed", "awaiting_blueprint"];
 
 const stageOrder = [
 	"designing",
@@ -57,6 +71,77 @@ form.addEventListener("submit", async (event) => {
 refreshRuns.addEventListener("click", () => {
 	loadRuns(selectedRunId).catch((error) => showFailure(error.message));
 });
+
+deleteButton.addEventListener("click", () => {
+	const run = runs.find((candidate) => candidate.runId === selectedRunId);
+	if (run) openDeleteDialog(run);
+});
+
+deleteConfirm.addEventListener("input", () => {
+	deleteSubmit.disabled =
+		deleteConfirm.value.trim() !== deleteForm.dataset.appName;
+});
+
+deleteCancel.addEventListener("click", () => deleteDialog.close());
+
+deleteForm.addEventListener("submit", async (event) => {
+	event.preventDefault();
+	deleteDialog.close();
+	try {
+		await deleteRun(deleteForm.dataset.runId);
+	} catch (error) {
+		showFailure(error instanceof Error ? error.message : String(error));
+	}
+});
+
+/**
+ * An app is deleted on Render and in the apps repository, with all of its
+ * runs, and the delete cannot be undone. So the dialog asks for the app's
+ * name, as hosting dashboards do before such a delete.
+ */
+function openDeleteDialog(run) {
+	const appName = run.appName || "";
+	deleteForm.dataset.runId = run.runId;
+	deleteForm.dataset.appName = appName;
+	deleteTitle.textContent = appName
+		? `Delete ${titleFromSlug(appName)}?`
+		: "Delete this run?";
+	deleteDescription.textContent = appName
+		? "This deletes the app's services and databases on Render, with all their data, " +
+			"and removes its files from the apps repository. Every run of this app leaves your " +
+			"history. You cannot undo this."
+		: "This run did not create an app, so only the run leaves your history.";
+	deleteConfirmField.hidden = !appName;
+	deleteAppName.textContent = appName;
+	deleteConfirm.value = "";
+	deleteSubmit.disabled = Boolean(appName);
+	deleteDialog.showModal();
+	(appName ? deleteConfirm : deleteSubmit).focus();
+}
+
+async function deleteRun(runId) {
+	const response = await fetch(`/ui/apps/${encodeURIComponent(runId)}`, {
+		method: "DELETE",
+	});
+	const body = await response.json().catch(() => ({}));
+	if (!response.ok) {
+		throw new Error(body.error || `Delete failed (${response.status})`);
+	}
+	if (body.status === "deleted") {
+		await runRemoved();
+		return;
+	}
+	// Every run of the app is deleting now, so read them all again.
+	await loadRuns(runId);
+}
+
+/** The run is gone: a delete finished, or the run had no app to delete. */
+async function runRemoved() {
+	selectedRunId = null;
+	pollGeneration += 1;
+	runPanel.hidden = true;
+	await loadRuns();
+}
 
 async function loadRuns(preferredRunId) {
 	const response = await fetch("/ui/apps");
@@ -109,12 +194,18 @@ async function selectRun(runId) {
 async function poll(runId, generation) {
 	while (generation === pollGeneration && runId === selectedRunId) {
 		const response = await fetch(`/ui/apps/${encodeURIComponent(runId)}`);
+		if (generation !== pollGeneration) return;
+		// A delete that finished removed the run.
+		if (response.status === 404) {
+			await runRemoved();
+			return;
+		}
 		if (!response.ok) throw new Error(`Status check failed (${response.status})`);
 		const run = await response.json();
 		upsertRun(run);
 		renderRun(run);
 		renderHistory();
-		if (run.status !== "running") return;
+		if (!activeStatuses.includes(run.status)) return;
 		await new Promise((resolve) => setTimeout(resolve, 5000));
 	}
 }
@@ -127,15 +218,16 @@ function upsertRun(run) {
 
 function renderRun(run) {
 	runPanel.hidden = false;
-	runPanel.classList.toggle(
-		"failed",
-		!["running", "deployed", "awaiting_blueprint"].includes(run.status),
-	);
+	runPanel.classList.toggle("failed", !healthyStatuses.includes(run.status));
 	status.textContent =
 		run.status === "running" ? label(run.stage || "queued") : label(run.status);
 	progress.textContent = run.progress || "";
-	activity.hidden = run.status !== "running";
+	activity.hidden = !activeStatuses.includes(run.status);
+	deleteButton.hidden = activeStatuses.includes(run.status);
+	deleteButton.textContent = run.appName ? "Delete app" : "Delete run";
 	setBusy(run.status === "running");
+	// The stages are those of a build, so a delete does not show them.
+	stages.hidden = ["deleting", "delete_failed"].includes(run.status);
 
 	const current = stageOrder.indexOf(run.stage);
 	stages.replaceChildren(
@@ -163,7 +255,7 @@ function renderRun(run) {
 	}
 
 	const showDetails =
-		run.status !== "running" &&
+		!activeStatuses.includes(run.status) &&
 		run.status !== "deployed" &&
 		Boolean(run.summary);
 	runDetails.hidden = !showDetails;

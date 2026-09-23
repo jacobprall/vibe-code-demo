@@ -381,7 +381,14 @@ async function checkTasks(): Promise<void> {
 		await import("../app/workflow.js");
 
 		const registered = new Set(TaskRegistry.getInstance().getAllTaskNames());
-		const expected = ["architect", "curator", "builder", "deploy-manager", "prompt-to-app"];
+		const expected = [
+			"architect",
+			"curator",
+			"builder",
+			"deploy-manager",
+			"prompt-to-app",
+			"delete-app",
+		];
 		const missing = expected.filter((name) => !registered.has(name));
 
 		record(
@@ -390,7 +397,7 @@ async function checkTasks(): Promise<void> {
 				: {
 						level: "fail",
 						message: `Not registered: ${missing.join(", ")}`,
-						fix: "Every agent must be wrapped with agentTask() in app/agents.ts, and the workflow exported from app/workflow.ts.",
+						fix: "Every agent must be wrapped with agentTask() in app/agents.ts, and prompt-to-app and delete-app defined in app/workflow.ts.",
 					},
 		);
 	} catch (error) {

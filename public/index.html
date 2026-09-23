@@ -54,6 +54,7 @@
 							<h2 id="status">Starting</h2>
 						</div>
 						<span id="activity" class="activity" aria-hidden="true"></span>
+						<button id="delete-run" class="danger-button" type="button" hidden>Delete app</button>
 					</div>
 					<ol id="stages" class="stages"></ol>
 					<p id="progress" class="progress"></p>
@@ -66,6 +67,27 @@
 					<pre id="run-details" hidden></pre>
 				</section>
 			</div>
+
+			<dialog
+				id="delete-dialog"
+				class="panel delete-dialog"
+				aria-labelledby="delete-title"
+				aria-describedby="delete-description"
+			>
+				<form id="delete-form">
+					<p class="eyebrow">Delete</p>
+					<h2 id="delete-title">Delete this app?</h2>
+					<p id="delete-description" class="progress"></p>
+					<div id="delete-confirm-field">
+						<label for="delete-confirm">Type <code id="delete-app-name"></code> to confirm</label>
+						<input id="delete-confirm" name="confirm" autocomplete="off" spellcheck="false" />
+					</div>
+					<div class="form-actions">
+						<button id="delete-cancel" class="secondary-button" type="button">Cancel</button>
+						<button id="delete-submit" class="danger-button" type="submit">Delete</button>
+					</div>
+				</form>
+			</dialog>
 		</main>
 		<script type="module" src="/app.js"></script>
 	</body>

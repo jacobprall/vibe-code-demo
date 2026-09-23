@@ -7,6 +7,7 @@ controls, and user experience to your own requirements.
 **Contents:** [When to use](#when-to-use-this-reference) ·
 [Patterns](#production-patterns-demonstrated) ·
 [Run lifecycle](#run-lifecycle) ·
+[Delete an app](#delete-an-app) ·
 [Blueprints](#why-blueprints-are-the-write-path) ·
 [Apps repository](#the-apps-repository) ·
 [Code map](#where-to-look-in-the-code) ·
@@ -31,7 +32,7 @@ Use vibe-code-demo when:
 
 Do not use it unchanged for untrusted public users. The included gateway has
 simple authentication, one apps repository and branch, a small concurrency
-cap, no tenant-level quotas, and no teardown workflow.
+cap, and no tenant-level quotas.
 
 ## Production patterns demonstrated
 
@@ -44,6 +45,12 @@ cap, no tenant-level quotas, and no teardown workflow.
   commits them, and lets Render sync the desired state. The result is
   reviewable and reproducible, but the initial Blueprint connection is manual
   and only modeled primitives can be deployed.
+- **Delete in the order that the declarative system allows.** A Blueprint
+  never deletes a resource, and it recreates a declared resource that is
+  missing. So a delete first takes the app out of the Blueprint, waits until
+  Render stops managing its resources, and only then calls the Render API,
+  scoped to the app's own project. These are the only Render write API calls
+  in the factory. The cost is a second commit and a wait for a sync.
 - **Capabilities instead of prompt-only restrictions.** The architect gets a
   read-only Render MCP allowlist, the curator can fetch only validated image
   assets, and the builder can edit a sandbox but cannot run Git. Adding a new
@@ -89,6 +96,39 @@ cap, no tenant-level quotas, and no teardown workflow.
 7. Postgres exposes progress and final URLs to reconnecting clients; a
    `finally` block terminates the sandbox.
 
+## Delete an app
+
+`DELETE /v1/apps/:runId`, or **Delete app** in the UI, deletes the app that a
+run built. The runs of one app share its directory and its Render resources,
+so every run of the app is deleted with it. A run that did not choose an app
+has nothing else, and the gateway deletes it at once.
+
+1. The gateway claims every run of the app as `deleting` and dispatches the
+   `delete-app` task. While a run of the app is still running, it refuses with
+   `409`. A run that chooses the app while the delete is in progress stops
+   before it builds.
+2. The workflow writes `deletedAt` into the app's `factory.json` and pushes a
+   root `render.yaml` without the app. This commit changes no source file, so
+   it starts no build.
+3. It waits until the Blueprint manages none of the app's resources and no sync
+   runs. A resource that is deleted while the Blueprint declares it comes back
+   on the next sync.
+4. It deletes the app's services, then its databases and their data, and then
+   the app's Render project. In that project, it deletes only the resources
+   whose names start with `vibe-<user>-<app>-`. Any other resource stays, and
+   so does the project.
+5. It removes `apps/<user>/<app>/` in a second commit, and deletes the runs.
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $FACTORY_API_KEY" "$GATEWAY_URL/v1/apps/$RUN_ID"
+```
+
+While the status is `deleting`, `GET /v1/apps/:runId` shows the step in
+`progress`. When the delete is done, it returns `404`. A delete that fails sets
+`delete_failed`, with the reason in `summary`. Fix the cause and send the
+`DELETE` again: the new attempt continues from where the last one stopped. The
+app's files stay in the Git history of the apps repository.
+
 ## Why Blueprints are the write path
 
 Nothing in this repository calls a Render API to create infrastructure. The
@@ -107,6 +147,11 @@ useful consequences:
 
 MCP is how the factory *reads* Render — service state, deploy status, build
 logs — and how the architect explores the workspace while it designs.
+
+Deletion is the one exception to the rule. A Blueprint change never deletes a
+resource, so `app/teardown.ts` calls the Render API to delete the resources of
+a deleted app, after the app has left the Blueprint. See
+[Delete an app](#delete-an-app).
 
 ## The apps repository
 
@@ -154,6 +199,8 @@ Blueprint once so pushes deploy automatically.
   the model-to-machine and model-to-Render trust boundaries.
 - Read `app/gateway.ts` and `app/store.ts` for authentication, idempotency,
   progress, concurrency, and reconciliation.
+- Read `removeApp()` in `app/workflow.ts` and then `app/teardown.ts` for the
+  order of a delete and what it can delete.
 
 For a presentation-sized system diagram, see
 [Architecture at a glance](../README.md#architecture-at-a-glance). Field-demo
@@ -274,7 +321,7 @@ npm run check    # Biome, tsc, Vitest
 | `UI_PASSWORD` | Gateway | HTTP Basic Auth password; 16+ characters |
 | `RENDER_WORKFLOW_SLUG` | Gateway | Workflows service slug, without a task name |
 | `DATABASE_URL` | Both | Postgres connection string for the runs table |
-| `RENDER_API_KEY` | Both | Task dispatch; Sandboxes, MCP, and Blueprint reads |
+| `RENDER_API_KEY` | Both | Task dispatch; Sandboxes, MCP, and Blueprint reads; the deletes of a deleted app's resources |
 | `RENDER_WORKSPACE_ID` | Workflows | Workspace sandboxes and services live in |
 | `ANTHROPIC_API_KEY` | Workflows | Claude Agent SDK credential |
 | `GITHUB_APP_ID` | Workflows | GitHub App ID (preferred over a PAT) |
@@ -304,9 +351,18 @@ Copy `.env.example` when setting up locally.
 
 All deploy and HTTP waits have deadlines and heartbeat the database. The
 gateway also stores the Render task-run ID and periodically reconciles a
-`running` row with Workflows. If the task succeeded, failed, or was canceled
-without finalizing Postgres, the next status poll repairs the row and releases
-its concurrency slot.
+`running` or `deleting` row with Workflows. If the task succeeded, failed, or
+was canceled without finalizing Postgres, the next status poll repairs the row
+and releases its concurrency slot.
+
+While a delete runs, the status is `deleting`, and `progress` names the step. A
+`delete_failed` run keeps the reason in `summary`. Two causes need you to act
+before you delete again:
+
+- The Blueprint still manages the app after six minutes. Auto Sync is off, or
+  the sync failed. Turn Auto Sync on, or fix the sync.
+- The app's project holds a resource that the factory did not create. Delete
+  or move it in the Render Dashboard.
 
 Run `npm run doctor` to verify factory and Blueprint wiring before debugging individual runs.
 
@@ -347,6 +403,13 @@ See [AGENTS.md](../AGENTS.md) for checklists when adding agents, primitives, or 
   not on the read-only allowlist.
 - Agents cannot run git, so they cannot publish; the trigger for a deploy is a
   commit only workflow code can make.
+- The only Render write API calls are the deletes in `app/teardown.ts`. The
+  `delete-app` task makes them, never an agent, and only after the Blueprint
+  manages none of the app's resources. They delete only resources that carry
+  the app's name, in the app's own project. The UI can delete only the runs of
+  its own namespace.
+- A delete and a run of the same app take the same Postgres advisory lock, so a
+  run cannot build an app while it is being deleted.
 - `asset__fetch` accepts only HTTPS, only allowlisted hosts, only `image/*`
   responses under the size cap, and only destinations inside an `assets/`
   directory in the checkout.
@@ -373,17 +436,21 @@ Implementation details and invariants for contributors are in [AGENTS.md](../AGE
   runs rebase onto that branch; the cap is three at a time.
 - UI authentication and user slugs are demonstration conveniences, not
   tenant isolation, authorization, quotas, or abuse controls.
-- Generated apps are never torn down. Every run leaves a web service, a static
-  site, and a Postgres instance running, and they cost money until you delete
-  them.
+- Generated apps keep running until you delete them. Every run leaves a web
+  service, a static site, and a Postgres instance running, and they cost money
+  until then.
+- A delete removes an app with all of its runs, not one run, because the runs
+  of an app share its files and resources. The files stay in the Git history.
+- A delete needs Auto Sync on the apps Blueprint: it waits for the sync that
+  takes the app out.
 - Generated apps run on paid plans by default: free web services spin down
   after 15 minutes, and a workspace only gets one free Postgres.
 - The sandbox's Postgres is a fresh 18 with no extensions installed, so an app
   that needs one will pass verification only if it installs it itself.
 - `key_value` is in `TIER_KINDS` and nowhere else, so an architect that asks
   for one gets nothing and no warning.
-- No reviewer stage, step-level resumability, or teardown workflow. Terminal
-  Workflows runs are reconciled, but a failed task restarts from the beginning.
+- No reviewer stage or step-level resumability. Terminal Workflows runs are
+  reconciled, but a failed task restarts from the beginning.
 - A failed task run is not resumed; retry by calling the API again.
 
 ## Related
