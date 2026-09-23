@@ -30,13 +30,18 @@ import {
 	type AssetManifest,
 	assetManifestSchema,
 	buildOutputSchema,
+	type DeleteAppInput,
+	type DeleteResourcesInput,
 	deleteAppInputSchema,
+	deleteResourcesInputSchema,
 	type DeployPlan,
 	deployDiagnosisSchema,
 	deployPlanSchema,
 	type Service,
 	type TierKind,
+	type WaitForSyncsInput,
 	type WorkflowResult,
+	waitForSyncsInputSchema,
 	workflowInputSchema,
 } from "./contracts.js";
 import {
@@ -75,7 +80,7 @@ import {
 	setRunUrls,
 	touchRun,
 } from "./store.js";
-import { deleteAppResources } from "./teardown.js";
+import { deleteAppResources, waitForBlueprintSyncs } from "./teardown.js";
 import { materializeTemplate } from "./templates.js";
 
 const SANDBOX_TIMEOUT_SECONDS = 2 * 60 * 60;
@@ -84,8 +89,13 @@ const MAX_DEPLOY_REPAIR_ROUNDS = 2;
 const SERVICE_TIMEOUT_MS = 6 * 60 * 1000;
 const DEPLOY_TIMEOUT_MS = 15 * 60 * 1000;
 const SITE_TIMEOUT_MS = 3 * 60 * 1000;
-/** A delete needs a sandbox for its two pushes and one wait for a sync. */
-const DELETE_TIMEOUT_SECONDS = 30 * 60;
+/**
+ * A step of a delete makes one push, waits for the syncs of the Blueprint, or
+ * makes the deletes on Render.
+ */
+const DELETE_STEP_TIMEOUT_SECONDS = 10 * 60;
+/** delete-app waits for its four steps. */
+const DELETE_TIMEOUT_SECONDS = 4 * DELETE_STEP_TIMEOUT_SECONDS;
 /** How long an unfinished sync of the apps Blueprint gets before a delete. */
 const SYNC_TIMEOUT_MS = 6 * 60 * 1000;
 const SMOKE_PORT = 8099;
@@ -1229,7 +1239,6 @@ interface DeleteResult {
  * Render does not retry this task. A delete that fails marks the runs of the
  * app delete_failed, and a new request starts it again. Each step reads the
  * state that an earlier attempt left, so a new attempt does only what is left.
- * The task starts no subtasks, so it does not use its TaskContext.
  */
 export const deleteApp = task(
 	{
@@ -1239,18 +1248,22 @@ export const deleteApp = task(
 		retry: { maxRetries: 0, waitDurationMs: 0 },
 	},
 	async function deleteApp(
-		_tasks: TaskContext,
+		tasks: TaskContext,
 		rawInput: unknown,
 	): Promise<DeleteResult> {
-		const { user, appName } = deleteAppInputSchema.parse(rawInput);
+		const app = deleteAppInputSchema.parse(rawInput);
 
 		try {
-			const deleted = await remove(user, appName);
-			await deleteRuns(user, appName);
-			return { status: "deleted", user, appName, deleted };
+			const deleted = await removeApp(tasks, app);
+			await deleteRuns(app.user, app.appName);
+			console.log(JSON.stringify({ event: "app_deleted", ...app, deleted }));
+			return { status: "deleted", ...app, deleted };
 		} catch (error) {
 			const summary = error instanceof Error ? error.message : String(error);
-			await failDelete(user, appName, summary.slice(0, 1_000)).catch(
+			console.error(
+				JSON.stringify({ event: "app_delete_failed", ...app, error: summary }),
+			);
+			await failDelete(app.user, app.appName, summary.slice(0, 1_000)).catch(
 				(storeError) =>
 					console.error("Failed to record delete failure:", storeError),
 			);
@@ -1259,12 +1272,210 @@ export const deleteApp = task(
 	},
 );
 
-/** Git runs in a sandbox, as it does for a build. */
-async function remove(user: string, appName: string): Promise<string[]> {
+/**
+ * Delete one app in the order that a Blueprint allows. A sync recreates a
+ * declared resource that is missing, and it never deletes a resource that
+ * leaves the file. So the first step takes the app out of the root Blueprint,
+ * the resources are deleted when no sync of an earlier commit can run, and
+ * the last step removes the files. Until then factory.json stays, with
+ * deletedAt set, because a new attempt reads it to find the resources.
+ *
+ * Each step is a subtask. On Render, each one has its own run, with its
+ * input, its result, and its logs.
+ */
+export async function removeApp(
+	tasks: TaskContext,
+	app: DeleteAppInput,
+): Promise<string[]> {
+	const removed = await tasks.run(removeFromBlueprintTask, app);
+	let deleted: string[] = [];
+	if (removed) {
+		await tasks.run(waitForSyncsTask, { ...app, pushedAt: removed.pushedAt });
+		deleted = await tasks.run(deleteResourcesTask, {
+			...app,
+			resourcePrefix: removed.resourcePrefix,
+		});
+	}
+	await tasks.run(removeFilesTask, app);
+	return deleted;
+}
+
+/**
+ * The options of each step. Render does not retry a step: a failed step
+ * fails the delete, and the next attempt starts again at the first step. A
+ * retry of the first step after its push finds nothing to commit, so the wait
+ * would not wait for the push event. A retry of the wait would give a sync
+ * more time than SYNC_TIMEOUT_MS.
+ */
+const DELETE_STEP = {
+	plan: "starter",
+	timeoutSeconds: DELETE_STEP_TIMEOUT_SECONDS,
+	retry: { maxRetries: 0, waitDurationMs: 0 },
+};
+
+interface RemovedFromBlueprint {
+	/** As in factory.json. When it is unset, the legacy prefix names the resources. */
+	resourcePrefix?: string;
+	/** The commit that took the app out, or null if an earlier attempt pushed it. */
+	commit: string | null;
+	/** When this attempt pushed that commit, or null. */
+	pushedAt: number | null;
+}
+
+/**
+ * Write deletedAt into the app's factory.json, and push a root Blueprint that
+ * leaves the app out. The commit changes only these two files: a commit that
+ * removed the source of a service would start a build of it, and that build
+ * would fail before the service is deleted.
+ *
+ * Returns null when the repository has no spec for the app. Only the spec
+ * names the resources, so then no step deletes anything on Render.
+ */
+export const removeFromBlueprintTask = task(
+	{ name: "remove-app-from-blueprint", ...DELETE_STEP },
+	async function removeFromBlueprint(
+		_tasks: TaskContext,
+		input: DeleteAppInput,
+	): Promise<RemovedFromBlueprint | null> {
+		const { user, appName } = deleteAppInputSchema.parse(input);
+		await setDeleteProgress(
+			user,
+			appName,
+			"Removing the app from the Blueprint",
+		);
+
+		return inAppsClone(async (clone) => {
+			const spec = await readSpec(clone.sandbox, user, appName);
+			if (!spec) {
+				console.log(
+					JSON.stringify({ event: "app_spec_not_found", user, appName }),
+				);
+				return null;
+			}
+
+			const deleting: AppSpec = {
+				...spec,
+				deletedAt: spec.deletedAt ?? new Date().toISOString(),
+			};
+			await clone.sandbox.writeFile(
+				`${appPath(user, appName)}/factory.json`,
+				`${JSON.stringify(deleting, null, 2)}\n`,
+			);
+			await writeRootBlueprint(clone.sandbox);
+			const commit = await commitAndPush(
+				clone,
+				`Delete ${user}/${appName}: remove it from the Blueprint`,
+			);
+			const pushedAt = commit ? Date.now() : null;
+			console.log(
+				JSON.stringify({
+					event: "app_removed_from_blueprint",
+					user,
+					appName,
+					deletedAt: deleting.deletedAt,
+					commit,
+				}),
+			);
+			return { resourcePrefix: spec.resourcePrefix, commit, pushedAt };
+		});
+	},
+);
+
+/**
+ * Wait until no sync of the apps Blueprint waits or runs. When no Blueprint
+ * watches the apps repository, no sync can bring a resource back, and there
+ * is nothing to wait for.
+ */
+export const waitForSyncsTask = task(
+	{ name: "wait-for-blueprint-syncs", ...DELETE_STEP },
+	async function waitForSyncs(
+		_tasks: TaskContext,
+		input: WaitForSyncsInput,
+	): Promise<{ blueprintId: string | null }> {
+		const { user, appName, pushedAt } = waitForSyncsInputSchema.parse(input);
+		const target = {
+			workspaceId: renderWorkspaceId(),
+			repo: appsRepo().url,
+			branch: factoryConfig.branch,
+			path: factoryConfig.blueprintPath,
+		};
+		// An error stops the delete. A delete without the wait for the
+		// Blueprint lets a sync bring the resources back.
+		const blueprint = await findBlueprint(target);
+		if (!blueprint) {
+			console.warn(JSON.stringify({ event: "blueprint_not_found", ...target }));
+			return { blueprintId: null };
+		}
+
+		await waitForBlueprintSyncs(blueprint.id, {
+			pushedAt,
+			timeoutMs: SYNC_TIMEOUT_MS,
+			onProgress: (detail) => setDeleteProgress(user, appName, detail),
+		});
+		return { blueprintId: blueprint.id };
+	},
+);
+
+/** Delete the app's services, then its databases, then its project. */
+export const deleteResourcesTask = task(
+	{ name: "delete-app-resources", ...DELETE_STEP },
+	async function deleteResources(
+		_tasks: TaskContext,
+		input: DeleteResourcesInput,
+	): Promise<string[]> {
+		const app = deleteResourcesInputSchema.parse(input);
+		return deleteAppResources(app, {
+			workspaceId: renderWorkspaceId(),
+			onProgress: (detail) => setDeleteProgress(app.user, app.appName, detail),
+		});
+	},
+);
+
+/** Remove the app's directory from the apps repository. */
+export const removeFilesTask = task(
+	{ name: "remove-app-files", ...DELETE_STEP },
+	async function removeFiles(
+		_tasks: TaskContext,
+		input: DeleteAppInput,
+	): Promise<{ commit: string | null }> {
+		const { user, appName } = deleteAppInputSchema.parse(input);
+		await setDeleteProgress(
+			user,
+			appName,
+			"Removing the app's files from the apps repository",
+		);
+
+		return inAppsClone(async (clone) => {
+			await clone.sandbox.mustRun(
+				`rm -rf ${shellEscape(appPath(user, appName))}`,
+				"Remove the app directory",
+			);
+			const commit = await commitAndPush(clone, `Delete ${user}/${appName}`);
+			console.log(
+				JSON.stringify({ event: "app_files_removed", user, appName, commit }),
+			);
+			return { commit };
+		});
+	},
+);
+
+interface AppsClone {
+	sandbox: Sandbox;
+	token: string;
+	remoteUrl: string;
+}
+
+/**
+ * Git runs in a sandbox, as it does for a build. Each step that pushes makes
+ * its own clone, so it starts from the newest commit, and no sandbox stays up
+ * while the other steps wait.
+ */
+async function inAppsClone<T>(
+	work: (clone: AppsClone) => Promise<T>,
+): Promise<T> {
 	const repo = appsRepo();
-	const workspaceId = renderWorkspaceId();
 	const sandbox = await createSandbox({
-		timeoutSeconds: DELETE_TIMEOUT_SECONDS,
+		timeoutSeconds: DELETE_STEP_TIMEOUT_SECONDS,
 	});
 	try {
 		const token = await githubToken();
@@ -1274,94 +1485,12 @@ async function remove(user: string, appName: string): Promise<string[]> {
 			repo,
 			factoryConfig.branch,
 		);
-		return await removeApp({
-			sandbox,
-			token,
-			remoteUrl,
-			repoUrl: repo.url,
-			workspaceId,
-			user,
-			appName,
-			onProgress: (detail) => setDeleteProgress(user, appName, detail),
-		});
+		return await work({ sandbox, token, remoteUrl });
 	} finally {
 		await sandbox
 			.terminate()
 			.catch((error) => console.error("Failed to terminate sandbox:", error));
 	}
-}
-
-export interface RemoveContext {
-	sandbox: Sandbox;
-	token: string;
-	remoteUrl: string;
-	repoUrl: string;
-	workspaceId: string;
-	user: string;
-	appName: string;
-	onProgress: (detail: string) => Promise<void>;
-}
-
-/**
- * Delete one app in the order that a Blueprint allows. A sync recreates a
- * declared resource that is missing, and it never deletes a resource that
- * leaves the file. So the first commit takes the app out of the root
- * Blueprint, the resources are deleted when no sync of an earlier commit can
- * run, and the second commit removes the files. Until then factory.json
- * stays, with deletedAt set, because a new attempt reads it to find the
- * resources.
- *
- * The first commit changes only factory.json and the root Blueprint. A commit
- * that removed the source of a service would start a build of it, and that
- * build would fail before the service is deleted.
- */
-export async function removeApp(ctx: RemoveContext): Promise<string[]> {
-	const { sandbox, user, appName } = ctx;
-	const appDir = appPath(user, appName);
-	const spec = await readSpec(sandbox, user, appName);
-
-	let deleted: string[] = [];
-	if (spec) {
-		await ctx.onProgress("Removing the app from the Blueprint");
-		const deleting: AppSpec = {
-			...spec,
-			deletedAt: spec.deletedAt ?? new Date().toISOString(),
-		};
-		await sandbox.writeFile(
-			`${appDir}/factory.json`,
-			`${JSON.stringify(deleting, null, 2)}\n`,
-		);
-		await writeRootBlueprint(sandbox);
-		const pushed = await commitAndPush(
-			ctx,
-			`Delete ${user}/${appName}: remove it from the Blueprint`,
-		);
-		const pushedAt = pushed ? Date.now() : null;
-
-		// An error stops the delete. A delete without the wait for the
-		// Blueprint lets a sync bring the resources back.
-		const blueprint = await findBlueprint({
-			workspaceId: ctx.workspaceId,
-			repo: ctx.repoUrl,
-			branch: factoryConfig.branch,
-			path: factoryConfig.blueprintPath,
-		});
-		deleted = await deleteAppResources(deleting, {
-			workspaceId: ctx.workspaceId,
-			blueprintId: blueprint?.id ?? null,
-			pushedAt,
-			syncTimeoutMs: SYNC_TIMEOUT_MS,
-			onProgress: ctx.onProgress,
-		});
-	}
-
-	await ctx.onProgress("Removing the app's files from the apps repository");
-	await sandbox.mustRun(
-		`rm -rf ${shellEscape(appDir)}`,
-		"Remove the app directory",
-	);
-	await commitAndPush(ctx, `Delete ${user}/${appName}`);
-	return deleted;
 }
 
 /**
@@ -1403,21 +1532,20 @@ async function readSpec(
 
 /**
  * A commit that changes nothing is not made, and there is nothing to push.
- * Returns whether it pushed.
+ * Returns the commit that it pushed, or null.
  */
 async function commitAndPush(
-	ctx: RemoveContext,
+	clone: AppsClone,
 	message: string,
-): Promise<boolean> {
-	if (!(await commitAll(ctx.sandbox, message))) return false;
-	await pushVerified(
-		ctx.sandbox,
-		ctx.token,
-		ctx.remoteUrl,
+): Promise<string | null> {
+	if (!(await commitAll(clone.sandbox, message))) return null;
+	return pushVerified(
+		clone.sandbox,
+		clone.token,
+		clone.remoteUrl,
 		factoryConfig.branch,
-		() => writeRootBlueprint(ctx.sandbox),
+		() => writeRootBlueprint(clone.sandbox),
 	);
-	return true;
 }
 
 /* ── Prompts ──────────────────────────────────────────────────────────── */

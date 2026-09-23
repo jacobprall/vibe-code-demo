@@ -39,6 +39,19 @@ export const deleteAppInputSchema = z.object({
 	appName: slug,
 });
 
+export type DeleteAppInput = z.infer<typeof deleteAppInputSchema>;
+
+/** The input of the step of a delete that waits for the syncs of the apps Blueprint. */
+export const waitForSyncsInputSchema = deleteAppInputSchema.extend({
+	/**
+	 * When the delete pushed the commit that took the app out of the
+	 * Blueprint, or null if an earlier attempt pushed it.
+	 */
+	pushedAt: z.number().int().nonnegative().nullable(),
+});
+
+export type WaitForSyncsInput = z.infer<typeof waitForSyncsInputSchema>;
+
 /* ── Architect ────────────────────────────────────────────────────────── */
 
 /**
@@ -233,6 +246,18 @@ export const appSpecSchema = z.object({
 });
 
 export type AppSpec = z.infer<typeof appSpecSchema>;
+
+/**
+ * The input of the step of a delete that deletes the app's Render resources:
+ * only the fields of the spec that name them.
+ */
+export const deleteResourcesInputSchema = appSpecSchema.pick({
+	user: true,
+	appName: true,
+	resourcePrefix: true,
+});
+
+export type DeleteResourcesInput = z.infer<typeof deleteResourcesInputSchema>;
 
 /* ── Terminal results ─────────────────────────────────────────────────── */
 

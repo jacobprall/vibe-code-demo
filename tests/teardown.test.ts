@@ -1,53 +1,24 @@
 /**
  * app/teardown.ts makes the factory's only Render API calls that change a
- * service, a database, or a project. These tests pin down what it deletes and
- * when: only when no sync of an earlier commit can run, and only in the app's
- * own project. A fake fetch holds the workspace, and a fake clock runs the
- * waits.
+ * service, a database, or a project. These tests pin down how it waits until
+ * no sync of an earlier commit can run, and that it deletes only in the app's
+ * own project. tests/workflow.test.ts tests that a delete waits before it
+ * deletes. A fake fetch holds the workspace, and a fake clock runs the waits.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppSpec } from "../app/contracts.js";
-import { deleteAppResources, type TeardownOptions } from "../app/teardown.js";
+import {
+	deleteAppResources,
+	type SyncWaitOptions,
+	type TeardownOptions,
+	waitForBlueprintSyncs,
+} from "../app/teardown.js";
 
-const spec: AppSpec = {
-	user: "demo",
-	appName: "shop",
-	prompt: "Sell handmade walnut furniture online",
-	summary: "A storefront, an API, and Postgres behind it.",
-	createdAt: "2026-01-01T00:00:00.000Z",
-	resourcePrefix: "vibe",
-	tiers: ["static_site", "web_service", "postgres"],
-	manifest: {
-		services: [
-			{
-				name: "web",
-				kind: "static_site",
-				rootDir: "web",
-				runtime: "static",
-				buildCommand: "npm ci && npm run build",
-				staticPublishPath: "dist",
-			},
-			{
-				name: "api",
-				kind: "web_service",
-				rootDir: "api",
-				runtime: "node",
-				buildCommand: "npm ci && npm run build",
-				startCommand: "npm start",
-			},
-		],
-		databases: [{ name: "db" }],
-	},
-	notes: [],
-	deletedAt: "2026-01-02T00:00:00.000Z",
-};
+/** What the delete of the resources gets from the app's spec. */
+const APP = { user: "demo", appName: "shop", resourcePrefix: "vibe" };
 
-const OPTIONS: TeardownOptions = {
-	workspaceId: "tea-test",
-	blueprintId: "exs-apps",
-	pushedAt: null,
-	syncTimeoutMs: 60_000,
-};
+const OPTIONS: TeardownOptions = { workspaceId: "tea-test" };
+
+const WAIT: SyncWaitOptions = { pushedAt: null, timeoutMs: 60_000 };
 
 const SHOP = {
 	id: "prj-shop",
@@ -170,6 +141,13 @@ function deletes(): string[] {
 	return requests.filter((request) => request.startsWith("DELETE "));
 }
 
+/** The JSON events of one console method, in order. */
+function events(method: "log" | "warn"): Record<string, unknown>[] {
+	return vi
+		.mocked(console[method])
+		.mock.calls.map(([line]) => JSON.parse(String(line)));
+}
+
 beforeEach(() => {
 	vi.useFakeTimers();
 	vi.spyOn(console, "log").mockImplementation(() => {});
@@ -196,47 +174,29 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("deleteAppResources", () => {
-	it("deletes the services, then the databases, then the project", async () => {
-		await expect(settle(deleteAppResources(spec, OPTIONS))).resolves.toEqual([
-			"vibe-demo-shop-web",
-			"vibe-demo-shop-api",
-			"vibe-demo-shop-db",
-		]);
-		expect(deletes()).toEqual([
-			"DELETE /services/srv-web",
-			"DELETE /services/srv-api",
-			"DELETE /postgres/dpg-db",
-			"DELETE /projects/prj-shop",
-		]);
-	});
-
+describe("waitForBlueprintSyncs", () => {
 	// On Render, a push that only removed an app started no sync, and 20
 	// minutes later the Blueprint still listed the app's resources. The first
 	// version of the delete waited for them to leave that list, and timed out.
-	it("deletes an app that the Blueprint still lists after the push that removed it", async () => {
-		await expect(
-			settle(deleteAppResources(spec, OPTIONS)),
-		).resolves.toHaveLength(3);
+	it("finishes while the Blueprint still lists the app's resources", async () => {
+		await settle(waitForBlueprintSyncs("exs-apps", WAIT));
+
+		expect(syncReads).toHaveLength(1);
 		expect(requests).not.toContain("GET /blueprints/exs-apps");
-		expect(deletes()).toHaveLength(4);
 	});
 
 	// A sync of an earlier commit still declares the app, and a sync recreates
 	// a declared resource that is missing.
-	it("deletes nothing while a sync of the Blueprint waits or runs", async () => {
+	it("waits while a sync of the Blueprint waits or runs", async () => {
 		workspace.syncs = [
 			[sync("c1", "pending"), sync("54c1088", "success")],
 			[sync("c1", "running"), sync("54c1088", "success")],
 			[sync("c1", "success"), sync("54c1088", "success")],
 		];
 
-		await settle(deleteAppResources(spec, OPTIONS));
+		await settle(waitForBlueprintSyncs("exs-apps", WAIT));
 
 		expect(syncReads).toHaveLength(3);
-		expect(requests.indexOf(deletes()[0])).toBeGreaterThan(
-			requests.lastIndexOf("GET /blueprints/exs-apps/syncs"),
-		);
 	});
 
 	// The push event of an earlier push, from another run, can arrive after the
@@ -244,42 +204,41 @@ describe("deleteAppResources", () => {
 	it("reads the syncs a minute after its push, so that a late push event can start one", async () => {
 		const pushedAt = Date.now();
 
-		await settle(deleteAppResources(spec, { ...OPTIONS, pushedAt }));
+		await settle(waitForBlueprintSyncs("exs-apps", { ...WAIT, pushedAt }));
 
 		expect(syncReads[0]).toBeGreaterThanOrEqual(pushedAt + 60_000);
-		expect(deletes()).toHaveLength(4);
 	});
 
 	it("does not wait for the push event when an earlier attempt pushed", async () => {
 		const start = Date.now();
 
-		await settle(deleteAppResources(spec, OPTIONS));
+		await settle(waitForBlueprintSyncs("exs-apps", WAIT));
 
 		expect(syncReads[0]).toBe(start);
 	});
 
-	it("deletes nothing when a sync does not finish by the deadline", async () => {
+	it("fails when a sync does not finish by the deadline", async () => {
 		workspace.syncs = [[sync("c1abcdef99", "running")]];
 
-		await expect(settle(deleteAppResources(spec, OPTIONS))).rejects.toThrow(
+		await expect(
+			settle(waitForBlueprintSyncs("exs-apps", WAIT)),
+		).rejects.toThrow(
 			"Blueprint exs-apps has a sync that did not finish in 1 minutes: c1abcde (running).",
 		);
-		expect(deletes()).toEqual([]);
 	});
 
 	// Without the list, a running sync would look like no sync.
-	it("deletes nothing when the Blueprint returns no list of syncs", async () => {
+	it("fails when the Blueprint returns no list of syncs", async () => {
 		workspace.syncs = [{ message: "unexpected" }];
 
-		await expect(settle(deleteAppResources(spec, OPTIONS))).rejects.toThrow(
-			"Blueprint exs-apps returned no list of syncs.",
-		);
-		expect(deletes()).toEqual([]);
+		await expect(
+			settle(waitForBlueprintSyncs("exs-apps", WAIT)),
+		).rejects.toThrow("Blueprint exs-apps returned no list of syncs.");
 	});
 
 	// The wait reads the syncs for up to 6 minutes. One failed request once
 	// ended the delete as delete_failed, and a new DELETE was necessary.
-	it("reads the syncs again after a read fails, and continues the delete", async () => {
+	it("reads the syncs again after a read fails, and then finishes", async () => {
 		const onProgress = vi.fn();
 		workspace.syncs = [
 			new Response("upstream error", { status: 503 }),
@@ -292,23 +251,22 @@ describe("deleteAppResources", () => {
 			[sync("c1", "success"), sync("54c1088", "success")],
 		];
 
-		await expect(
-			settle(deleteAppResources(spec, { ...OPTIONS, onProgress })),
-		).resolves.toHaveLength(3);
+		await settle(waitForBlueprintSyncs("exs-apps", { ...WAIT, onProgress }));
+
 		expect(syncReads).toHaveLength(5);
 		expect(onProgress.mock.calls.map(([detail]) => detail)).toEqual([
 			"The Blueprint sync lookup failed (attempt 1 of 5): Listing the syncs of Blueprint exs-apps failed with 503.",
 			"The Blueprint sync lookup failed (attempt 2 of 5): The operation was aborted due to timeout",
 			"Waiting for a sync of Blueprint exs-apps to finish",
 			"The Blueprint sync lookup failed (attempt 1 of 5): fetch failed: other side closed",
-			"Deleting vibe-demo-shop-web",
-			"Deleting vibe-demo-shop-api",
-			"Deleting vibe-demo-shop-db",
-			"Deleting project vibe-demo-shop",
 		]);
+		expect(events("log").at(-1)).toEqual({
+			event: "blueprint_syncs_finished",
+			blueprintId: "exs-apps",
+		});
 	});
 
-	it("deletes nothing when 5 reads of the syncs in sequence fail", async () => {
+	it("fails with the last error when 5 reads of the syncs in sequence fail", async () => {
 		workspace.syncs = [
 			...Array.from(
 				{ length: 4 },
@@ -317,33 +275,92 @@ describe("deleteAppResources", () => {
 			new TypeError("fetch failed", { cause: new Error("other side closed") }),
 		];
 
-		await expect(settle(deleteAppResources(spec, OPTIONS))).rejects.toThrow(
+		await expect(
+			settle(waitForBlueprintSyncs("exs-apps", WAIT)),
+		).rejects.toThrow(
 			"The Blueprint sync lookup failed 5 times in sequence. " +
 				"The last error: fetch failed: other side closed",
 		);
 		expect(syncReads).toHaveLength(5);
-		expect(deletes()).toEqual([]);
 	});
 
 	// A new attempt cannot repair the API key.
 	it.each([401, 403])(
-		"fails at once, and deletes nothing, when a read of the syncs gets a %i",
+		"fails at once when a read of the syncs gets a %i",
 		async (status) => {
 			workspace.syncs = [new Response("", { status })];
 
-			await expect(settle(deleteAppResources(spec, OPTIONS))).rejects.toThrow(
+			await expect(
+				settle(waitForBlueprintSyncs("exs-apps", WAIT)),
+			).rejects.toThrow(
 				`Listing the syncs of Blueprint exs-apps failed with ${status}.`,
 			);
 			expect(syncReads).toHaveLength(1);
-			expect(deletes()).toEqual([]);
 		},
 	);
 
-	it("does not wait when no Blueprint watches the apps repository", async () => {
-		await settle(deleteAppResources(spec, { ...OPTIONS, blueprintId: null }));
+	// A read every five seconds for minutes would bury the rest of the log.
+	it("logs the wait for the push event, each change of the syncs, and the end", async () => {
+		workspace.syncs = [
+			[sync("c1abcdef99", "pending")],
+			[sync("c1abcdef99", "pending")],
+			[sync("c1abcdef99", "running")],
+			[sync("c1abcdef99", "success")],
+		];
 
-		expect(syncReads).toEqual([]);
-		expect(deletes()).toHaveLength(4);
+		await settle(
+			waitForBlueprintSyncs("exs-apps", { ...WAIT, pushedAt: Date.now() }),
+		);
+
+		expect(events("log")).toEqual([
+			{ event: "push_event_wait", blueprintId: "exs-apps", delayMs: 60_000 },
+			{
+				event: "blueprint_syncs_unfinished",
+				blueprintId: "exs-apps",
+				syncs: ["c1abcde (pending)"],
+			},
+			{
+				event: "blueprint_syncs_unfinished",
+				blueprintId: "exs-apps",
+				syncs: ["c1abcde (running)"],
+			},
+			{ event: "blueprint_syncs_finished", blueprintId: "exs-apps" },
+		]);
+	});
+});
+
+describe("deleteAppResources", () => {
+	it("deletes the services, then the databases, then the project", async () => {
+		await expect(settle(deleteAppResources(APP, OPTIONS))).resolves.toEqual([
+			"vibe-demo-shop-web",
+			"vibe-demo-shop-api",
+			"vibe-demo-shop-db",
+		]);
+		expect(deletes()).toEqual([
+			"DELETE /services/srv-web",
+			"DELETE /services/srv-api",
+			"DELETE /postgres/dpg-db",
+			"DELETE /projects/prj-shop",
+		]);
+	});
+
+	// The spec of an app made before the prefix was stored has no
+	// resourcePrefix, and the task input then has no such field.
+	it("finds the resources of an app that has only the legacy prefix", async () => {
+		workspace.projects = [
+			{ id: "prj-old", name: "airo-demo-shop", environmentIds: ["evm-old"] },
+		];
+		workspace.services = {
+			"evm-old": [{ id: "srv-old", name: "airo-demo-shop-web" }],
+		};
+
+		await expect(
+			settle(deleteAppResources({ user: "demo", appName: "shop" }, OPTIONS)),
+		).resolves.toEqual(["airo-demo-shop-web"]);
+		expect(deletes()).toEqual([
+			"DELETE /services/srv-old",
+			"DELETE /projects/prj-old",
+		]);
 	});
 
 	// The name filter of the API is not the check. App "shop-v2" has a project
@@ -356,16 +373,14 @@ describe("deleteAppResources", () => {
 			"evm-v2": [{ id: "srv-v2", name: "vibe-demo-shop-v2-web" }],
 		};
 
-		await expect(settle(deleteAppResources(spec, OPTIONS))).resolves.toEqual(
-			[],
-		);
+		await expect(settle(deleteAppResources(APP, OPTIONS))).resolves.toEqual([]);
 		expect(deletes()).toEqual([]);
 	});
 
 	it("keeps a resource that the factory did not name, and the project with it", async () => {
 		workspace.services["evm-shop"].push({ id: "srv-grafana", name: "grafana" });
 
-		await expect(settle(deleteAppResources(spec, OPTIONS))).rejects.toThrow(
+		await expect(settle(deleteAppResources(APP, OPTIONS))).rejects.toThrow(
 			"Project vibe-demo-shop also holds grafana, which the factory did not create.",
 		);
 		expect(deletes()).toEqual([
@@ -373,13 +388,21 @@ describe("deleteAppResources", () => {
 			"DELETE /services/srv-api",
 			"DELETE /postgres/dpg-db",
 		]);
+		expect(events("warn")).toEqual([
+			{
+				event: "render_resource_kept",
+				id: "srv-grafana",
+				name: "grafana",
+				collection: "services",
+			},
+		]);
 	});
 
 	// A new attempt of a delete finds what an earlier attempt deleted.
 	it("counts a resource that is already gone as deleted", async () => {
 		workspace.deletes["/services/srv-web"] = [404];
 
-		await expect(settle(deleteAppResources(spec, OPTIONS))).resolves.toContain(
+		await expect(settle(deleteAppResources(APP, OPTIONS))).resolves.toContain(
 			"vibe-demo-shop-web",
 		);
 		expect(deletes()).toContain("DELETE /projects/prj-shop");
@@ -388,17 +411,22 @@ describe("deleteAppResources", () => {
 	it("tries the project again when Render answers that it is not empty", async () => {
 		workspace.deletes["/projects/prj-shop"] = [409, 409];
 
-		await settle(deleteAppResources(spec, OPTIONS));
+		await settle(deleteAppResources(APP, OPTIONS));
 
 		expect(
 			deletes().filter((request) => request === "DELETE /projects/prj-shop"),
 		).toHaveLength(3);
+		expect(
+			events("log")
+				.filter(({ event }) => event === "render_project_not_empty")
+				.map(({ attempt }) => attempt),
+		).toEqual([1, 2]);
 	});
 
 	it("stops when Render refuses to delete a resource", async () => {
 		workspace.deletes["/services/srv-api"] = [403];
 
-		await expect(settle(deleteAppResources(spec, OPTIONS))).rejects.toThrow(
+		await expect(settle(deleteAppResources(APP, OPTIONS))).rejects.toThrow(
 			"Render did not delete vibe-demo-shop-api (403)",
 		);
 		expect(deletes()).not.toContain("DELETE /postgres/dpg-db");
@@ -408,20 +436,18 @@ describe("deleteAppResources", () => {
 	it("deletes nothing for an app that has no project", async () => {
 		workspace.projects = [];
 
-		await expect(settle(deleteAppResources(spec, OPTIONS))).resolves.toEqual(
-			[],
-		);
+		await expect(settle(deleteAppResources(APP, OPTIONS))).resolves.toEqual([]);
 		expect(deletes()).toEqual([]);
+		expect(events("log")).toEqual([
+			{ event: "render_project_not_found", name: "vibe-demo-shop" },
+		]);
 	});
 
 	// The Workflows logs are the record of what the factory deleted.
 	it("logs each resource and the project that it deletes", async () => {
-		await settle(deleteAppResources(spec, OPTIONS));
+		await settle(deleteAppResources(APP, OPTIONS));
 
-		const events = vi
-			.mocked(console.log)
-			.mock.calls.map(([line]) => JSON.parse(String(line)));
-		expect(events).toEqual([
+		expect(events("log")).toEqual([
 			expect.objectContaining({
 				event: "render_resource_deleted",
 				id: "srv-web",
@@ -440,11 +466,15 @@ describe("deleteAppResources", () => {
 			}),
 		]);
 	});
+});
 
-	it("sends the API key and only the workspace of the factory", async () => {
-		await settle(deleteAppResources(spec, OPTIONS));
+describe("the Render API calls", () => {
+	it("send the API key and only the workspace of the factory", async () => {
+		await settle(waitForBlueprintSyncs("exs-apps", WAIT));
+		await settle(deleteAppResources(APP, OPTIONS));
 
 		const calls = vi.mocked(fetch).mock.calls;
+		expect(calls.length).toBeGreaterThan(0);
 		for (const [input, init] of calls) {
 			expect(new Headers(init?.headers).get("authorization")).toBe(
 				"Bearer rnd_test",

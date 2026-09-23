@@ -131,7 +131,7 @@ A: The Deploy Manager agent inspects the failure via MCP (reads logs, deploy sta
 A: The gateway reconciles stale runs by checking Workflows status. Heartbeats and deadlines prevent silent hangs. `GET /v1/apps/:runId` always shows the current stage.
 
 **Q: How do I delete a generated app?**
-A: Select one of its runs in the UI and click **Delete app**, or send `DELETE /v1/apps/:runId`. The delete removes the app with all of its runs. The workflow takes the app out of the root Blueprint, waits until no Blueprint sync can bring its resources back, deletes its services, database, and project, and then removes its files from the apps repo. It takes a few minutes. The files stay in the Git history. If it ends as `delete_failed`, the summary says why; fix that and delete again.
+A: Select one of its runs in the UI and click **Delete app**, or send `DELETE /v1/apps/:runId`. The delete removes the app with all of its runs. The workflow takes the app out of the root Blueprint, waits until no Blueprint sync can bring its resources back, deletes its services, database, and project, and then removes its files from the apps repo. It takes a few minutes. The files stay in the Git history. If it ends as `delete_failed`, the summary says why; fix that and delete again. In the Render Dashboard, each step is a run of its own under the `delete-app` run, with its own logs, so you can see which step failed.
 
 **Q: Can multiple people demo at once?**
 A: Yes, up to 3 concurrent runs (configurable). Each run gets its own sandbox and app namespace (`vibe-<user>-<app>-{web,api,db}`). Concurrent runs rebase onto the same branch.

@@ -45,7 +45,9 @@ export interface ResourceNames {
  * have to be in here. Components are truncated to keep the whole name within
  * Render's limit.
  */
-export function resourceStem(spec: AppSpec): string {
+export function resourceStem(
+	spec: Pick<AppSpec, "resourcePrefix" | "user" | "appName">,
+): string {
 	return [
 		spec.resourcePrefix ?? LEGACY_RESOURCE_PREFIX,
 		spec.user.slice(0, 12),

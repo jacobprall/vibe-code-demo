@@ -14,8 +14,9 @@ and a workflow designs the app against Render primitives, gathers openly
 licensed imagery, builds a storefront and an API in an isolated sandbox,
 verifies them, and commits a Blueprint that Render deploys. A delete goes
 the other way: `DELETE /v1/apps/:runId` claims every run of the run's app, and
-the `delete-app` task takes the app out of the Blueprint, deletes its Render
-resources when no Blueprint sync can bring them back, and removes its files.
+the `delete-app` task runs one subtask for each step: it takes the app out of
+the Blueprint, waits until no Blueprint sync can bring its Render resources
+back, deletes them, and removes its files.
 
 Two processes deploy independently:
 
@@ -25,8 +26,8 @@ Two processes deploy independently:
 The gateway runs no models, holds no repository token, and creates or deletes
 no infrastructure. Agents never write to GitHub and never call a Render write
 API. The only Render write calls are the deletes in `app/teardown.ts`, and only
-the `delete-app` task makes them. Repository execution happens in a Render
-Sandbox.
+`delete-app-resources`, a step of the `delete-app` task, makes them. Repository
+execution happens in a Render Sandbox.
 
 ## Quick start
 
@@ -184,9 +185,11 @@ Do not weaken these without an explicit security-model change:
 - `sandboxId` comes from workflow code, never from the model.
 - Infrastructure is created only by committing a Blueprint, and agents cannot
   run git. The only Render write API calls are the deletes in
-  `app/teardown.ts`, and only `delete-app` makes them. They come after a push
-  has taken the app out of the root Blueprint, and when no sync of the
-  Blueprint waits or runs. They delete only a service or
+  `app/teardown.ts`, and only `delete-app-resources`, a step of `delete-app`,
+  makes them. The gateway starts only `delete-app`, and `removeApp()` runs
+  that step only after a push has taken the app out of the root Blueprint, and
+  when `wait-for-blueprint-syncs` finds no sync of the Blueprint that waits or
+  runs. They delete only a service or
   database in the app's own project whose name starts with the app's stem, and
   then the project, which Render deletes only when it is empty.
 - A delete claims every run of one app, and `claimRunApp` claims an app name
@@ -232,14 +235,14 @@ that failed, with a limit, as `pushVerified` does when another run pushed
 first. Agent subtasks keep the default retries: the parent waits for each one,
 so the row stays `running` and inside the concurrency limit.
 
-The service and deploy waits, and the sync wait of a delete in
-`app/teardown.ts`, read Render through `retryRead()` in `app/render.ts`. It
-does a failed read again after the poll interval, and it fails after five
-failures in sequence, with the last error. It fails at once for a 401 or 403,
-because a new attempt cannot repair the API key. `findBlueprint` uses it too,
-so only a lookup that finds no Blueprint gives `awaiting_blueprint`.
-`RenderMcp` starts a new MCP session after a failed handshake, and after a
-404 that tells it that the server ended the session.
+The service and deploy waits, and the `wait-for-blueprint-syncs` step of a
+delete, read Render through `retryRead()` in `app/render.ts`. It does a failed
+read again after the poll interval, and it fails after five failures in
+sequence, with the last error. It fails at once for a 401 or 403, because a
+new attempt cannot repair the API key. `findBlueprint` uses it too, so only a
+lookup that finds no Blueprint gives `awaiting_blueprint`. `RenderMcp` starts
+a new MCP session after a failed handshake, and after a 404 that tells it that
+the server ended the session.
 
 Postgres enforces two things through constraints rather than application code:
 `runs.idempotency_key` is unique, so a retried curl cannot start a second run,
@@ -249,11 +252,17 @@ and the conditional insert in `claimRun` caps concurrent runs at
 If you add resumability, `ctx.step()` from Render Workflows' Durability 2.0
 API is the seam. Do not rebuild a checkpoint store here.
 
-`delete-app` sets `maxRetries: 0`. A failed delete marks the runs of the app
-`delete_failed`, and the next `DELETE` starts the task again. Each step reads
+`delete-app` and each of its four steps set `maxRetries: 0`. A failed step
+fails the delete. A failed delete marks the runs of the app `delete_failed`,
+and the next `DELETE` starts the task again at the first step. Each step reads
 the state that an earlier attempt left, so a new attempt does only what is
 left. A delete that succeeds removes the rows. The gateway reconciles a
 `deleting` row against the delete task in the same way as a `running` row.
+
+Do not give the steps the default retries. A retry of
+`remove-app-from-blueprint` after its push finds nothing to commit, so the
+next step does not wait for the push event. A retry of
+`wait-for-blueprint-syncs` gives a sync more time than `SYNC_TIMEOUT_MS`.
 
 ## Add an agent
 
@@ -367,19 +376,21 @@ in a subdirectory.
 ## Delete an app
 
 A delete removes an app, not only a run: the runs of one app share its files
-and its resources. `removeApp()` in `app/workflow.ts` sets the order, and
-`tests/workflow.test.ts` tests it:
+and its resources. `removeApp()` in `app/workflow.ts` runs one subtask for each
+step, in this order, and `tests/workflow.test.ts` tests it:
 
-1. Write `deletedAt` into the app's `factory.json`, regenerate the root
-   Blueprint, which leaves the app out, and push. Remove no source file yet:
-   a commit that removes the files of a service starts a build of it, and
-   that build fails.
-2. Wait a minute for the push event of an earlier push, and then until no
-   sync of the Blueprint waits or runs. From the commit of step 1 on, the file
-   does not declare the app, and a sync recreates only a declared resource.
-   So only a sync of an earlier commit can bring a deleted resource back.
-3. Delete the app's services, then its databases, then its project.
-4. Remove the app's directory and push.
+1. `remove-app-from-blueprint`: write `deletedAt` into the app's
+   `factory.json`, regenerate the root Blueprint, which leaves the app out,
+   and push. Remove no source file yet: a commit that removes the files of a
+   service starts a build of it, and that build fails.
+2. `wait-for-blueprint-syncs`: wait a minute for the push event of an earlier
+   push, and then until no sync of the Blueprint waits or runs. From the
+   commit of step 1 on, the file does not declare the app, and a sync
+   recreates only a declared resource. So only a sync of an earlier commit can
+   bring a deleted resource back.
+3. `delete-app-resources`: delete the app's services, then its databases, then
+   its project. Its input is only the fields of the spec that name them.
+4. `remove-app-files`: remove the app's directory and push.
 
 Do not change this order. A resource that is deleted before step 1 comes back
 on the next sync. The spec gives the names of the resources, so if step 4 comes
@@ -389,6 +400,15 @@ Do not wait for the resources to leave the list of resources of the Blueprint.
 A push that only removes resources starts no sync, and Render keeps them in
 that list. The first version of the delete waited for that, and it never
 finished.
+
+The two steps that push each clone the apps repository in their own sandbox.
+Keep task inputs and results small and JSON-serializable: they go through
+Render, and the Dashboard shows them on the run of each step.
+
+Each step writes one JSON line to its logs for each thing that it changes or
+waits for: the commits, the syncs that are not finished, and each resource
+that it deletes or keeps. These logs are the record of what the factory
+deleted, so keep them when you change a step.
 
 ## Checklist
 

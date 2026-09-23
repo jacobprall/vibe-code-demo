@@ -107,19 +107,21 @@ has nothing else, and the gateway deletes it at once.
    `delete-app` task. While a run of the app is still running, it refuses with
    `409`. A run that chooses the app while the delete is in progress stops
    before it builds.
-2. The workflow writes `deletedAt` into the app's `factory.json` and pushes a
-   root `render.yaml` without the app. This commit removes no source file, so
-   a service that builds from it still has all of its files.
-3. It waits a minute, and then until no sync of the Blueprint waits or runs.
-   Only a sync of an earlier commit still declares the app, and that sync
-   would recreate a resource that the delete removed. A push that only removes
-   resources starts no sync, and Render still lists the resources under the
-   Blueprint, so that list is no signal.
-4. It deletes the app's services, then its databases and their data, and then
-   the app's Render project. In that project, it deletes only the resources
-   whose names start with `vibe-<user>-<app>-`. Any other resource stays, and
-   so does the project.
-5. It removes `apps/<user>/<app>/` in a second commit, and deletes the runs.
+2. `remove-app-from-blueprint` writes `deletedAt` into the app's
+   `factory.json` and pushes a root `render.yaml` without the app. This commit
+   removes no source file, so a service that builds from it still has all of
+   its files.
+3. `wait-for-blueprint-syncs` waits a minute, and then until no sync of the
+   Blueprint waits or runs. Only a sync of an earlier commit still declares
+   the app, and that sync would recreate a resource that the delete removed. A
+   push that only removes resources starts no sync, and Render still lists the
+   resources under the Blueprint, so that list is no signal.
+4. `delete-app-resources` deletes the app's services, then its databases and
+   their data, and then the app's Render project. In that project, it deletes
+   only the resources whose names start with `vibe-<user>-<app>-`. Any other
+   resource stays, and so does the project.
+5. `remove-app-files` removes `apps/<user>/<app>/` in a second commit. Then
+   `delete-app` deletes the runs.
 
 ```bash
 curl -X DELETE -H "Authorization: Bearer $FACTORY_API_KEY" "$GATEWAY_URL/v1/apps/$RUN_ID"
@@ -130,6 +132,18 @@ While the status is `deleting`, `GET /v1/apps/:runId` shows the step in
 `delete_failed`, with the reason in `summary`. Fix the cause and send the
 `DELETE` again: the new attempt continues from where the last one stopped. The
 app's files stay in the Git history of the apps repository.
+
+Steps 2 to 5 are subtasks of `delete-app`. In the Render Dashboard, each one is
+a run of its own under the `delete-app` run, with its input, its result, and
+its logs. Each log line is a JSON object with an `event`:
+
+| Task | Events |
+| --- | --- |
+| `remove-app-from-blueprint` | `app_removed_from_blueprint`, with the commit, or `null` when an earlier attempt pushed it; `app_spec_not_found` |
+| `wait-for-blueprint-syncs` | `push_event_wait`; `blueprint_syncs_unfinished` each time the list of unfinished syncs changes; `blueprint_syncs_finished`; `blueprint_not_found`; `render_read_failed` for each failed read of Render, with the attempt and the error |
+| `delete-app-resources` | `render_resource_deleted` and `render_resource_kept` for each resource; `render_project_not_empty` for each refused attempt; `render_project_deleted`; `render_project_not_found` |
+| `remove-app-files` | `app_files_removed`, with the commit |
+| `delete-app` | `app_deleted`, with the deleted resources; `app_delete_failed`, with the error |
 
 ## Why Blueprints are the write path
 
@@ -366,8 +380,8 @@ If the lookup cannot finish, the run ends as `failed`, not as
 `awaiting_blueprint`.
 
 While a delete runs, the status is `deleting`, and `progress` names the step.
-The wait for the syncs of the apps Blueprint does a failed Render read again in
-the same way. Five failures in sequence, or a 401 or 403, end the delete as
+`wait-for-blueprint-syncs` does a failed Render read again in the same way.
+Five failures in sequence, or a 401 or 403, end the delete as
 `delete_failed`. A `delete_failed` run keeps the reason in `summary`. Two
 causes need you to act before you delete again:
 
@@ -375,6 +389,12 @@ causes need you to act before you delete again:
   or fix it, in the Render Dashboard.
 - The app's project holds a resource that the factory did not create. Delete
   or move it in the Render Dashboard.
+
+In the Render Dashboard, the run of the step that failed is under the
+`delete-app` run. For the first cause, `wait-for-blueprint-syncs` logs each
+sync that did not finish in a `blueprint_syncs_unfinished` event. For the
+second, `delete-app-resources` logs the resource, with its ID, in a
+`render_resource_kept` event.
 
 Run `npm run doctor` to verify factory and Blueprint wiring before debugging individual runs.
 
@@ -416,8 +436,9 @@ See [AGENTS.md](../AGENTS.md) for checklists when adding agents, primitives, or 
 - Agents cannot run git, so they cannot publish; the trigger for a deploy is a
   commit only workflow code can make.
 - The only Render write API calls are the deletes in `app/teardown.ts`. The
-  `delete-app` task makes them, never an agent, and only when no sync of the
-  Blueprint waits or runs. They delete only resources that carry
+  `delete-app-resources` step of the `delete-app` task makes them, never an
+  agent, and only when no sync of the Blueprint waits or runs. They delete only
+  resources that carry
   the app's name, in the app's own project. The UI can delete only the runs of
   its own namespace.
 - A delete and a run of the same app take the same Postgres advisory lock, so a
