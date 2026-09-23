@@ -2,11 +2,13 @@
  * MCP results are shaped by the server, so the extraction has to survive both
  * the wrapped envelopes Render returns and a plain list.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	findDeploys,
 	findLogMessages,
 	findServiceUrl,
+	pageContains,
+	pageScripts,
 	parseToolText,
 	serviceRecords,
 } from "../app/render.js";
@@ -104,6 +106,97 @@ describe("findDeploys", () => {
 		expect(findDeploys(payload)).toEqual([
 			{ id: "dep-1", status: "build_failed" },
 		]);
+	});
+});
+
+const PAGE = "https://vibe-demo-shop-web.onrender.com";
+const API_HOST = "vibe-demo-shop-api.onrender.com";
+
+describe("pageScripts", () => {
+	it("finds the scripts that a Vite build loads", () => {
+		const html = [
+			'<script type="module" crossorigin src="/assets/index-B1x2.js"></script>',
+			'<link rel="modulepreload" crossorigin href="/assets/vendor-C3y4.js">',
+			'<link rel="stylesheet" crossorigin href="/assets/index-D5z6.css">',
+		].join("\n");
+		expect(pageScripts(html, PAGE)).toEqual([
+			`${PAGE}/assets/index-B1x2.js`,
+			`${PAGE}/assets/vendor-C3y4.js`,
+		]);
+	});
+
+	it("reads single-quoted, unquoted, and relative references", () => {
+		const html =
+			"<script src='app.js' defer></script><SCRIPT SRC=/js/main.js></SCRIPT>";
+		expect(pageScripts(html, PAGE)).toEqual([
+			`${PAGE}/app.js`,
+			`${PAGE}/js/main.js`,
+		]);
+	});
+
+	// An agent wrote the page. Its references must not send the workflow to a
+	// different host, on the internet or on the private network.
+	it("never leaves the origin of the page", () => {
+		const html = [
+			'<script src="https://cdn.example.com/lib.js"></script>',
+			'<script src="//evil.example/steal.js"></script>',
+			'<script src="http://vibe-demo-shop-api-x7k2:10000/"></script>',
+		].join("\n");
+		expect(pageScripts(html, PAGE)).toEqual([]);
+	});
+
+	it("skips inline scripts and tags in comments", () => {
+		const html =
+			'<script>window.x = 1;</script><!-- <script src="/old.js"></script> -->';
+		expect(pageScripts(html, PAGE)).toEqual([]);
+	});
+});
+
+describe("pageContains", () => {
+	const html = '<script type="module" src="/assets/index-B1x2.js"></script>';
+
+	/** Serve these bodies by URL, and 404 for every other URL. */
+	function serve(files: Record<string, string>) {
+		const fetchMock = vi.fn(async (url: string | URL | Request) => {
+			const body = files[String(url)];
+			return body === undefined
+				? new Response("not found", { status: 404 })
+				: new Response(body);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		return fetchMock;
+	}
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("finds the API hostname in the bundle", async () => {
+		serve({
+			[PAGE]: html,
+			[`${PAGE}/assets/index-B1x2.js`]: `const b="https://${API_HOST}";`,
+		});
+		expect(await pageContains(PAGE, API_HOST)).toBe(true);
+	});
+
+	// This is the failure that the check is for. `property: host` gives the
+	// bundle a private-network name. All checks of the API pass, and every
+	// browser fails.
+	it("is false when the bundle has the private-network name", async () => {
+		serve({
+			[PAGE]: html,
+			[`${PAGE}/assets/index-B1x2.js`]:
+				'const b="https://vibe-demo-shop-api-x7k2";',
+		});
+		expect(await pageContains(PAGE, API_HOST)).toBe(false);
+	});
+
+	it("does not request a script from a different origin", async () => {
+		const fetchMock = serve({
+			[PAGE]: '<script src="https://cdn.example.com/lib.js"></script>',
+		});
+		expect(await pageContains(PAGE, API_HOST)).toBe(false);
+		expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([PAGE]);
 	});
 });
 

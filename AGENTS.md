@@ -223,7 +223,10 @@ API is the seam. Do not rebuild a checkpoint store here.
 3. Emit its resource block from `serviceBlocks()` or `databaseBlocks()` in
    `app/blueprint.ts`; `projectBlock()` places it in the app's project
    environment. Wire dependent env vars declaratively with `fromDatabase` or
-   `fromService` — never by reading a value back out of an API.
+   `fromService` — never by reading a value back out of an API. A static site
+   is not on the private network, and a browser uses its values. Give it only
+   public values, such as `envVarKey: RENDER_EXTERNAL_HOSTNAME`. Never give it
+   `host`, `port`, or `hostport`.
 4. Extend `resourceNames()` so the new resource is namespaced by user and app
    and cannot collide with another resource in the same workspace.
 5. Give `verify()` in `app/workflow.ts` a way to exercise it before the push.
@@ -239,7 +242,7 @@ it gets nothing. It is the worked example of where the next primitive plugs in.
 
 `templates/fullstack` is a working three-tier app that a multi-service run
 starts from. It exists for the contracts a prompt cannot reliably re-derive
-every run — CORS, the API base URL built from `fromService`'s bare hostname,
+every run — CORS, the API base URL built from the API's public hostname,
 and an idempotent migrate-and-seed wired to `preDeployCommand`.
 
 It lives here rather than in its own repository so it is version-locked to the
@@ -266,7 +269,9 @@ overwrites the app directory and rebases onto the branch.
 Deployment progress distinguishes `waiting_for_services`,
 `waiting_for_deploys`, and `smoke_testing`. Render reporting `live` is not
 terminal: the public URL, data endpoint, and CORS checks must pass before the
-run becomes `deployed`.
+run becomes `deployed`. The storefront check must also pass: the HTML of the
+storefront, or a script that it loads, must contain the public hostname of the
+API. The API checks cannot see the hostname that a browser uses.
 
 New generated apps write `factory.json` with `resourcePrefix`. Root Blueprint
 regeneration also reads the legacy filename and treats a missing prefix as the

@@ -198,10 +198,13 @@ export const builder: Agent = {
 		- The API must send CORS headers. The storefront is a static site on a
 		  different onrender.com host, so without Access-Control-Allow-Origin
 		  every browser drops the response even though the API answers.
-		- The storefront reaches the API through a build-time env var wired
-		  with fromService. Its value is a bare hostname, not a URL, so build
-		  "https://" + host. Default it to a localhost URL when it is unset, or
-		  the sandbox build bakes in "undefined" and passes anyway.
+		- The storefront gets the public hostname of the API in a build-time
+		  env var. Set it with fromService and envVarKey
+		  RENDER_EXTERNAL_HOSTNAME. Do not use property host: that is a name on
+		  Render's private network, and a browser cannot connect to it. The
+		  value is a hostname, not a URL, so build "https://" + host. If the
+		  env var is not set, use a localhost URL. Without that default, the
+		  sandbox build writes "undefined" into the bundle and still passes.
 
 		When you are done, respond with JSON describing what you built:
 		{
@@ -221,7 +224,7 @@ export const builder: Agent = {
 		        "dataCheckPath": "an endpoint that reads the database and returns rows",
 		        "envVars": [
 		          { "key": "DATABASE_URL", "fromDatabase": { "property": "connectionString" } },
-		          { "key": "VITE_API_HOST", "fromService": { "name": "api", "property": "host" } }
+		          { "key": "VITE_API_HOST", "fromService": { "name": "api", "envVarKey": "RENDER_EXTERNAL_HOSTNAME" } }
 		        ]
 		      }
 		    ],

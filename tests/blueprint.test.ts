@@ -40,7 +40,7 @@ const fullManifest: Manifest = {
 			envVars: [
 				{
 					key: "VITE_API_HOST",
-					fromService: { name: "api", property: "host" },
+					fromService: { name: "api", envVarKey: "RENDER_EXTERNAL_HOSTNAME" },
 				},
 			],
 		},
@@ -189,7 +189,55 @@ describe("appBlueprint", () => {
 		expect(yaml).toContain("fromDatabase:");
 		expect(yaml).toContain("property: connectionString");
 		expect(yaml).toContain("key: VITE_API_HOST");
-		expect(yaml).toContain("property: host");
+	});
+
+	// `property: host` is a name on the private network. A static site is not
+	// on that network, and only a browser uses the value.
+	it("gives the storefront the public hostname of the API", () => {
+		expect(yaml).toContain(
+			[
+				"              - key: VITE_API_HOST",
+				"                fromService:",
+				"                  name: vibe-demo-furniture-catalog-api",
+				"                  type: web",
+				"                  envVarKey: RENDER_EXTERNAL_HOSTNAME",
+			].join("\n"),
+		);
+		expect(yaml).not.toContain("property: host");
+	});
+
+	it("keeps a property reference for wiring on the private network", () => {
+		const search: Manifest["services"][number] = {
+			name: "search",
+			kind: "web_service",
+			rootDir: "search",
+			runtime: "node",
+			buildCommand: "npm install",
+			startCommand: "npm start",
+			envVars: [
+				{
+					key: "API_HOSTPORT",
+					fromService: { name: "api", property: "hostport" },
+				},
+			],
+		};
+		const wired = appBlueprint(
+			spec({
+				manifest: {
+					...fullManifest,
+					services: [...fullManifest.services, search],
+				},
+			}),
+		);
+		expect(wired).toContain(
+			[
+				"              - key: API_HOSTPORT",
+				"                fromService:",
+				"                  name: vibe-demo-furniture-catalog-api",
+				"                  type: web",
+				"                  property: hostport",
+			].join("\n"),
+		);
 	});
 
 	it("declares the database in the app's environment", () => {

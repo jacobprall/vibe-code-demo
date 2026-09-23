@@ -140,8 +140,22 @@ export const serviceSchema = z.object({
 				fromDatabase: z
 					.object({ property: z.string(), name: z.string().optional() })
 					.optional(),
+				/**
+				 * Render accepts one `property`, such as `host`, or one `envVarKey`,
+				 * such as `RENDER_EXTERNAL_HOSTNAME`. `host` is a name on the private
+				 * network, and a static site is not on that network.
+				 */
 				fromService: z
-					.object({ name: z.string(), property: z.string() })
+					.object({
+						name: z.string(),
+						property: z.string().optional(),
+						envVarKey: z.string().optional(),
+					})
+					.refine(
+						(ref) =>
+							(ref.property === undefined) !== (ref.envVarKey === undefined),
+						"set exactly one of property and envVarKey",
+					)
 					.optional(),
 			}),
 		)

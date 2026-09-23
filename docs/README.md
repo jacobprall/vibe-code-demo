@@ -54,8 +54,9 @@ cap, no tenant-level quotas, and no teardown workflow.
   improves reliability while narrowing stack freedom.
 - **Verify locally and against reality.** The workflow builds, migrates, boots,
   and queries services in the sandbox, then waits for Render and smoke-tests
-  public URLs, database access, and CORS. This catches integration failures a
-  build cannot, but increases run time and infrastructure consumption.
+  public URLs, the API hostname in the storefront, database access, and CORS.
+  This catches integration failures a build cannot, but increases run time and
+  infrastructure consumption.
 - **Durable progress with reconciliation.** Postgres holds run state,
   idempotency, heartbeats, task IDs, and concurrency claims so clients can
   reconnect and stale runs can be repaired. That operational reliability adds
@@ -77,8 +78,8 @@ cap, no tenant-level quotas, and no teardown workflow.
    the infrastructure.
 6. The workflow waits for deployment. On failure, a deploy manager uses
    read-only Render MCP data to diagnose the deploy and can request one bounded
-   builder repair; live services still must pass public storefront, health,
-   data, and CORS checks.
+   builder repair; live services still must pass public storefront, API
+   hostname, health, data, and CORS checks.
 7. Postgres exposes progress and final URLs to reconnecting clients; a
    `finally` block terminates the sandbox.
 
@@ -89,7 +90,7 @@ factory writes YAML, commits it, and Render syncs it. That design has three
 useful consequences:
 
 - **Env wiring is declarative.** `fromDatabase` puts `DATABASE_URL` on the API
-  and `fromService` puts the API's hostname into the storefront's build. No
+  and `fromService` puts the API's public hostname into the storefront's build. No
   code ever reads a connection string, so no connection string can leak
   through one.
 - **Every deploy is reviewable.** Everything the factory has ever provisioned
@@ -284,7 +285,7 @@ Copy `.env.example` when setting up locally.
 
 - `waiting_for_services`: Blueprint sync has not created every expected service.
 - `waiting_for_deploys`: at least one Render deploy has not reached a terminal state.
-- `smoke_testing`: deploys are live; public URL, data, or CORS checks are still running.
+- `smoke_testing`: deploys are live; public URL, API hostname, data, or CORS checks are still running.
 - `done`: the stored run is terminal.
 
 All deploy and HTTP waits have deadlines and heartbeat the database. The
