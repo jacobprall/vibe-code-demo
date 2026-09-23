@@ -75,6 +75,8 @@ const BOOT_ATTEMPTS = 15;
 const FULLSTACK_TEMPLATE = "fullstack";
 /** Proves a health endpoint answers before Postgres is reachable, as Render requires. */
 const UNREACHABLE_DATABASE_URL = "postgres://unreachable/db";
+/** `fromService` properties that give an address on Render's private network. */
+const PRIVATE_NETWORK_PROPERTIES = new Set(["host", "port", "hostport"]);
 
 export const promptToApp = task(
 	{
@@ -376,6 +378,7 @@ function resolveServiceDir(base: string, relative: string): string {
  * Generic verification driven by the manifest. It starts from the files a
  * commit holds, because a fresh clone is all that Render's build gets. For
  * each service:
+ * - For static sites: reject fromService properties on the private network
  * - Run the buildCommand in its rootDir
  * - For static sites: check staticPublishPath produced an index.html
  * - For web services with a healthCheckPath: boot it and curl the endpoint
@@ -409,6 +412,9 @@ async function verify(
 	await removeIgnored(sandbox, appDir);
 
 	for (const service of manifest.services) {
+		// This check needs no build, so a failed build cannot hide it.
+		failures.push(...checkStaticSiteEnvVars(service));
+
 		const serviceDir = resolveServiceDir(appDir, service.rootDir);
 
 		// Run the build command.
@@ -452,6 +458,36 @@ async function verify(
 		}
 	}
 
+	return failures;
+}
+
+/**
+ * A static site gets its env vars at build time, and a browser uses them. The
+ * sandbox build passes with a private-network address in the bundle. Without
+ * this check, only smokeStorefront() finds the fault, after the Blueprint has
+ * created every resource. The builder must make the fix, because the
+ * storefront code must agree with the value. Web services can use these
+ * properties, because they connect on the private network.
+ */
+export function checkStaticSiteEnvVars(service: Service): string[] {
+	if (service.kind !== "static_site") return [];
+
+	const failures: string[] = [];
+	for (const { key, fromService } of service.envVars ?? []) {
+		if (
+			!fromService?.property ||
+			!PRIVATE_NETWORK_PROPERTIES.has(fromService.property)
+		) {
+			continue;
+		}
+		const { name, property } = fromService;
+		failures.push(
+			`${service.name}: envVar ${key} uses fromService property ${property}. ` +
+				"That is an address on Render's private network, and a static site is not on that network. " +
+				"A browser cannot connect to a private-network name. " +
+				`Replace property ${property} with envVarKey RENDER_EXTERNAL_HOSTNAME, the public hostname of ${name}.`,
+		);
+	}
 	return failures;
 }
 
