@@ -25,8 +25,10 @@ const TASKS = [
 	"delete-app-resources",
 	"deploy-manager",
 	"prompt-to-app",
+	"publish-app",
 	"remove-app-files",
 	"remove-app-from-blueprint",
+	"verify-app",
 	"wait-for-blueprint-syncs",
 ];
 

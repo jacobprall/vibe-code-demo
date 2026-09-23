@@ -22,9 +22,11 @@ import {
 	deleteApp,
 	deleteResourcesTask,
 	promptToApp,
+	publishAppTask,
 	removeApp,
 	removeFilesTask,
 	removeFromBlueprintTask,
+	verifyAppTask,
 	waitForSyncsTask,
 } from "../app/workflow.js";
 
@@ -37,6 +39,7 @@ const mocks = vi.hoisted(() => ({
 	githubToken: vi.fn(),
 	cloneAppsRepo: vi.fn(),
 	createSandbox: vi.fn(),
+	connectSandbox: vi.fn(),
 	findBlueprint: vi.fn(),
 	pageContains: vi.fn(),
 	waitForServices: vi.fn(),
@@ -69,6 +72,23 @@ function wire<T>(value: T): T {
 	return value === undefined ? value : JSON.parse(JSON.stringify(value));
 }
 
+/** Runs each subtask as `tasks` does, and records its name and its input. */
+function recordSubtasks(): {
+	context: TaskContext;
+	runs: { name: string; input: unknown }[];
+} {
+	const runs: { name: string; input: unknown }[] = [];
+	return {
+		runs,
+		context: {
+			run: (task, ...args) => {
+				runs.push({ name: task.name, input: args[0] });
+				return tasks.run(task, ...args);
+			},
+		},
+	};
+}
+
 vi.mock("../app/store.js", () => ({
 	claimRunApp: mocks.claimRunApp,
 	deleteRuns: mocks.deleteRuns,
@@ -94,6 +114,7 @@ vi.mock("../app/git.js", async (importOriginal) => ({
 vi.mock("../app/sandbox.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../app/sandbox.js")>()),
 	createSandbox: mocks.createSandbox,
+	connectSandbox: mocks.connectSandbox,
 }));
 
 vi.mock("../app/teardown.js", () => ({
@@ -349,13 +370,17 @@ let fake: ReturnType<typeof fakeSandbox>;
 /** The checkout at each commit, which is what the push sends to Render. */
 let commits: Map<string, string>[];
 
-function deploy(mcp = {} as RenderMcp) {
+// verify-app and publish-app connect to the sandbox of their parent by its id.
+mocks.connectSandbox.mockImplementation((sandboxId: string) => {
+	expect(sandboxId).toBe(fake.sandbox.id);
+	return fake.sandbox;
+});
+
+function deploy(mcp = {} as RenderMcp, context = tasks) {
 	return awaitDeployment({
-		tasks,
+		tasks: context,
 		mcp,
 		sandbox: fake.sandbox,
-		token: "token",
-		remoteUrl: "https://github.com/acme/apps.git",
 		workspaceId: "tea-test",
 		repoUrl: "https://github.com/acme/apps",
 		spec,
@@ -375,12 +400,16 @@ function deploy(mcp = {} as RenderMcp) {
 describe("awaitDeployment repairs", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		process.env.APPS_REPO = "acme/apps";
 
 		// What run() published before the first deploy.
 		files = new Map([[APP_SPEC, `${JSON.stringify(spec, null, 2)}\n`]]);
 		fake = fakeSandbox(files);
 		commits = [];
 
+		mocks.githubToken.mockResolvedValue("token");
+		// verify-app and publish-app log a JSON event.
+		vi.spyOn(console, "log").mockImplementation(() => {});
 		mocks.findBlueprint.mockResolvedValue({
 			id: "exs-test",
 			name: "factory",
@@ -433,6 +462,66 @@ describe("awaitDeployment repairs", () => {
 			return "b".repeat(40);
 		});
 		mocks.pushVerified.mockResolvedValue("b".repeat(40));
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	// On Render, each subtask has its own run, with its own logs.
+	it("verifies and publishes the repair in subtasks", async () => {
+		builderReturns(repair);
+		const { context, runs } = recordSubtasks();
+
+		await deploy(undefined, context);
+
+		expect(runs.map(({ name }) => name)).toEqual([
+			"deploy-manager",
+			"builder",
+			"verify-app",
+			"publish-app",
+		]);
+		expect(runs[3].input).toMatchObject({
+			sandboxId: fake.sandbox.id,
+			message: "Fix Render deploy for demo/shop (round 1)",
+		});
+		expect(logged("log")).toEqual([
+			{ event: "app_verified", user: "demo", appName: "shop" },
+			{
+				event: "app_published",
+				user: "demo",
+				appName: "shop",
+				commit: "b".repeat(40),
+			},
+		]);
+	});
+
+	it("pushes nothing when the repair fails verification", async () => {
+		builderReturns({
+			...manifest,
+			services: manifest.services.map((service) =>
+				service.name === "web"
+					? {
+							...service,
+							envVars: [
+								{
+									key: "VITE_API_HOST",
+									fromService: { name: "api", property: "host" },
+								},
+							],
+						}
+					: service,
+			),
+		});
+
+		const result = await deploy();
+
+		expect(result.status).toBe("deploy_failed");
+		expect(result.summary).toContain(
+			"Deploy repair round 1 failed local verification: web: envVar VITE_API_HOST uses fromService property host.",
+		);
+		expect(mocks.commitAll).not.toHaveBeenCalled();
+		expect(mocks.pushVerified).not.toHaveBeenCalled();
 	});
 
 	it("commits the repaired manifest in factory.json and both Blueprints", async () => {
@@ -907,18 +996,10 @@ describe("removeApp", () => {
 
 	// On Render, each step then has its own run, with its own logs.
 	it("runs each step as a subtask", async () => {
-		const names: string[] = [];
-		await removeApp(
-			{
-				run: (task, ...args) => {
-					names.push(task.name);
-					return tasks.run(task, ...args);
-				},
-			},
-			SHOP_APP,
-		);
+		const { context, runs } = recordSubtasks();
+		await removeApp(context, SHOP_APP);
 
-		expect(names).toEqual([
+		expect(runs.map(({ name }) => name)).toEqual([
 			"remove-app-from-blueprint",
 			"wait-for-blueprint-syncs",
 			"delete-app-resources",
@@ -1265,5 +1346,187 @@ describe("promptToApp", () => {
 		expect(
 			TaskRegistry.getInstance().get(promptToApp.name)?.options?.retry,
 		).toEqual({ max_retries: 0, wait_duration_ms: 0 });
+	});
+
+	/**
+	 * The verification and the publish are subtasks. On Render, each one has
+	 * its own run, with its input, its result, and its logs.
+	 */
+	describe("verify and publish", () => {
+		const INPUT = {
+			prompt: "Sell handmade walnut furniture online",
+			user: "demo",
+			runId: "run-1",
+		};
+		const site: Manifest = {
+			services: [
+				{
+					name: "web",
+					kind: "static_site",
+					rootDir: "web",
+					runtime: "static",
+					buildCommand: "npm ci && npm run build",
+					staticPublishPath: "dist",
+				},
+			],
+		};
+
+		function builderOutput(built: Manifest): string {
+			return JSON.stringify({ summary: "A storefront.", manifest: built });
+		}
+
+		beforeEach(() => {
+			vi.spyOn(console, "log").mockImplementation(() => {});
+			files = new Map();
+			fake = fakeSandbox(files);
+			mocks.createSandbox.mockResolvedValue(fake.sandbox);
+			mocks.githubToken.mockResolvedValue("token");
+			mocks.cloneAppsRepo.mockResolvedValue("https://github.com/acme/apps.git");
+			mocks.buildTask.mockResolvedValue(builderOutput(site));
+			mocks.commitAll.mockResolvedValue("c".repeat(40));
+			mocks.pushVerified.mockResolvedValue("c".repeat(40));
+			// No Blueprint watches the apps repository, so the run ends after
+			// the push.
+			mocks.findBlueprint.mockResolvedValue(null);
+		});
+
+		afterEach(() => {
+			vi.restoreAllMocks();
+		});
+
+		it("verifies the app and then publishes it", async () => {
+			const { context, runs } = recordSubtasks();
+
+			const result = await promptToApp.func(context, INPUT);
+
+			expect(result.status, result.summary).toBe("awaiting_blueprint");
+			expect(runs.map(({ name }) => name)).toEqual([
+				"architect",
+				"builder",
+				"verify-app",
+				"publish-app",
+			]);
+			expect(runs[2].input).toEqual({
+				sandboxId: fake.sandbox.id,
+				user: "demo",
+				appName: "shop",
+				manifest: site,
+				databaseUrl: null,
+			});
+			expect(runs[3].input).toEqual({
+				sandboxId: fake.sandbox.id,
+				spec: expect.objectContaining({
+					user: "demo",
+					appName: "shop",
+					manifest: site,
+				}),
+				message: "demo/shop: Sell handmade walnut furniture online",
+			});
+			expect(JSON.parse(files.get(APP_SPEC) ?? "").manifest).toEqual(site);
+			expect(files.get(ROOT_BLUEPRINT)).toContain(
+				`${factoryConfig.resourcePrefix}-demo-shop-web`,
+			);
+			expect(fake.sandbox.terminate).toHaveBeenCalledTimes(1);
+			expect(logged("log")).toEqual([
+				{ event: "app_verified", user: "demo", appName: "shop" },
+				{
+					event: "app_published",
+					user: "demo",
+					appName: "shop",
+					commit: "c".repeat(40),
+				},
+			]);
+		});
+
+		it("gives the failures of verify-app to the builder, and publishes only after a pass", async () => {
+			mocks.buildTask.mockResolvedValueOnce(
+				builderOutput({
+					services: [
+						{
+							...site.services[0],
+							envVars: [
+								{
+									key: "VITE_API_HOST",
+									fromService: { name: "api", property: "host" },
+								},
+							],
+						},
+					],
+				}),
+			);
+			const { context, runs } = recordSubtasks();
+
+			const result = await promptToApp.func(context, INPUT);
+
+			expect(result.status, result.summary).toBe("awaiting_blueprint");
+			expect(runs.map(({ name }) => name)).toEqual([
+				"architect",
+				"builder",
+				"verify-app",
+				"builder",
+				"verify-app",
+				"publish-app",
+			]);
+			const failure =
+				"web: envVar VITE_API_HOST uses fromService property host.";
+			expect(mocks.buildTask.mock.calls[1][1].message).toContain(failure);
+			expect(logged("log")[0]).toEqual({
+				event: "app_verification_failed",
+				user: "demo",
+				appName: "shop",
+				failures: [expect.stringContaining(failure)],
+			});
+			expect(mocks.commitAll).toHaveBeenCalledTimes(1);
+		});
+
+		// An installation token expires after an hour, and a run can take
+		// two. The Render Dashboard shows the input of each subtask.
+		it("gets a new GitHub token for the push, and gives no token to a subtask", async () => {
+			mocks.githubToken
+				.mockResolvedValueOnce("ghs_clone")
+				.mockResolvedValueOnce("ghs_push");
+			const { context, runs } = recordSubtasks();
+
+			await promptToApp.func(context, INPUT);
+
+			expect(mocks.cloneAppsRepo).toHaveBeenCalledWith(
+				fake.sandbox,
+				"ghs_clone",
+				expect.objectContaining({ fullName: "acme/apps" }),
+				factoryConfig.branch,
+			);
+			expect(mocks.pushVerified).toHaveBeenCalledWith(
+				fake.sandbox,
+				"ghs_push",
+				"https://github.com/acme/apps.git",
+				factoryConfig.branch,
+				expect.any(Function),
+			);
+			expect(JSON.stringify(runs)).not.toContain("ghs_");
+		});
+
+		it("ends the run as build_failed when the publish changes no files", async () => {
+			mocks.commitAll.mockResolvedValue(null);
+
+			const result = await promptToApp.func(tasks, INPUT);
+
+			expect(result).toEqual({
+				status: "build_failed",
+				summary: "The run produced no files.",
+			});
+			expect(mocks.pushVerified).not.toHaveBeenCalled();
+			expect(mocks.findBlueprint).not.toHaveBeenCalled();
+		});
+
+		// A retry of publish-app after its push finds nothing to commit. A
+		// retry of verify-app after a timeout runs every build again.
+		it("registers verify-app and publish-app with no retries", () => {
+			for (const definition of [verifyAppTask, publishAppTask]) {
+				expect(
+					TaskRegistry.getInstance().get(definition.name)?.options?.retry,
+					definition.name,
+				).toEqual({ max_retries: 0, wait_duration_ms: 0 });
+			}
+		});
 	});
 });

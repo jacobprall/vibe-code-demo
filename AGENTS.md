@@ -11,8 +11,9 @@ optimized to be read, not to be a framework.
 
 The path is: a caller POSTs a prompt, the gateway validates and dispatches it,
 and a workflow designs the app against Render primitives, gathers openly
-licensed imagery, builds a storefront and an API in an isolated sandbox,
-verifies them, and commits a Blueprint that Render deploys. A delete goes
+licensed imagery, and builds a storefront and an API in an isolated sandbox.
+Then the `verify-app` subtask verifies them, and the `publish-app` subtask
+commits them with a Blueprint that Render deploys. A delete goes
 the other way: `DELETE /v1/apps/:runId` claims every run of the run's app, and
 the `delete-app` task runs one subtask for each step: it takes the app out of
 the Blueprint, waits until no Blueprint sync can bring its Render resources
@@ -25,9 +26,10 @@ Two processes deploy independently:
 
 The gateway runs no models, holds no repository token, and creates or deletes
 no infrastructure. Agents never write to GitHub and never call a Render write
-API. The only Render write calls are the deletes in `app/teardown.ts`, and only
-`delete-app-resources`, a step of the `delete-app` task, makes them. Repository
-execution happens in a Render Sandbox.
+API. Only `publish-app`, and the two steps of `delete-app` that push, write to
+GitHub. The only Render write calls are the deletes in `app/teardown.ts`, and
+only `delete-app-resources`, a step of the `delete-app` task, makes them.
+Repository execution happens in a Render Sandbox.
 
 ## Quick start
 
@@ -123,7 +125,7 @@ app/
   git.ts         Clone, .gitignore, commit, push, verify, GitHub credentials
   store.ts       Postgres: one runs table
   templates.ts   Read a template and materialize it into the sandbox
-  workflow.ts    The prompt-to-app and delete-app pipelines
+  workflow.ts    The prompt-to-app and delete-app pipelines and their steps
   schema.sql     Schema, applied by scripts/migrate.ts
   server.ts      Gateway entrypoint
   host.ts        Workflows entrypoint
@@ -183,6 +185,9 @@ Do not weaken these without an explicit security-model change:
 - `asset__fetch` accepts HTTPS only, allowlisted hosts only, `image/*` only,
   under the size cap, and only into an `assets/` directory in the checkout.
 - `sandboxId` comes from workflow code, never from the model.
+- The GitHub token never goes into a task input, because the Render Dashboard
+  shows the input of every task run. `publish-app` gets the token itself, just
+  before its push.
 - Infrastructure is created only by committing a Blueprint, and agents cannot
   run git. The only Render write API calls are the deletes in
   `app/teardown.ts`, and only `delete-app-resources`, a step of `delete-app`,
@@ -196,12 +201,12 @@ Do not weaken these without an explicit security-model change:
   for a run. Both take the same Postgres advisory lock. So no run builds an app
   while a delete of it is in progress, and a delete is refused while a run of
   the app is running.
-- Verification is workflow-owned and runs the same install, build, and
-  pre-deploy commands the Blueprint gives Render, against a real Postgres
-  running in the sandbox. A health endpoint must answer with the database
-  unreachable, because Render calls it before Postgres is ready; a
-  `dataCheckPath` must return rows, because nothing else proves the schema was
-  applied or the seed loaded.
+- Verification is workflow-owned. The `verify-app` subtask runs the same
+  install, build, and pre-deploy commands the Blueprint gives Render, against
+  a real Postgres running in the sandbox, and `publish-app` runs only after it
+  passes. A health endpoint must answer with the database unreachable, because
+  Render calls it before Postgres is ready; a `dataCheckPath` must return
+  rows, because nothing else proves the schema was applied or the seed loaded.
 - `node_modules/` and static-site build output are not committed.
   `appGitignore()` makes each app's `.gitignore` from its manifest:
   `node_modules/`, and each static site's publish directory below its
@@ -234,6 +239,12 @@ A transient fault is not a reason to retry the full run. Retry the one call
 that failed, with a limit, as `pushVerified` does when another run pushed
 first. Agent subtasks keep the default retries: the parent waits for each one,
 so the row stays `running` and inside the concurrency limit.
+
+`verify-app` and `publish-app` set `maxRetries: 0`, so a failed one fails the
+run. A retry of `publish-app` after its push finds nothing to commit, and the
+run then ends as if the push changed no files. A retry of `verify-app` after a
+timeout runs every build again, and a service that the failed attempt started
+can still answer on the port of the next boot.
 
 The service and deploy waits, and the `wait-for-blueprint-syncs` step of a
 delete, read Render through `retryRead()` in `app/render.ts`. It does a failed
@@ -338,6 +349,12 @@ below. Fetch large state inside the workflow rather than passing it through
 dispatch, and keep repeated execution safe: a rerun of the same prompt
 overwrites the app directory and rebases onto the branch.
 
+Verification and the publish are subtasks of `prompt-to-app`, as the agents
+are. `verify-app` gives its failures as a result, not as an error, and
+`publish-app` gives the commit that it pushed, or null when no file changed.
+Each one connects to the sandbox of the run by the `sandboxId` in its input,
+and the parent terminates that sandbox.
+
 Deployment progress distinguishes `waiting_for_services`,
 `waiting_for_deploys`, and `smoke_testing`. Render reporting `live` is not
 terminal: the public URL, data endpoint, and CORS checks must pass before the
@@ -346,9 +363,9 @@ storefront, or a script that it loads, must contain the public hostname of the
 API. The API checks cannot see the hostname that a browser uses.
 
 A deploy repair ships through the same path as the first build. The repaired
-manifest must pass `checkManifestCommands` and `verify()`. Then
-`writeBlueprints()` rewrites `factory.json` and both Blueprints before the
-commit, because Render gets the manifest only through these files. A repair
+manifest must pass `checkManifestCommands` and `verify-app`. Then
+`publish-app` rewrites `factory.json` and both Blueprints before the commit,
+because Render gets the manifest only through these files. A repair
 can change commands, paths, and env wiring, but not the list from
 `declaredResources()`. Render does not delete a resource that leaves the
 Blueprint, it cannot change the runtime of a service, and the loop watches only
