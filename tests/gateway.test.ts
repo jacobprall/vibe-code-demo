@@ -271,7 +271,9 @@ describe("status", () => {
 			user: "demo",
 			status: "deployed",
 			stage: "done",
-			progress: null,
+			// Progress can hold the error of a failed Render read.
+			progress:
+				"list_deploys for srv-1 failed (attempt 1 of 5): postgres://user:pw@host/db",
 			workflowRunId: "trn-1",
 			appName: "furniture-catalog",
 			webUrl: "https://vibe-demo-furniture-catalog-web.onrender.com",
@@ -288,6 +290,7 @@ describe("status", () => {
 		);
 		const body = (await response.json()) as {
 			urls: { web: string };
+			progress: string;
 			summary: string;
 		};
 
@@ -295,6 +298,9 @@ describe("status", () => {
 		expect(body.urls.web).toContain("onrender.com");
 		expect(body.summary).not.toContain("postgres://user:pw@host/db");
 		expect(body.summary).toContain("[REDACTED]");
+		expect(body.progress).toBe(
+			"list_deploys for srv-1 failed (attempt 1 of 5): [REDACTED]",
+		);
 	});
 
 	it("recovers a completed workflow that did not finalize its database row", async () => {

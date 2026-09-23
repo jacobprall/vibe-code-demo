@@ -9,7 +9,12 @@ import { parse } from "yaml";
 import { appPath, factoryConfig } from "../factory.config.js";
 import { rootBlueprint } from "../app/blueprint.js";
 import type { AppSpec, Manifest, Service } from "../app/contracts.js";
-import type { DeployOutcome, DeployRecord, RenderMcp } from "../app/render.js";
+import {
+	type DeployOutcome,
+	type DeployRecord,
+	McpError,
+	type RenderMcp,
+} from "../app/render.js";
 import type { ExecResult, Sandbox } from "../app/sandbox.js";
 import {
 	awaitDeployment,
@@ -554,17 +559,20 @@ describe("awaitDeployment repairs", () => {
 				);
 			mocks.waitForDeploy.mockImplementation(render.waitForDeploy);
 			vi.useFakeTimers();
+			vi.spyOn(console, "warn").mockImplementation(() => {});
 		});
 
 		afterEach(() => {
 			vi.useRealTimers();
+			vi.mocked(console.warn).mockRestore();
 		});
 
 		/**
 		 * Each list_deploys call for a service returns the next deploy in its
-		 * script, then the last again.
+		 * script, or throws the next error. After the last one, each call does
+		 * the last one again.
 		 */
-		function fakeRender(scripts: Record<string, DeployRecord[]>) {
+		function fakeRender(scripts: Record<string, (DeployRecord | Error)[]>) {
 			const polls = new Map<string, number>();
 			const callTool = vi.fn(
 				async (tool: string, args: Record<string, unknown>) => {
@@ -575,7 +583,9 @@ describe("awaitDeployment repairs", () => {
 					}
 					const poll = polls.get(serviceId) ?? 0;
 					polls.set(serviceId, poll + 1);
-					return [script[Math.min(poll, script.length - 1)]];
+					const result = script[Math.min(poll, script.length - 1)];
+					if (result instanceof Error) throw result;
+					return [result];
 				},
 			);
 			return { mcp: { callTool } as unknown as RenderMcp, polls };
@@ -616,6 +626,28 @@ describe("awaitDeployment repairs", () => {
 			expect(render.polls.get(API_ID)).toBe(4);
 			// The storefront was live, and the repair did not change it.
 			expect(render.polls.get(WEB_ID)).toBe(1);
+		});
+
+		// The run pushed, and Render deploys the push. A poll that fails once
+		// must not end the run.
+		it("continues to wait when a poll fails after the repair push", async () => {
+			builderReturns(repair);
+			const render = fakeRender({
+				[WEB_ID]: [LIVE_WEB],
+				[API_ID]: [
+					FAILED_API,
+					new McpError("Render MCP responded 502: Bad Gateway", {
+						status: 502,
+					}),
+					{ id: "dep-api2", status: "live" },
+				],
+			});
+
+			const result = await deployOn(render.mcp);
+
+			expect(result.status, result.summary).toBe("deployed");
+			expect(mocks.pushVerified).toHaveBeenCalledTimes(1);
+			expect(render.polls.get(API_ID)).toBe(3);
 		});
 
 		it("reports the status of the deploy of the last repair", async () => {
@@ -687,6 +719,41 @@ describe("awaitDeployment repairs", () => {
 			expect(mocks.pushVerified).not.toHaveBeenCalled();
 			expect(mocks.waitForHttpOk).not.toHaveBeenCalled();
 		});
+	});
+});
+
+/**
+ * awaiting_blueprint tells the user to create a Blueprint. A lookup error once
+ * gave that status, although a Blueprint watched the repository.
+ */
+describe("awaitDeployment Blueprint lookup", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		files = new Map([[APP_SPEC, `${JSON.stringify(spec, null, 2)}\n`]]);
+		fake = fakeSandbox(files);
+	});
+
+	it("gives awaiting_blueprint when no Blueprint watches the path", async () => {
+		mocks.findBlueprint.mockResolvedValue(null);
+
+		const result = await deploy();
+
+		expect(result.status).toBe("awaiting_blueprint");
+		expect(result.summary).toContain(
+			"no Blueprint in workspace tea-test is watching render.yaml",
+		);
+		expect(mocks.waitForServices).not.toHaveBeenCalled();
+	});
+
+	it("ends the run with the error when the lookup fails", async () => {
+		const error = new Error(
+			"The Blueprint lookup failed 5 times in sequence. " +
+				"The last error: Listing Blueprints failed with 503.",
+		);
+		mocks.findBlueprint.mockRejectedValue(error);
+
+		await expect(deploy()).rejects.toBe(error);
+		expect(mocks.waitForServices).not.toHaveBeenCalled();
 	});
 });
 

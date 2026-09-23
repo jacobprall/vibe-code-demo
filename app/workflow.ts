@@ -817,14 +817,15 @@ export async function awaitDeployment(
 	const wanted = [...names.services.values()];
 	const heartbeat = runHeartbeat(ctx.runId);
 
+	// An error is not caught. awaiting_blueprint tells the user to create a
+	// Blueprint, so only a lookup that finds none can give it. findBlueprint
+	// tries a failed request again, and an error that stays ends the run with
+	// that error as its summary.
 	const blueprint = await findBlueprint({
 		workspaceId,
 		repo: ctx.repoUrl,
 		branch: factoryConfig.branch,
 		path: factoryConfig.blueprintPath,
-	}).catch((error) => {
-		console.error("Failed to look up the Blueprint:", error);
-		return null;
 	});
 	if (!blueprint) {
 		return {
@@ -1337,8 +1338,8 @@ export async function removeApp(ctx: RemoveContext): Promise<string[]> {
 		);
 		const pushedAt = pushed ? Date.now() : null;
 
-		// Not caught, as it is in awaitDeployment: a delete without the wait
-		// for the Blueprint lets a sync bring the resources back.
+		// An error stops the delete. A delete without the wait for the
+		// Blueprint lets a sync bring the resources back.
 		const blueprint = await findBlueprint({
 			workspaceId: ctx.workspaceId,
 			repo: ctx.repoUrl,

@@ -12,6 +12,10 @@ import { requireEnv } from "./config.js";
 const PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 5_000;
+/** The attempts of one read before an error that stays fails it. */
+const READ_ATTEMPTS = 5;
+/** The API key is not valid, or it cannot read the resource. */
+const AUTH_FAILURES = new Set([401, 403]);
 const MAX_LOG_CHARS = 8_000;
 const REST_API = "https://api.render.com/v1";
 /** The largest page that the Render API sends. */
@@ -38,12 +42,29 @@ export function renderMcpUrl(): string {
 }
 
 export class McpError extends Error {
-	constructor(
-		message: string,
-		readonly tool?: string,
-	) {
+	readonly tool?: string;
+	/**
+	 * The HTTP status of the failure, if it is known: of the MCP request, or
+	 * of the Render API request behind a failed tool call.
+	 */
+	readonly status?: number;
+
+	constructor(message: string, opts: { tool?: string; status?: number } = {}) {
 		super(message);
 		this.name = "McpError";
+		this.tool = opts.tool;
+		this.status = opts.status;
+	}
+}
+
+/** A Render REST API request that got an error status. */
+class RenderApiError extends Error {
+	constructor(
+		message: string,
+		readonly status: number,
+	) {
+		super(message);
+		this.name = "RenderApiError";
 	}
 }
 
@@ -85,11 +106,21 @@ export class RenderMcp {
 	}
 
 	private initialize(): Promise<void> {
-		this.ready ??= this.handshake();
+		if (!this.ready) {
+			const ready = this.handshake();
+			this.ready = ready;
+			// Keep only a handshake that succeeds. Without this, one failed
+			// handshake fails each later call, with no new request.
+			ready.catch(() => {
+				if (this.ready === ready) this.ready = undefined;
+			});
+		}
 		return this.ready;
 	}
 
 	private async handshake(): Promise<void> {
+		// A new session. An initialize request carries no session ID.
+		this.sessionId = undefined;
 		await this.rpc("initialize", {
 			protocolVersion: PROTOCOL_VERSION,
 			capabilities: {},
@@ -130,7 +161,8 @@ export class RenderMcp {
 			authorization: `Bearer ${this.token}`,
 			"mcp-protocol-version": PROTOCOL_VERSION,
 		};
-		if (this.sessionId) headers["mcp-session-id"] = this.sessionId;
+		const session = this.sessionId;
+		if (session) headers["mcp-session-id"] = session;
 
 		const response = await fetch(this.url, {
 			method: "POST",
@@ -139,13 +171,22 @@ export class RenderMcp {
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 
-		const session = response.headers.get("mcp-session-id");
-		if (session) this.sessionId = session;
+		const assigned = response.headers.get("mcp-session-id");
+		if (assigned) this.sessionId = assigned;
 
 		if (!response.ok) {
+			// A 404 to a request in a session means that the server ended the
+			// session, because it was idle or because the server restarted. The
+			// MCP specification then tells the client to start a new session,
+			// and the next call does. A 404 in a session that a new session
+			// already replaced changes nothing.
+			if (response.status === 404 && session && session === this.sessionId) {
+				this.ready = undefined;
+			}
 			const detail = await response.text().catch(() => "");
 			throw new McpError(
 				`Render MCP responded ${response.status}: ${detail.slice(0, 300)}`,
+				{ status: response.status },
 			);
 		}
 		// Notifications are answered with 202 and no body.
@@ -189,7 +230,7 @@ export async function listServices(
 /**
  * Wait for a Blueprint sync to produce the services we asked for. There is no
  * "sync finished" signal to subscribe to, so the services appearing by name is
- * the signal.
+ * the signal. A poll that fails is tried again, as retryRead() describes.
  */
 export async function waitForServices(
 	mcp: RenderMcp,
@@ -203,8 +244,13 @@ export async function waitForServices(
 	let found = new Map<string, ServiceRecord>();
 
 	while (Date.now() < deadline) {
+		const services = await retryRead(
+			"list_services",
+			() => listServices(mcp, workspaceId),
+			onPoll,
+		);
 		found = new Map(
-			(await listServices(mcp, workspaceId))
+			services
 				.filter((service) => wanted.has(service.name))
 				.map((service) => [service.name, service]),
 		);
@@ -223,7 +269,7 @@ export async function waitForServices(
  * deploy is the deploy from before the push. Give its ID as `after`, and the
  * poll continues until a newer deploy is terminal. If no newer deploy starts
  * before the deadline, the result is `not_started`: the push did not deploy
- * the service.
+ * the service. A poll that fails is tried again, as retryRead() describes.
  */
 export async function waitForDeploy(
 	mcp: RenderMcp,
@@ -243,11 +289,16 @@ export async function waitForDeploy(
 
 	while (Date.now() < deadline) {
 		const [latest] = findDeploys(
-			await mcp.callTool("list_deploys", {
-				serviceId,
-				limit: 1,
-				workspaceId: opts.workspaceId,
-			}),
+			await retryRead(
+				`list_deploys for ${serviceId}`,
+				() =>
+					mcp.callTool("list_deploys", {
+						serviceId,
+						limit: 1,
+						workspaceId: opts.workspaceId,
+					}),
+				opts.onPoll,
+			),
 		);
 		if (latest) {
 			deployId = latest.id;
@@ -437,6 +488,10 @@ export interface BlueprintSync {
  * list in pages. Read only the factory workspace: waitForServices looks for
  * services only there. Then read each page, because the first page can stop
  * before the Blueprint.
+ *
+ * Null means that no Blueprint matches. If the lookup cannot finish, it
+ * throws: a failed request is not proof that no Blueprint exists. A failed
+ * page request is tried again, as retryRead() describes.
  */
 export async function findBlueprint(target: {
 	workspaceId: string;
@@ -452,17 +507,9 @@ export async function findBlueprint(target: {
 			limit: String(BLUEPRINT_PAGE_SIZE),
 		});
 		if (cursor) query.set("cursor", cursor);
-		const response = await renderApi(`/blueprints?${query}`);
-		if (!response.ok) {
-			throw new Error(
-				`Listing Blueprints failed with ${response.status}. The API key needs read access to the workspace.`,
-			);
-		}
-
-		const page = (await response.json()) as {
-			blueprint?: BlueprintRecord;
-			cursor?: string;
-		}[];
+		const page = await retryRead("The Blueprint lookup", () =>
+			blueprintPage(query),
+		);
 		const match = page
 			.map((entry) => entry.blueprint)
 			.find(
@@ -478,6 +525,23 @@ export async function findBlueprint(target: {
 			page.length === BLUEPRINT_PAGE_SIZE ? page.at(-1)?.cursor : undefined;
 	} while (cursor);
 	return null;
+}
+
+/** One page of the Blueprint list. */
+type BlueprintPage = { blueprint?: BlueprintRecord; cursor?: string }[];
+
+async function blueprintPage(query: URLSearchParams): Promise<BlueprintPage> {
+	const response = await renderApi(`/blueprints?${query}`);
+	if (!response.ok) {
+		const hint = AUTH_FAILURES.has(response.status)
+			? " The API key needs read access to the workspace."
+			: "";
+		throw new RenderApiError(
+			`Listing Blueprints failed with ${response.status}.${hint}`,
+			response.status,
+		);
+	}
+	return (await response.json()) as BlueprintPage;
 }
 
 /**
@@ -511,6 +575,62 @@ function normalizeRepo(repo: string): string {
 		.toLowerCase()
 		.replace(/\.git$/, "")
 		.replace(/\/$/, "");
+}
+
+/* ── Failed reads ─────────────────────────────────────────────────────── */
+
+/**
+ * Do one read of Render state, and do it again if it fails. A run reads
+ * Render for many minutes after its push, and most failures are temporary: a
+ * network error, a timeout, a 429 or a 5xx, or an MCP session that the
+ * server ended. Without this, one failed poll ends the run.
+ *
+ * An authentication failure is thrown at once, because a new attempt cannot
+ * repair the API key. A different error is thrown when READ_ATTEMPTS
+ * attempts in sequence fail. Thus a wait does not hide a permanent error
+ * until its deadline. `onRetry` gets each failure before the next attempt.
+ */
+async function retryRead<T>(
+	what: string,
+	read: () => Promise<T>,
+	onRetry?: (detail: string) => void | Promise<void>,
+): Promise<T> {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await read();
+		} catch (error) {
+			if (isAuthFailure(error)) throw error;
+			const reason = errorText(error);
+			if (attempt === READ_ATTEMPTS) {
+				throw new Error(
+					`${what} failed ${READ_ATTEMPTS} times in sequence. The last error: ${reason}`,
+					{ cause: error },
+				);
+			}
+			console.warn(
+				JSON.stringify({ event: "render_read_failed", what, attempt, reason }),
+			);
+			await onRetry?.(
+				`${what} failed (attempt ${attempt} of ${READ_ATTEMPTS}): ${reason}`,
+			);
+			await sleep(POLL_INTERVAL_MS);
+		}
+	}
+}
+
+function isAuthFailure(error: unknown): boolean {
+	return (
+		(error instanceof McpError || error instanceof RenderApiError) &&
+		error.status !== undefined &&
+		AUTH_FAILURES.has(error.status)
+	);
+}
+
+function errorText(error: unknown): string {
+	if (!(error instanceof Error)) return String(error);
+	// fetch() gives "fetch failed" for each network error. The cause tells why.
+	const cause = error.cause instanceof Error ? error.cause.message : "";
+	return cause ? `${error.message}: ${cause}` : error.message;
 }
 
 /* ── Payload extraction ───────────────────────────────────────────────── */
@@ -633,16 +753,30 @@ function toolPayload(tool: string, result: unknown): unknown {
 	const record = result as Record<string, unknown>;
 
 	if (record.isError === true) {
-		throw new McpError(
-			`${tool}: ${textOf(record) || "tool reported an error"}`,
+		const text = textOf(record) || "tool reported an error";
+		throw new McpError(`${tool}: ${text}`, {
 			tool,
-		);
+			status: toolErrorStatus(text),
+		});
 	}
 	if (record.structuredContent !== undefined) return record.structuredContent;
 
 	const text = textOf(record);
 	if (!text) return null;
 	return parseToolText(text) ?? text;
+}
+
+/**
+ * The status of the Render API request behind a failed tool call, if the
+ * error text gives it. The Render MCP server sends the API key on to the
+ * Render API, so a key that is not valid fails in the tool call, not in the
+ * MCP request. The server puts "unauthorized" for a 401, and "forbidden" for
+ * a 403, at the end of the text.
+ */
+function toolErrorStatus(text: string): number | undefined {
+	if (/\bunauthorized\s*$/i.test(text)) return 401;
+	if (/\bforbidden\s*$/i.test(text)) return 403;
+	return undefined;
 }
 
 /**
