@@ -24,7 +24,7 @@ User → Gateway (web service) → Render Workflow → Sandbox
 | **Orchestrator** | Render Workflow | Runs the four-agent pipeline: Architect → Curator → Builder → Deploy Manager. Owns the Sandbox, model credentials, and GitHub push. |
 | **Sandbox** | Render Sandbox | Isolated Linux environment where agents write code, install deps, run builds, boot services, and query a real Postgres — all throwaway. |
 | **Apps Repository** | GitHub repo | Every generated app is committed here. The root `render.yaml` is the Blueprint Render watches. |
-| **Generated App** | Static Site + Web Service + Postgres | The actual app that gets deployed. Blueprint sync creates these from the committed YAML. |
+| **Generated App** | Static Site + Web Service + Postgres | The actual app that gets deployed. Blueprint sync creates these from the committed YAML, in one Render project per app. |
 
 ## How the Render products come together
 

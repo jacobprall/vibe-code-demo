@@ -124,7 +124,9 @@ generated app can graduate out of the shared Blueprint — create a Blueprint
 pointing at `apps/<user>/<app>/render.yaml` and it stands alone.
 
 Resources are named `vibe-<user>-<app>-{web,api,db}`, so one workspace can hold
-every generated app without collisions.
+every generated app without collisions. Each app is also its own Render
+project, named `vibe-<user>-<app>`, with one `production` environment that
+holds its site, API, and database, so the Dashboard groups them by app.
 
 After you [deploy the factory](#deploy-the-factory), connect the apps repository
 Blueprint once so pushes deploy automatically.

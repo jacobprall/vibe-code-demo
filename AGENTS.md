@@ -221,9 +221,9 @@ API is the seam. Do not rebuild a checkpoint store here.
 2. Give the builder a way to declare it in `manifestSchema`, since the
    Blueprint is generated from the manifest rather than from the plan.
 3. Emit its resource block from `serviceBlocks()` or `databaseBlocks()` in
-   `app/blueprint.ts`. Wire dependent env vars declaratively with
-   `fromDatabase` or `fromService` — never by reading a value back out of
-   an API.
+   `app/blueprint.ts`; `projectBlock()` places it in the app's project
+   environment. Wire dependent env vars declaratively with `fromDatabase` or
+   `fromService` — never by reading a value back out of an API.
 4. Extend `resourceNames()` so the new resource is namespaced by user and app
    and cannot collide with another resource in the same workspace.
 5. Give `verify()` in `app/workflow.ts` a way to exercise it before the push.

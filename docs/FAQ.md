@@ -55,6 +55,7 @@ Architecture overview and how Render products fit together: [README.md](README.m
 ### After the demo
 
 - Click the deployed URL — it's a real app with real data
+- Open the app's project in the Render Dashboard — its site, API, and database are grouped there
 - Show the apps repo on GitHub — every app is a reviewable Git diff
 - Show the `render.yaml` — it's declarative infrastructure, not API calls
 - Point out the generated app has its own `render.yaml` and can graduate to a standalone Blueprint
