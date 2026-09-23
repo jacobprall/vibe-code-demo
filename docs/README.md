@@ -80,11 +80,12 @@ cap, no tenant-level quotas, and no teardown workflow.
 6. The workflow waits for deployment. On failure, a deploy manager uses
    read-only Render MCP data to diagnose the deploy and can request bounded
    builder repairs. Workflow code verifies each repair, rewrites
-   `factory.json` and `render.yaml` from its manifest, and pushes again. A
-   repair cannot add or remove a resource: a Blueprint sync never deletes one,
-   and the loop watches only the services of the first push. Live services
-   still must pass public storefront, API hostname, health, data, and CORS
-   checks.
+   `factory.json` and `render.yaml` from its manifest, and pushes again. Then
+   it waits for a new deploy of each failed service, not for the deploy that
+   failed. A repair cannot add or remove a resource: a Blueprint sync never
+   deletes one, and the loop watches only the services of the first push. Live
+   services still must pass public storefront, API hostname, health, data, and
+   CORS checks.
 7. Postgres exposes progress and final URLs to reconnecting clients; a
    `finally` block terminates the sandbox.
 
@@ -297,7 +298,7 @@ Copy `.env.example` when setting up locally.
 `progress` value:
 
 - `waiting_for_services`: Blueprint sync has not created every expected service.
-- `waiting_for_deploys`: at least one Render deploy has not reached a terminal state.
+- `waiting_for_deploys`: at least one Render deploy has not reached a terminal state. After a repair push, it can also mean that Render has not started the new deploy of a failed service yet. If Render does not start one in 15 minutes, the run ends as `deploy_failed`.
 - `smoke_testing`: deploys are live; public URL, API hostname, data, or CORS checks are still running.
 - `done`: the stored run is terminal.
 

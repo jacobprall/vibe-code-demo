@@ -46,9 +46,11 @@ import {
 } from "./git.js";
 import { checkManifestCommands } from "./policy.js";
 import {
+	type DeployOutcome,
 	findBlueprint,
 	pageContains,
 	RenderMcp,
+	type ServiceRecord,
 	waitForDeploy,
 	waitForHttpOk,
 	waitForServices,
@@ -777,7 +779,8 @@ export interface DeployContext {
  * 3. If any fail, the deploy-manager agent diagnoses via MCP
  * 4. The builder fixes what the deploy-manager diagnosed
  * 5. Re-verify, rewrite factory.json and the Blueprints from the repaired
- *    manifest, re-push, and repeat up to MAX_DEPLOY_REPAIR_ROUNDS
+ *    manifest, and re-push. Then wait for a new deploy of each service that
+ *    failed. Repeat up to MAX_DEPLOY_REPAIR_ROUNDS
  */
 export async function awaitDeployment(
 	ctx: DeployContext,
@@ -846,36 +849,41 @@ export async function awaitDeployment(
 	});
 
 	// ── Deploy-manager loop ─────────────────────────────────────────────
+	// The first round waits for every service. A repair round waits only for
+	// the services that failed. A live service that the repair did not change
+	// gets no new deploy, so it keeps its live deploy.
+	let waits: DeployWait[] = [...services.values()].map((service) => ({
+		service,
+		after: null,
+	}));
 	for (let round = 0; round <= MAX_DEPLOY_REPAIR_ROUNDS; round++) {
 		await setRunStage(
 			ctx.runId,
 			"waiting_for_deploys",
-			`Waiting for ${services.size} deploy(s), round ${round + 1}`,
+			`Waiting for ${waits.length} deploy(s), round ${round + 1}`,
 		);
 		const outcomes = await Promise.all(
-			[...services.values()].map(async (service) => ({
+			waits.map(async ({ service, after }) => ({
 				service,
 				deploy: await waitForDeploy(mcp, service.id, {
 					workspaceId,
 					timeoutMs: DEPLOY_TIMEOUT_MS,
+					after,
 					onPoll: (detail) => heartbeat(`${service.name}: ${detail}`),
 				}),
 			})),
 		);
 
-		const failed = outcomes.filter(({ deploy }) => !deploy.live);
+		const failed = outcomes.filter(({ deploy }) => deploy.result !== "live");
 		if (failed.length === 0) break;
 
-		if (round === MAX_DEPLOY_REPAIR_ROUNDS) {
-			return {
-				status: "deploy_failed",
-				summary: failed
-					.map(
-						({ service, deploy }) =>
-							`${service.name} ended as "${deploy.status}".`,
-					)
-					.join(" "),
-			};
+		// Another round cannot repair a service that the push did not deploy
+		// again. The deploy manager reads the same failed deploy.
+		if (
+			round === MAX_DEPLOY_REPAIR_ROUNDS ||
+			failed.some(({ deploy }) => deploy.result === "not_started")
+		) {
+			return { status: "deploy_failed", summary: deployFailures(failed) };
 		}
 
 		// Deploy-manager agent diagnoses the failure via Render MCP.
@@ -966,7 +974,15 @@ export async function awaitDeployment(
 			ctx.sandbox,
 			`Fix Render deploy for ${spec.user}/${spec.appName} (round ${round + 1})`,
 		);
-		if (!sha) break;
+		// With no commit, Render deploys nothing, and the failed deploys stay.
+		// Render keeps the last live deploy of a failed service, so the smoke
+		// checks can pass against the old code.
+		if (!sha) {
+			return {
+				status: "deploy_failed",
+				summary: `Deploy repair round ${round + 1} changed no files, so Render has no new commit to deploy. ${deployFailures(failed)}`,
+			};
+		}
 
 		await pushVerified(
 			ctx.sandbox,
@@ -975,6 +991,13 @@ export async function awaitDeployment(
 			factoryConfig.branch,
 			() => writeRootBlueprint(ctx.sandbox),
 		);
+
+		// Right after the push, the newest deploy of each failed service is
+		// still the deploy that failed.
+		waits = failed.map(({ service, deploy }) => ({
+			service,
+			after: deploy.deployId,
+		}));
 	}
 
 	// ── Smoke the real thing ────────────────────────────────────────────
@@ -1032,6 +1055,30 @@ export async function awaitDeployment(
 			...spec.notes,
 		].join("\n\n"),
 	};
+}
+
+/** A service to wait for after a push. */
+interface DeployWait {
+	service: ServiceRecord;
+	/** The deploy from before the push, or null. See waitForDeploy(). */
+	after: string | null;
+}
+
+function deployFailures(
+	failed: readonly { service: ServiceRecord; deploy: DeployOutcome }[],
+): string {
+	const lines = failed.map(({ service, deploy }) =>
+		deploy.result === "not_started"
+			? `${service.name}: the repair push did not start a new deploy in ${DEPLOY_TIMEOUT_MS / 60000} minutes. ` +
+				`The newest deploy is still ${deploy.deployId} ("${deploy.status}").`
+			: `${service.name} ended as "${deploy.status}".`,
+	);
+	if (failed.some(({ deploy }) => deploy.result === "not_started")) {
+		lines.push(
+			"Render deploys a service again when a commit changes files in its rootDir or its entry in the Blueprint.",
+		);
+	}
+	return lines.join(" ");
 }
 
 /**

@@ -4,6 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	type DeployRecord,
 	findBlueprint,
 	findDeploys,
 	findLogMessages,
@@ -11,7 +12,9 @@ import {
 	pageContains,
 	pageScripts,
 	parseToolText,
+	type RenderMcp,
 	serviceRecords,
+	waitForDeploy,
 } from "../app/render.js";
 
 /**
@@ -107,6 +110,113 @@ describe("findDeploys", () => {
 		expect(findDeploys(payload)).toEqual([
 			{ id: "dep-1", status: "build_failed" },
 		]);
+	});
+});
+
+/**
+ * Right after a push, the newest deploy is still the deploy from before the
+ * push. A repair round once took that failed deploy as its own result, so it
+ * never saw the deploy of its repair.
+ */
+describe("waitForDeploy", () => {
+	const FAILED: DeployRecord = { id: "dep-1", status: "pre_deploy_failed" };
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** Each list_deploys call returns the next deploy, then the last again. */
+	function renderReturns(...deploys: DeployRecord[]) {
+		let calls = 0;
+		const callTool = vi.fn(async () => [
+			deploys[Math.min(calls++, deploys.length - 1)],
+		]);
+		return { mcp: { callTool } as unknown as RenderMcp, callTool };
+	}
+
+	/** Wait 60 seconds for the API, and run the sleeps between polls at once. */
+	async function waitForApi(
+		mcp: RenderMcp,
+		opts: { after?: string; onPoll?: (detail: string) => void } = {},
+	) {
+		const [outcome] = await Promise.all([
+			waitForDeploy(mcp, "srv-api", {
+				workspaceId: "tea-test",
+				timeoutMs: 60_000,
+				...opts,
+			}),
+			vi.runAllTimersAsync(),
+		]);
+		return outcome;
+	}
+
+	it("returns the newest deploy when it is terminal", async () => {
+		const { mcp, callTool } = renderReturns(FAILED);
+
+		expect(await waitForApi(mcp)).toEqual({
+			deployId: "dep-1",
+			status: "pre_deploy_failed",
+			result: "failed",
+		});
+		expect(callTool).toHaveBeenCalledTimes(1);
+		expect(callTool).toHaveBeenCalledWith("list_deploys", {
+			serviceId: "srv-api",
+			limit: 1,
+			workspaceId: "tea-test",
+		});
+	});
+
+	it("polls past the deploy from before the push", async () => {
+		const { mcp, callTool } = renderReturns(
+			FAILED,
+			{ id: "dep-2", status: "build_in_progress" },
+			{ id: "dep-2", status: "live" },
+		);
+
+		expect(await waitForApi(mcp, { after: "dep-1" })).toEqual({
+			deployId: "dep-2",
+			status: "live",
+			result: "live",
+		});
+		expect(callTool).toHaveBeenCalledTimes(3);
+	});
+
+	// A deploy from before the push is never a result of the push, not even a
+	// live one.
+	it.each(["pre_deploy_failed", "live"])(
+		"reports not_started when the %s deploy from before the push stays the newest",
+		async (status) => {
+			const onPoll = vi.fn();
+			const { mcp, callTool } = renderReturns({ id: "dep-1", status });
+
+			expect(await waitForApi(mcp, { after: "dep-1", onPoll })).toEqual({
+				deployId: "dep-1",
+				status,
+				result: "not_started",
+			});
+			// One poll each 5 seconds until the deadline, and not more.
+			expect(callTool).toHaveBeenCalledTimes(12);
+			expect(onPoll).toHaveBeenLastCalledWith(
+				"Service srv-api: waiting for a deploy after dep-1",
+			);
+		},
+	);
+
+	it("times out while the newer deploy is in progress", async () => {
+		const { mcp } = renderReturns(FAILED, {
+			id: "dep-2",
+			status: "build_in_progress",
+		});
+
+		expect(await waitForApi(mcp, { after: "dep-1" })).toEqual({
+			deployId: "dep-2",
+			status: "timed out while build_in_progress",
+			result: "timed_out",
+		});
 	});
 });
 
