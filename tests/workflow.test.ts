@@ -826,6 +826,8 @@ describe("removeApp", () => {
 			expect.objectContaining({
 				workspaceId: "tea-test",
 				blueprintId: "exs-test",
+				// The teardown gives Render time to receive this push.
+				pushedAt: expect.any(Number),
 			}),
 		);
 	});
@@ -845,7 +847,7 @@ describe("removeApp", () => {
 		expect(steps).toEqual(["delete resources", "commit", "push"]);
 		expect(mocks.deleteAppResources).toHaveBeenCalledWith(
 			expect.objectContaining({ deletedAt }),
-			expect.anything(),
+			expect.objectContaining({ pushedAt: null }),
 		);
 	});
 

@@ -3,29 +3,44 @@
  *
  * These are the factory's only Render API calls that change a service, a
  * database, or a project, and they only delete: infrastructure still comes
- * only from a committed Blueprint. A
- * Blueprint sync recreates a declared resource that is missing, and it never
- * deletes a resource that leaves the file. So the workflow first commits the
- * app out of the root Blueprint, and this module deletes nothing until the
- * Blueprint stops managing the app's resources.
+ * only from a committed Blueprint.
+ *
+ * A Blueprint change never deletes a resource, and a sync recreates a
+ * resource that its Blueprint file declares and that is missing. So the
+ * workflow first commits the app out of the root Blueprint, and this module
+ * deletes nothing while a sync of an earlier commit, which still declares the
+ * app, can run.
  *
  * The scope is the app's own project. In that project, only a service or a
  * database that the factory named for the app is deleted. The project is
  * deleted only when nothing else is left in it.
  */
-import { resourceNames, resourceStem } from "./blueprint.js";
+import { resourceStem } from "./blueprint.js";
 import type { AppSpec } from "./contracts.js";
-import { type BlueprintDetail, getBlueprint, renderApi } from "./render.js";
+import { type BlueprintSync, listBlueprintSyncs, renderApi } from "./render.js";
 
 const POLL_INTERVAL_MS = 5_000;
 const PROJECT_DELETE_ATTEMPTS = 12;
+/**
+ * GitHub sends a push event to Render in seconds, and Render then creates the
+ * sync. A push from another run just before the delete's push still declares
+ * the app, so its sync gets this long to appear before the wait reads them.
+ */
+const PUSH_EVENT_DELAY_MS = 60_000;
+/** A sync in any other state can still create a resource. */
+const FINISHED_SYNC_STATES = new Set(["success", "error"]);
 
 export interface TeardownOptions {
 	workspaceId: string;
 	/** The Blueprint that watches the apps repository, or null if none does. */
 	blueprintId: string | null;
-	/** How long the Blueprint gets to stop managing the app's resources. */
-	releaseTimeoutMs: number;
+	/**
+	 * When this attempt pushed the commit that took the app out of the
+	 * Blueprint, or null if an earlier attempt pushed it.
+	 */
+	pushedAt: number | null;
+	/** How long an unfinished sync of the Blueprint gets to finish. */
+	syncTimeoutMs: number;
 	onProgress?: (detail: string) => void | Promise<void>;
 }
 
@@ -47,9 +62,7 @@ export async function deleteAppResources(
 	spec: AppSpec,
 	opts: TeardownOptions,
 ): Promise<string[]> {
-	if (opts.blueprintId) {
-		await waitForRelease(opts.blueprintId, declaredNames(spec), opts);
-	}
+	if (opts.blueprintId) await waitForSyncs(opts.blueprintId, opts);
 
 	const stem = resourceStem(spec);
 	const deleted: string[] = [];
@@ -83,62 +96,51 @@ export async function deleteAppResources(
 	return deleted;
 }
 
-function declaredNames(spec: AppSpec): string[] {
-	const names = resourceNames(spec);
-	return [...names.services.values(), ...names.databases.values()];
-}
-
 /**
- * Wait until the Blueprint manages none of the app's resources and no sync
- * runs. A sync that started before the app left the file can still create a
- * resource of the app, and a resource deleted while the Blueprint manages it
- * comes back on the next sync.
+ * Wait until no sync of the Blueprint waits or runs.
+ *
+ * From the delete's commit on, the Blueprint file does not declare the app, so
+ * only a sync of an earlier commit can bring a deleted resource back. The list
+ * of resources that the Blueprint manages is no signal: a push that only
+ * removes resources starts no sync, and the Blueprint keeps the resources in
+ * its list.
  */
-async function waitForRelease(
+async function waitForSyncs(
 	blueprintId: string,
-	names: readonly string[],
 	opts: TeardownOptions,
 ): Promise<void> {
-	const deadline = Date.now() + opts.releaseTimeoutMs;
-	let blueprint = await getBlueprint(blueprintId);
-	let held = heldBy(blueprint, names);
+	if (opts.pushedAt !== null) {
+		const remaining = opts.pushedAt + PUSH_EVENT_DELAY_MS - Date.now();
+		if (remaining > 0) {
+			await opts.onProgress?.("Waiting for Render to receive the push");
+			await sleep(remaining);
+		}
+	}
 
-	while (held.length > 0 || blueprint.status === "syncing") {
+	const deadline = Date.now() + opts.syncTimeoutMs;
+	let unfinished = unfinishedSyncs(await listBlueprintSyncs(blueprintId));
+	while (unfinished.length > 0) {
 		if (Date.now() >= deadline) {
-			const minutes = opts.releaseTimeoutMs / 60_000;
 			throw new Error(
-				[
-					held.length > 0
-						? `Blueprint ${blueprintId} still manages ${held.join(", ")} after ${minutes} minutes.`
-						: `Blueprint ${blueprintId} is still syncing after ${minutes} minutes.`,
-					blueprint.autoSync
-						? `Its status is "${blueprint.status}".`
-						: "Auto Sync is off, so the push did not sync. Sync the Blueprint, then delete the app again.",
-				].join(" "),
+				`Blueprint ${blueprintId} has a sync that did not finish in ${opts.syncTimeoutMs / 60_000} minutes: ${unfinished.join(", ")}. ` +
+					"Wait for it to finish, then delete the app again.",
 			);
 		}
 		await opts.onProgress?.(
-			held.length > 0
-				? `Waiting for Render to stop managing ${held.join(", ")}`
-				: `Waiting for Blueprint ${blueprintId} to finish a sync`,
+			`Waiting for a sync of Blueprint ${blueprintId} to finish`,
 		);
 		await sleep(POLL_INTERVAL_MS);
-		blueprint = await getBlueprint(blueprintId);
-		held = heldBy(blueprint, names);
+		unfinished = unfinishedSyncs(await listBlueprintSyncs(blueprintId));
 	}
 }
 
-function heldBy(
-	blueprint: BlueprintDetail,
-	names: readonly string[],
-): string[] {
-	// Without the list, a managed resource looks released. Stop instead.
-	if (!Array.isArray(blueprint.resources)) {
-		throw new Error(`Blueprint ${blueprint.id} returned no resource list.`);
-	}
-	return blueprint.resources
-		.map((resource) => resource.name)
-		.filter((name) => names.includes(name));
+function unfinishedSyncs(syncs: readonly BlueprintSync[]): string[] {
+	return syncs
+		.filter((sync) => !FINISHED_SYNC_STATES.has(sync.state))
+		.map(
+			(sync) =>
+				`${sync.commit?.slice(0, 7) ?? "unknown commit"} (${sync.state})`,
+		);
 }
 
 /** Only an exact match counts, whatever the API's name filter matches. */

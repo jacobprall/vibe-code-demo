@@ -422,12 +422,11 @@ export interface BlueprintRecord {
 	path: string;
 }
 
-export interface BlueprintDetail {
-	id: string;
-	status: string;
-	autoSync: boolean;
-	/** The resources that the Blueprint manages now. */
-	resources: { id: string; name: string; type: string }[];
+export interface BlueprintSync {
+	/** The commit that the sync applies, if Render reports it. */
+	commit: string | null;
+	/** `created`, `pending`, `running`, `success`, or `error`. */
+	state: string;
 }
 
 /**
@@ -481,13 +480,30 @@ export async function findBlueprint(target: {
 	return null;
 }
 
-/** The state of one Blueprint and the resources that it manages. */
-export async function getBlueprint(id: string): Promise<BlueprintDetail> {
-	const response = await renderApi(`/blueprints/${encodeURIComponent(id)}`);
+/**
+ * The newest syncs of a Blueprint, newest first. A push that only removes
+ * resources from the Blueprint file starts no sync.
+ */
+export async function listBlueprintSyncs(id: string): Promise<BlueprintSync[]> {
+	const response = await renderApi(
+		`/blueprints/${encodeURIComponent(id)}/syncs?limit=20`,
+	);
 	if (!response.ok) {
-		throw new Error(`Reading Blueprint ${id} failed with ${response.status}.`);
+		throw new Error(
+			`Listing the syncs of Blueprint ${id} failed with ${response.status}.`,
+		);
 	}
-	return (await response.json()) as BlueprintDetail;
+	const page = (await response.json()) as unknown;
+	// Without the list, a running sync would look like no sync. Stop instead.
+	if (!Array.isArray(page)) {
+		throw new Error(`Blueprint ${id} returned no list of syncs.`);
+	}
+	return page.map(
+		(entry: { sync?: { commit?: { id?: string }; state?: string } }) => ({
+			commit: entry.sync?.commit?.id ?? null,
+			state: entry.sync?.state ?? "unknown",
+		}),
+	);
 }
 
 function normalizeRepo(repo: string): string {

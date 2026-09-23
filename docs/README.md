@@ -48,9 +48,9 @@ cap, and no tenant-level quotas.
 - **Delete in the order that the declarative system allows.** A Blueprint
   never deletes a resource, and it recreates a declared resource that is
   missing. So a delete first takes the app out of the Blueprint, waits until
-  Render stops managing its resources, and only then calls the Render API,
+  no sync of an earlier commit can run, and only then calls the Render API,
   scoped to the app's own project. These are the only Render write API calls
-  in the factory. The cost is a second commit and a wait for a sync.
+  in the factory. The cost is a second commit and a wait of about a minute.
 - **Capabilities instead of prompt-only restrictions.** The architect gets a
   read-only Render MCP allowlist, the curator can fetch only validated image
   assets, and the builder can edit a sandbox but cannot run Git. Adding a new
@@ -108,11 +108,13 @@ has nothing else, and the gateway deletes it at once.
    `409`. A run that chooses the app while the delete is in progress stops
    before it builds.
 2. The workflow writes `deletedAt` into the app's `factory.json` and pushes a
-   root `render.yaml` without the app. This commit changes no source file, so
-   it starts no build.
-3. It waits until the Blueprint manages none of the app's resources and no sync
-   runs. A resource that is deleted while the Blueprint declares it comes back
-   on the next sync.
+   root `render.yaml` without the app. This commit removes no source file, so
+   a service that builds from it still has all of its files.
+3. It waits a minute, and then until no sync of the Blueprint waits or runs.
+   Only a sync of an earlier commit still declares the app, and that sync
+   would recreate a resource that the delete removed. A push that only removes
+   resources starts no sync, and Render still lists the resources under the
+   Blueprint, so that list is no signal.
 4. It deletes the app's services, then its databases and their data, and then
    the app's Render project. In that project, it deletes only the resources
    whose names start with `vibe-<user>-<app>-`. Any other resource stays, and
@@ -359,8 +361,8 @@ While a delete runs, the status is `deleting`, and `progress` names the step. A
 `delete_failed` run keeps the reason in `summary`. Two causes need you to act
 before you delete again:
 
-- The Blueprint still manages the app after six minutes. Auto Sync is off, or
-  the sync failed. Turn Auto Sync on, or fix the sync.
+- A sync of the apps Blueprint did not finish in six minutes. Let it finish,
+  or fix it, in the Render Dashboard.
 - The app's project holds a resource that the factory did not create. Delete
   or move it in the Render Dashboard.
 
@@ -404,8 +406,8 @@ See [AGENTS.md](../AGENTS.md) for checklists when adding agents, primitives, or 
 - Agents cannot run git, so they cannot publish; the trigger for a deploy is a
   commit only workflow code can make.
 - The only Render write API calls are the deletes in `app/teardown.ts`. The
-  `delete-app` task makes them, never an agent, and only after the Blueprint
-  manages none of the app's resources. They delete only resources that carry
+  `delete-app` task makes them, never an agent, and only when no sync of the
+  Blueprint waits or runs. They delete only resources that carry
   the app's name, in the app's own project. The UI can delete only the runs of
   its own namespace.
 - A delete and a run of the same app take the same Postgres advisory lock, so a
@@ -441,8 +443,6 @@ Implementation details and invariants for contributors are in [AGENTS.md](../AGE
   until then.
 - A delete removes an app with all of its runs, not one run, because the runs
   of an app share its files and resources. The files stay in the Git history.
-- A delete needs Auto Sync on the apps Blueprint: it waits for the sync that
-  takes the app out.
 - Generated apps run on paid plans by default: free web services spin down
   after 15 minutes, and a workspace only gets one free Postgres.
 - The sandbox's Postgres is a fresh 18 with no extensions installed, so an app

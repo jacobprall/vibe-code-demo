@@ -86,8 +86,8 @@ const DEPLOY_TIMEOUT_MS = 15 * 60 * 1000;
 const SITE_TIMEOUT_MS = 3 * 60 * 1000;
 /** A delete needs a sandbox for its two pushes and one wait for a sync. */
 const DELETE_TIMEOUT_SECONDS = 30 * 60;
-/** How long the apps Blueprint gets to stop managing a deleted app. */
-const RELEASE_TIMEOUT_MS = 6 * 60 * 1000;
+/** How long an unfinished sync of the apps Blueprint gets before a delete. */
+const SYNC_TIMEOUT_MS = 6 * 60 * 1000;
 const SMOKE_PORT = 8099;
 const BOOT_ATTEMPTS = 15;
 /** Directory under templates/ that a multi-service app starts from. */
@@ -1305,9 +1305,10 @@ export interface RemoveContext {
  * Delete one app in the order that a Blueprint allows. A sync recreates a
  * declared resource that is missing, and it never deletes a resource that
  * leaves the file. So the first commit takes the app out of the root
- * Blueprint, the resources are deleted when Render stops managing them, and
- * the second commit removes the files. Until then factory.json stays, with
- * deletedAt set, because a new attempt reads it to find the resources.
+ * Blueprint, the resources are deleted when no sync of an earlier commit can
+ * run, and the second commit removes the files. Until then factory.json
+ * stays, with deletedAt set, because a new attempt reads it to find the
+ * resources.
  *
  * The first commit changes only factory.json and the root Blueprint. A commit
  * that removed the source of a service would start a build of it, and that
@@ -1330,10 +1331,11 @@ export async function removeApp(ctx: RemoveContext): Promise<string[]> {
 			`${JSON.stringify(deleting, null, 2)}\n`,
 		);
 		await writeRootBlueprint(sandbox);
-		await commitAndPush(
+		const pushed = await commitAndPush(
 			ctx,
 			`Delete ${user}/${appName}: remove it from the Blueprint`,
 		);
+		const pushedAt = pushed ? Date.now() : null;
 
 		// Not caught, as it is in awaitDeployment: a delete without the wait
 		// for the Blueprint lets a sync bring the resources back.
@@ -1346,7 +1348,8 @@ export async function removeApp(ctx: RemoveContext): Promise<string[]> {
 		deleted = await deleteAppResources(deleting, {
 			workspaceId: ctx.workspaceId,
 			blueprintId: blueprint?.id ?? null,
-			releaseTimeoutMs: RELEASE_TIMEOUT_MS,
+			pushedAt,
+			syncTimeoutMs: SYNC_TIMEOUT_MS,
 			onProgress: ctx.onProgress,
 		});
 	}
@@ -1397,12 +1400,15 @@ async function readSpec(
 	return null;
 }
 
-/** A commit that changes nothing is not made, and there is nothing to push. */
+/**
+ * A commit that changes nothing is not made, and there is nothing to push.
+ * Returns whether it pushed.
+ */
 async function commitAndPush(
 	ctx: RemoveContext,
 	message: string,
-): Promise<void> {
-	if (!(await commitAll(ctx.sandbox, message))) return;
+): Promise<boolean> {
+	if (!(await commitAll(ctx.sandbox, message))) return false;
 	await pushVerified(
 		ctx.sandbox,
 		ctx.token,
@@ -1410,6 +1416,7 @@ async function commitAndPush(
 		factoryConfig.branch,
 		() => writeRootBlueprint(ctx.sandbox),
 	);
+	return true;
 }
 
 /* ── Prompts ──────────────────────────────────────────────────────────── */

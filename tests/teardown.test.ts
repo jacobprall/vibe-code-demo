@@ -1,8 +1,9 @@
 /**
- * app/teardown.ts makes the factory's only calls to a Render write API. These
- * tests pin down what it deletes and when: only after the Blueprint stops
- * managing the app, and only in the app's own project. A fake fetch holds the
- * workspace, and a fake clock runs the waits.
+ * app/teardown.ts makes the factory's only Render API calls that change a
+ * service, a database, or a project. These tests pin down what it deletes and
+ * when: only when no sync of an earlier commit can run, and only in the app's
+ * own project. A fake fetch holds the workspace, and a fake clock runs the
+ * waits.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSpec } from "../app/contracts.js";
@@ -44,7 +45,8 @@ const spec: AppSpec = {
 const OPTIONS: TeardownOptions = {
 	workspaceId: "tea-test",
 	blueprintId: "exs-apps",
-	releaseTimeoutMs: 60_000,
+	pushedAt: null,
+	syncTimeoutMs: 60_000,
 };
 
 const SHOP = {
@@ -52,20 +54,30 @@ const SHOP = {
 	name: "vibe-demo-shop",
 	environmentIds: ["evm-shop"],
 };
-const MANAGED = [
+/** What Render lists for the Blueprint after a push that only removed the app. */
+const LISTED = [
 	{ id: "srv-web", name: "vibe-demo-shop-web", type: "static_site" },
 	{ id: "srv-api", name: "vibe-demo-shop-api", type: "web_service" },
 	{ id: "dpg-db", name: "vibe-demo-shop-db", type: "postgres" },
+	{ id: "srv-cafe", name: "vibe-demo-cafe-web", type: "static_site" },
 ];
-const OTHER_APP = {
-	id: "srv-cafe",
-	name: "vibe-demo-cafe-web",
-	type: "static_site",
-};
+
+type SyncState = "created" | "pending" | "running" | "success" | "error";
+
+/** One entry of GET /blueprints/{id}/syncs, as Render sends it. */
+function sync(commit: string, state: SyncState) {
+	return {
+		sync: { id: `exe-${commit}`, commit: { id: commit }, state },
+		cursor: "c",
+	};
+}
 
 interface Workspace {
-	/** GET /blueprints/exs-apps answers these in order, then repeats the last. */
-	blueprint: { status: string; autoSync: boolean; resources: typeof MANAGED }[];
+	/**
+	 * GET /blueprints/exs-apps/syncs answers these bodies in order, then
+	 * repeats the last.
+	 */
+	syncs: unknown[];
 	projects: (typeof SHOP)[];
 	services: Record<string, { id: string; name: string }[]>;
 	postgres: Record<string, { id: string; name: string }[]>;
@@ -76,9 +88,12 @@ interface Workspace {
 let workspace: Workspace;
 /** Each request as "METHOD /path", in order. */
 let requests: string[];
+/** The time on the fake clock of each read of the syncs. */
+let syncReads: number[];
 
 function serve(): void {
 	requests = [];
+	syncReads = [];
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -93,11 +108,19 @@ function serve(): void {
 			}
 			const environment = url.searchParams.get("environmentId") ?? "";
 			switch (path) {
-				case "/blueprints/exs-apps": {
-					const [next, ...rest] = workspace.blueprint;
-					if (rest.length > 0) workspace.blueprint = rest;
-					return Response.json({ id: "exs-apps", ...next });
+				case "/blueprints/exs-apps/syncs": {
+					syncReads.push(Date.now());
+					const [next, ...rest] = workspace.syncs;
+					if (rest.length > 0) workspace.syncs = rest;
+					return Response.json(next);
 				}
+				case "/blueprints/exs-apps":
+					return Response.json({
+						id: "exs-apps",
+						status: "in_sync",
+						autoSync: true,
+						resources: LISTED,
+					});
 				// A prefix match, so that the test proves the exact match.
 				case "/projects":
 					return Response.json(
@@ -149,7 +172,7 @@ beforeEach(() => {
 	vi.spyOn(console, "log").mockImplementation(() => {});
 	process.env.RENDER_API_KEY = "rnd_test";
 	workspace = {
-		blueprint: [{ status: "in_sync", autoSync: true, resources: [OTHER_APP] }],
+		syncs: [[sync("54c1088", "success"), sync("8dfd43a", "success")]],
 		projects: [SHOP],
 		services: {
 			"evm-shop": [
@@ -184,59 +207,68 @@ describe("deleteAppResources", () => {
 		]);
 	});
 
-	// A resource deleted while the Blueprint manages it comes back on the next
-	// sync.
-	it("deletes nothing until the Blueprint stops managing the app", async () => {
-		workspace.blueprint = [
-			{ status: "in_sync", autoSync: true, resources: [...MANAGED, OTHER_APP] },
-			{ status: "syncing", autoSync: true, resources: [...MANAGED, OTHER_APP] },
-			{ status: "in_sync", autoSync: true, resources: [OTHER_APP] },
-		];
-
-		await settle(deleteAppResources(spec, OPTIONS));
-
-		const reads = requests.filter((r) => r === "GET /blueprints/exs-apps");
-		expect(reads).toHaveLength(3);
-		expect(requests.indexOf(deletes()[0])).toBeGreaterThan(
-			requests.lastIndexOf("GET /blueprints/exs-apps"),
-		);
-	});
-
-	// A sync that started before the app left the file can still create one of
-	// its resources.
-	it("waits for a sync to finish when the Blueprint no longer lists the app", async () => {
-		workspace.blueprint = [
-			{ status: "syncing", autoSync: true, resources: [OTHER_APP] },
-			{ status: "in_sync", autoSync: true, resources: [OTHER_APP] },
-		];
-
-		await settle(deleteAppResources(spec, OPTIONS));
-
-		expect(
-			requests.filter((r) => r === "GET /blueprints/exs-apps"),
-		).toHaveLength(2);
+	// On Render, a push that only removed an app started no sync, and 20
+	// minutes later the Blueprint still listed the app's resources. The first
+	// version of the delete waited for them to leave that list, and timed out.
+	it("deletes an app that the Blueprint still lists after the push that removed it", async () => {
+		await expect(
+			settle(deleteAppResources(spec, OPTIONS)),
+		).resolves.toHaveLength(3);
+		expect(requests).not.toContain("GET /blueprints/exs-apps");
 		expect(deletes()).toHaveLength(4);
 	});
 
-	it("deletes nothing when the Blueprint still manages the app at the deadline", async () => {
-		workspace.blueprint = [
-			{ status: "in_sync", autoSync: false, resources: [...MANAGED] },
+	// A sync of an earlier commit still declares the app, and a sync recreates
+	// a declared resource that is missing.
+	it("deletes nothing while a sync of the Blueprint waits or runs", async () => {
+		workspace.syncs = [
+			[sync("c1", "pending"), sync("54c1088", "success")],
+			[sync("c1", "running"), sync("54c1088", "success")],
+			[sync("c1", "success"), sync("54c1088", "success")],
 		];
 
+		await settle(deleteAppResources(spec, OPTIONS));
+
+		expect(syncReads).toHaveLength(3);
+		expect(requests.indexOf(deletes()[0])).toBeGreaterThan(
+			requests.lastIndexOf("GET /blueprints/exs-apps/syncs"),
+		);
+	});
+
+	// The push event of an earlier push, from another run, can arrive after the
+	// delete's push.
+	it("reads the syncs a minute after its push, so that a late push event can start one", async () => {
+		const pushedAt = Date.now();
+
+		await settle(deleteAppResources(spec, { ...OPTIONS, pushedAt }));
+
+		expect(syncReads[0]).toBeGreaterThanOrEqual(pushedAt + 60_000);
+		expect(deletes()).toHaveLength(4);
+	});
+
+	it("does not wait for the push event when an earlier attempt pushed", async () => {
+		const start = Date.now();
+
+		await settle(deleteAppResources(spec, OPTIONS));
+
+		expect(syncReads[0]).toBe(start);
+	});
+
+	it("deletes nothing when a sync does not finish by the deadline", async () => {
+		workspace.syncs = [[sync("c1abcdef99", "running")]];
+
 		await expect(settle(deleteAppResources(spec, OPTIONS))).rejects.toThrow(
-			"still manages vibe-demo-shop-web, vibe-demo-shop-api, vibe-demo-shop-db after 1 minutes. Auto Sync is off",
+			"Blueprint exs-apps has a sync that did not finish in 1 minutes: c1abcde (running).",
 		);
 		expect(deletes()).toEqual([]);
 	});
 
-	// Without the list, a managed resource would look released.
-	it("deletes nothing when the Blueprint does not list its resources", async () => {
-		workspace.blueprint = [
-			{ status: "in_sync", autoSync: true } as Workspace["blueprint"][number],
-		];
+	// Without the list, a running sync would look like no sync.
+	it("deletes nothing when the Blueprint returns no list of syncs", async () => {
+		workspace.syncs = [{ message: "unexpected" }];
 
 		await expect(settle(deleteAppResources(spec, OPTIONS))).rejects.toThrow(
-			"Blueprint exs-apps returned no resource list.",
+			"Blueprint exs-apps returned no list of syncs.",
 		);
 		expect(deletes()).toEqual([]);
 	});
@@ -244,7 +276,7 @@ describe("deleteAppResources", () => {
 	it("does not wait when no Blueprint watches the apps repository", async () => {
 		await settle(deleteAppResources(spec, { ...OPTIONS, blueprintId: null }));
 
-		expect(requests).not.toContain("GET /blueprints/exs-apps");
+		expect(syncReads).toEqual([]);
 		expect(deletes()).toHaveLength(4);
 	});
 
