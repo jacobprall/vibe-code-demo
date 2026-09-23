@@ -140,7 +140,7 @@ its logs. Each log line is a JSON object with an `event`:
 | Task | Events |
 | --- | --- |
 | `remove-app-from-blueprint` | `app_removed_from_blueprint`, with the commit, or `null` when an earlier attempt pushed it; `app_spec_not_found` |
-| `wait-for-blueprint-syncs` | `push_event_wait`; `blueprint_syncs_unfinished` each time the list of unfinished syncs changes; `blueprint_syncs_finished`; `blueprint_not_found` |
+| `wait-for-blueprint-syncs` | `push_event_wait`; `blueprint_syncs_unfinished` each time the list of unfinished syncs changes; `blueprint_syncs_finished`; `blueprint_not_found`; `render_read_failed` for each failed read of Render, with the attempt and the error |
 | `delete-app-resources` | `render_resource_deleted` and `render_resource_kept` for each resource; `render_project_not_empty` for each refused attempt; `render_project_deleted`; `render_project_not_found` |
 | `remove-app-files` | `app_files_removed`, with the commit |
 | `delete-app` | `app_deleted`, with the deleted resources; `app_delete_failed`, with the error |
@@ -379,9 +379,11 @@ the API key. The Blueprint lookup does a failed request again in the same way.
 If the lookup cannot finish, the run ends as `failed`, not as
 `awaiting_blueprint`.
 
-While a delete runs, the status is `deleting`, and `progress` names the step. A
-`delete_failed` run keeps the reason in `summary`. Two causes need you to act
-before you delete again:
+While a delete runs, the status is `deleting`, and `progress` names the step.
+`wait-for-blueprint-syncs` does a failed Render read again in the same way.
+Five failures in sequence, or a 401 or 403, end the delete as
+`delete_failed`. A `delete_failed` run keeps the reason in `summary`. Two
+causes need you to act before you delete again:
 
 - A sync of the apps Blueprint did not finish in six minutes. Let it finish,
   or fix it, in the Render Dashboard.

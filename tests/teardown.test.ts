@@ -45,8 +45,9 @@ function sync(commit: string, state: SyncState) {
 
 interface Workspace {
 	/**
-	 * GET /blueprints/exs-apps/syncs answers these bodies in order, then
-	 * repeats the last.
+	 * GET /blueprints/exs-apps/syncs answers these in order, then repeats the
+	 * last. A Response is the answer, an Error is thrown as fetch throws a
+	 * network error, and a different value is the JSON body.
 	 */
 	syncs: unknown[];
 	projects: (typeof SHOP)[];
@@ -83,7 +84,9 @@ function serve(): void {
 					syncReads.push(Date.now());
 					const [next, ...rest] = workspace.syncs;
 					if (rest.length > 0) workspace.syncs = rest;
-					return Response.json(next);
+					if (next instanceof Error) throw next;
+					// A copy, because the last answer can be sent again.
+					return next instanceof Response ? next.clone() : Response.json(next);
 				}
 				case "/blueprints/exs-apps":
 					return Response.json({
@@ -232,6 +235,69 @@ describe("waitForBlueprintSyncs", () => {
 			settle(waitForBlueprintSyncs("exs-apps", WAIT)),
 		).rejects.toThrow("Blueprint exs-apps returned no list of syncs.");
 	});
+
+	// The wait reads the syncs for up to 6 minutes. One failed request once
+	// ended the delete as delete_failed, and a new DELETE was necessary.
+	it("reads the syncs again after a read fails, and then finishes", async () => {
+		const onProgress = vi.fn();
+		workspace.syncs = [
+			new Response("upstream error", { status: 503 }),
+			new DOMException(
+				"The operation was aborted due to timeout",
+				"TimeoutError",
+			),
+			[sync("c1", "running"), sync("54c1088", "success")],
+			new TypeError("fetch failed", { cause: new Error("other side closed") }),
+			[sync("c1", "success"), sync("54c1088", "success")],
+		];
+
+		await settle(waitForBlueprintSyncs("exs-apps", { ...WAIT, onProgress }));
+
+		expect(syncReads).toHaveLength(5);
+		expect(onProgress.mock.calls.map(([detail]) => detail)).toEqual([
+			"The Blueprint sync lookup failed (attempt 1 of 5): Listing the syncs of Blueprint exs-apps failed with 503.",
+			"The Blueprint sync lookup failed (attempt 2 of 5): The operation was aborted due to timeout",
+			"Waiting for a sync of Blueprint exs-apps to finish",
+			"The Blueprint sync lookup failed (attempt 1 of 5): fetch failed: other side closed",
+		]);
+		expect(events("log").at(-1)).toEqual({
+			event: "blueprint_syncs_finished",
+			blueprintId: "exs-apps",
+		});
+	});
+
+	it("fails with the last error when 5 reads of the syncs in sequence fail", async () => {
+		workspace.syncs = [
+			...Array.from(
+				{ length: 4 },
+				() => new Response("upstream error", { status: 503 }),
+			),
+			new TypeError("fetch failed", { cause: new Error("other side closed") }),
+		];
+
+		await expect(
+			settle(waitForBlueprintSyncs("exs-apps", WAIT)),
+		).rejects.toThrow(
+			"The Blueprint sync lookup failed 5 times in sequence. " +
+				"The last error: fetch failed: other side closed",
+		);
+		expect(syncReads).toHaveLength(5);
+	});
+
+	// A new attempt cannot repair the API key.
+	it.each([401, 403])(
+		"fails at once when a read of the syncs gets a %i",
+		async (status) => {
+			workspace.syncs = [new Response("", { status })];
+
+			await expect(
+				settle(waitForBlueprintSyncs("exs-apps", WAIT)),
+			).rejects.toThrow(
+				`Listing the syncs of Blueprint exs-apps failed with ${status}.`,
+			);
+			expect(syncReads).toHaveLength(1);
+		},
+	);
 
 	// A read every five seconds for minutes would bury the rest of the log.
 	it("logs the wait for the push event, each change of the syncs, and the end", async () => {
