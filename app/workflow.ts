@@ -158,8 +158,8 @@ async function run(
 
 	const appName = plan.appName;
 	const blueprintPath = `${appRelativePath(user, appName)}/render.yaml`;
-	// Returned, not thrown: Render would retry a throw at once, and the delete
-	// would still be in progress.
+	// Returned, not thrown: a delete in progress is an expected result, not a
+	// fault in the run.
 	if (!(await claimRunApp(runId, user, { appName, blueprintPath }))) {
 		return {
 			status: "failed",
