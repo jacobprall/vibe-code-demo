@@ -161,6 +161,14 @@ describe("resourceNames", () => {
 describe("appBlueprint", () => {
 	const yaml = appBlueprint(spec());
 
+	it("puts the app in its own project with one environment", () => {
+		expect(yaml.match(/^projects:$/gm)).toHaveLength(1);
+		expect(yaml).toMatch(/^ {2}- name: vibe-demo-furniture-catalog$/m);
+		expect(yaml).toMatch(/^ {6}- name: production$/m);
+		expect(yaml).toMatch(/^ {8}services:$/m);
+		expect(yaml).not.toMatch(/^(services|databases):/m);
+	});
+
 	it("scopes both services to the app's directory", () => {
 		expect(yaml).toContain("rootDir: apps/demo/furniture-catalog/api");
 		expect(yaml).toContain("rootDir: apps/demo/furniture-catalog/web");
@@ -184,8 +192,8 @@ describe("appBlueprint", () => {
 		expect(yaml).toContain("property: host");
 	});
 
-	it("declares the database", () => {
-		expect(yaml).toContain("databases:");
+	it("declares the database in the app's environment", () => {
+		expect(yaml).toMatch(/^ {8}databases:$/m);
 		expect(yaml).toContain("name: vibe-demo-furniture-catalog-db");
 	});
 
@@ -202,7 +210,7 @@ describe("appBlueprint", () => {
 		const multi = appBlueprint(spec({ manifest: multiServiceManifest }));
 		expect(multi).toContain("name: vibe-demo-furniture-catalog-search-service");
 		expect(multi).toContain("name: vibe-demo-furniture-catalog-analytics");
-		expect(multi.match(/^ {2}- type: web$/gm)).toHaveLength(3);
+		expect(multi.match(/^ {10}- type: web$/gm)).toHaveLength(3);
 	});
 
 	it("emits only a static site when that is all the app needs", () => {
@@ -220,21 +228,36 @@ describe("rootBlueprint", () => {
 		expect(rootBlueprint([])).toContain("services: []");
 	});
 
-	it("holds every app, with one databases block", () => {
-		const yaml = rootBlueprint([
-			spec(),
-			spec({
-				user: "demo",
-				appName: "gopher-dates",
-				tiers: ["static_site"],
-				manifest: staticOnlyManifest,
-			}),
-		]);
+	const twoApps = rootBlueprint([
+		spec(),
+		spec({
+			user: "demo",
+			appName: "gopher-dates",
+			tiers: ["static_site"],
+			manifest: staticOnlyManifest,
+		}),
+	]);
 
-		expect(yaml).toContain("vibe-demo-furniture-catalog-web");
-		expect(yaml).toContain("vibe-demo-gopher-dates-web");
-		expect(yaml.match(/^databases:$/gm)).toHaveLength(1);
-		expect(yaml.match(/^services:$/gm)).toHaveLength(1);
+	it("holds every app, each in its own project", () => {
+		expect(twoApps.match(/^projects:$/gm)).toHaveLength(1);
+		expect(twoApps.match(/^ {2}- name: /gm)).toHaveLength(2);
+		expect(twoApps).toMatch(/^ {2}- name: vibe-demo-furniture-catalog$/m);
+		expect(twoApps).toMatch(/^ {2}- name: vibe-demo-gopher-dates$/m);
+		expect(twoApps).toContain("vibe-demo-furniture-catalog-web");
+		expect(twoApps).toContain("vibe-demo-gopher-dates-web");
+		expect(twoApps).not.toMatch(/^(services|databases):/m);
+	});
+
+	// A database declared under another app's project would move it there.
+	it("keeps each database in its own app's project", () => {
+		expect(twoApps.match(/^ {8}databases:$/gm)).toHaveLength(1);
+		const database = twoApps.indexOf("name: vibe-demo-furniture-catalog-db");
+		expect(database).toBeGreaterThan(
+			twoApps.indexOf("- name: vibe-demo-furniture-catalog\n"),
+		);
+		expect(database).toBeLessThan(
+			twoApps.indexOf("- name: vibe-demo-gopher-dates\n"),
+		);
 	});
 
 	it("orders apps deterministically so a rerun does not churn the file", () => {
