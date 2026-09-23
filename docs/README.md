@@ -450,8 +450,12 @@ Implementation details and invariants for contributors are in [AGENTS.md](../AGE
 - `key_value` is in `TIER_KINDS` and nowhere else, so an architect that asks
   for one gets nothing and no warning.
 - No reviewer stage or step-level resumability. Terminal Workflows runs are
-  reconciled, but a failed task restarts from the beginning.
-- A failed task run is not resumed; retry by calling the API again.
+  reconciled.
+- A failed run is final. Render Workflows does not retry `prompt-to-app`,
+  because a retry starts the full pipeline again after the run is `failed`.
+  A transient GitHub or Render API error also ends the run, for example in the
+  clone or in a deploy wait. Call the API again for a new run, which starts
+  from the beginning.
 
 ## Related
 

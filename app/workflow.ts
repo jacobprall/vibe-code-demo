@@ -102,6 +102,12 @@ export const promptToApp = task(
 		name: "prompt-to-app",
 		plan: "standard",
 		timeoutSeconds: SANDBOX_TIMEOUT_SECONDS,
+		// Render Workflows retries a failed run three times by default. A retry
+		// starts again at the architect with a new sandbox, and after a push it
+		// can deploy a second app. It also starts after the catch below sets the
+		// runs row to "failed", so the concurrency limit does not count it. A
+		// caller posts the prompt again to start a new run.
+		retry: { maxRetries: 0, waitDurationMs: 0 },
 	},
 	async function promptToApp(
 		tasks: TaskContext,
@@ -152,8 +158,8 @@ async function run(
 
 	const appName = plan.appName;
 	const blueprintPath = `${appRelativePath(user, appName)}/render.yaml`;
-	// Returned, not thrown: Render would retry a throw at once, and the delete
-	// would still be in progress.
+	// Returned, not thrown: a delete in progress is an expected result, not a
+	// fault in the run.
 	if (!(await claimRunApp(runId, user, { appName, blueprintPath }))) {
 		return {
 			status: "failed",

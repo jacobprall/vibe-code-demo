@@ -3,7 +3,7 @@
  * the store, Git commit and push, the Render reads, and the Render deletes are
  * fakes.
  */
-import type { TaskContext } from "@renderinc/sdk/workflows";
+import { type TaskContext, TaskRegistry } from "@renderinc/sdk/workflows";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { appPath, factoryConfig } from "../factory.config.js";
@@ -1006,5 +1006,31 @@ describe("promptToApp", () => {
 		expect(mocks.finishRun).toHaveBeenCalledWith("run-1", "failed", {
 			summary: expect.stringContaining("being deleted"),
 		});
+	});
+
+	// A failed run is final. The task sets its runs row to "failed" and throws,
+	// and Render then records a failed task run. A retry by Render starts the
+	// pipeline again outside the concurrency limit, and its result can replace
+	// the terminal status that the UI and the demo already showed.
+	it("records a failure once, and Render does not run the task again", async () => {
+		const reason = 'Subtask failed: Agent "architect" failed: error_max_turns';
+		mocks.architectTask.mockRejectedValue(new Error(reason));
+
+		await expect(
+			promptToApp.func(tasks, {
+				prompt: "Sell handmade walnut furniture online",
+				user: "demo",
+				runId: "run-1",
+			}),
+		).rejects.toThrow(reason);
+
+		expect(mocks.finishRun).toHaveBeenCalledTimes(1);
+		expect(mocks.finishRun).toHaveBeenCalledWith("run-1", "failed", {
+			summary: reason,
+		});
+		// The options that the host sends to Render when it registers tasks.
+		expect(
+			TaskRegistry.getInstance().get(promptToApp.name)?.options?.retry,
+		).toEqual({ max_retries: 0, wait_duration_ms: 0 });
 	});
 });
