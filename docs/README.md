@@ -78,9 +78,13 @@ cap, no tenant-level quotas, and no teardown workflow.
    and verifies the remote SHA. Blueprint sync—not an agent API call—creates
    the infrastructure.
 6. The workflow waits for deployment. On failure, a deploy manager uses
-   read-only Render MCP data to diagnose the deploy and can request one bounded
-   builder repair; live services still must pass public storefront, API
-   hostname, health, data, and CORS checks.
+   read-only Render MCP data to diagnose the deploy and can request bounded
+   builder repairs. Workflow code verifies each repair, rewrites
+   `factory.json` and `render.yaml` from its manifest, and pushes again. A
+   repair cannot add or remove a resource: a Blueprint sync never deletes one,
+   and the loop watches only the services of the first push. Live services
+   still must pass public storefront, API hostname, health, data, and CORS
+   checks.
 7. Postgres exposes progress and final URLs to reconnecting clients; a
    `finally` block terminates the sandbox.
 

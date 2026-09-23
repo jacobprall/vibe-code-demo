@@ -281,6 +281,16 @@ run becomes `deployed`. The storefront check must also pass: the HTML of the
 storefront, or a script that it loads, must contain the public hostname of the
 API. The API checks cannot see the hostname that a browser uses.
 
+A deploy repair ships through the same path as the first build. The repaired
+manifest must pass `checkManifestCommands` and `verify()`. Then
+`writeBlueprints()` rewrites `factory.json` and both Blueprints before the
+commit, because Render gets the manifest only through these files. A repair
+can change commands, paths, and env wiring, but not the list from
+`declaredResources()`. Render does not delete a resource that leaves the
+Blueprint, it cannot change the runtime of a service, and the loop watches only
+the services of the first push. For this reason, the workflow fails such a
+repair and pushes nothing. `tests/workflow.test.ts` tests this loop.
+
 New generated apps write `factory.json` with `resourcePrefix`. Root Blueprint
 regeneration also reads the legacy filename and treats a missing prefix as the
 legacy value. Do not remove that compatibility path until all existing app

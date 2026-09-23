@@ -123,7 +123,7 @@ A: It builds full-stack apps with a static site frontend, a Node.js API, and Pos
 A: The workflow has a repair loop — up to 2 build-fix rounds with the builder. If it still fails, the run ends as `build_failed` with the failure reason.
 
 **Q: What if the Render deploy fails?**
-A: The Deploy Manager agent inspects the failure via MCP (reads logs, deploy status), diagnoses the issue, and hands it to the Builder for repair. Up to 2 deploy-repair rounds. After that it's `deploy_failed`.
+A: The Deploy Manager agent inspects the failure via MCP (reads logs, deploy status), diagnoses the issue, and hands it to the Builder for repair. Up to 2 deploy-repair rounds. After that it's `deploy_failed`. The workflow verifies each repair in the sandbox and writes its manifest back to `factory.json` and the Blueprints, so changed commands reach Render. If a repair adds or removes a service or database, or changes the kind of a service, the run ends as `deploy_failed` with no push.
 
 **Q: What if a run gets stuck?**
 A: The gateway reconciles stale runs by checking Workflows status. Heartbeats and deadlines prevent silent hangs. `GET /v1/apps/:runId` always shows the current stage.
