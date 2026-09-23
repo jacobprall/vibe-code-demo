@@ -214,7 +214,10 @@ API is the seam. Do not rebuild a checkpoint store here.
    `RENDER_READ_ONLY_TOOLS`.
 2. Wrap it with `agentTask()` at the bottom of `app/agents.ts`, beside the
    other registrations.
-3. Call it from the relevant stage in `app/workflow.ts`. Pass
+3. Call it from the relevant stage in `app/workflow.ts` with
+   `tasks.run(<agent>Task, input)`. `tasks` is the `TaskContext` that
+   Render Workflows gives to `prompt-to-app`; pass it to the stage. A task
+   definition is not a function, so a direct call does not compile. Pass
    `sandboxId: sandbox.id` only when it declares tools.
 4. If it emits JSON, add a schema to `app/contracts.ts`, register it in
    `OUTPUT_SCHEMAS`, and call it through `agentJson()`, which retries once and

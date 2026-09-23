@@ -1,5 +1,5 @@
 /** The agents, in pipeline order, and how each becomes a Render task. */
-import { task } from "@renderinc/sdk/workflows";
+import { type TaskContext, task } from "@renderinc/sdk/workflows";
 import { factoryConfig } from "../factory.config.js";
 import { type Agent, md, runClaude, zodToJsonSchema } from "./claude.js";
 import {
@@ -302,11 +302,18 @@ const OUTPUT_SCHEMAS: Record<string, Record<string, unknown>> = {
 	"deploy-manager": zodToJsonSchema(deployDiagnosisSchema),
 };
 
-/** Turn an Agent into a Render Workflows task. */
+/**
+ * Turn an Agent into a Render Workflows task. The workflow runs it with
+ * `tasks.run(<agent>Task, input)`. An agent starts no subtasks, so it does
+ * not use its TaskContext.
+ */
 export function agentTask(agent: Agent) {
 	return task(
 		{ name: agent.id, plan: agent.plan },
-		async function runAgent(input: AgentTaskInput): Promise<string> {
+		async function runAgent(
+			_tasks: TaskContext,
+			input: AgentTaskInput,
+		): Promise<string> {
 			const run = await runClaude({
 				agentId: agent.id,
 				systemPrompt: agent.prompt,
