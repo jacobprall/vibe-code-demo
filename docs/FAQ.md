@@ -147,7 +147,7 @@ A: Configurable in `factory.config.ts`. Defaults: Architect and Builder use `cla
 A: No. Free web services spin down after 15 minutes (bad for a demo), and a workspace gets only one free Postgres. Generated apps use the `starter` web service plan and `0.1c-256mb` Postgres plan — the cheapest paid options.
 
 **Q: Where are the generated apps stored?**
-A: In a GitHub repository (`APPS_REPO`). Structure: `apps/<user>/<app-slug>/`. Each app has its own `factory.json`, `render.yaml`, `README.md`, plus the app source.
+A: In a GitHub repository (`APPS_REPO`). Structure: `apps/<user>/<app-slug>/`. Each app has its own `factory.json`, `render.yaml`, `README.md`, and `.gitignore`, plus the app source. `node_modules/` and each static site's build output are not committed: Render's build makes them.
 
 **Q: Can I run it locally?**
 A: Yes, `npm run dev:gateway` and `npm run dev:workflows` in separate terminals. But every run still creates a real Render Sandbox and can deploy real billable resources — local development changes *where orchestration runs*, not what it does.
