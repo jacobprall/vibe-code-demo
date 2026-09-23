@@ -94,8 +94,31 @@ export function resourceNames(spec: AppSpec): ResourceNames {
 	return { services, databases, web, api, db };
 }
 
+/**
+ * Every Render resource that the spec declares, as "<name> (<runtime>)",
+ * sorted. Two specs with the same list differ only in settings that a
+ * Blueprint sync changes in place. Render cannot change the runtime of a
+ * service, and it does not delete a resource that leaves the Blueprint.
+ */
+export function declaredResources(spec: AppSpec): string[] {
+	const names = resourceNames(spec);
+	return [
+		...spec.manifest.services.map(
+			(service) =>
+				`${names.services.get(service.name)} (${runtimeOf(service)})`,
+		),
+		...(spec.manifest.databases ?? []).map(
+			(database) => `${names.databases.get(database.name)} (postgres)`,
+		),
+	].sort();
+}
+
 function roleOf(service: Service): string {
 	return service.kind === "static_site" ? "web" : "api";
+}
+
+function runtimeOf(service: Service): string {
+	return service.kind === "static_site" ? "static" : service.runtime;
 }
 
 /** A manifest-supplied name, reduced to something Render accepts. */
@@ -219,7 +242,7 @@ function singleServiceBlock(
 	lines.push(
 		"  - type: web",
 		`    name: ${resourceName}`,
-		`    runtime: ${isStatic ? "static" : service.runtime}`,
+		`    runtime: ${runtimeOf(service)}`,
 	);
 	// Static sites are served from the global CDN — no region field.
 	if (!isStatic) {

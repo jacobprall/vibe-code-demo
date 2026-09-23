@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
 	appBlueprint,
+	declaredResources,
 	resourceNames,
 	rootBlueprint,
 } from "../app/blueprint.js";
@@ -177,6 +178,54 @@ describe("resourceNames", () => {
 		);
 		expect(names.databases.get("analytics")).toBe(
 			"vibe-demo-furniture-catalog-analytics",
+		);
+	});
+});
+
+/**
+ * A deploy repair must keep this list, because Render does not delete a
+ * resource that leaves the Blueprint and cannot change a service's runtime.
+ */
+describe("declaredResources", () => {
+	it("lists every service and database with its runtime", () => {
+		expect(declaredResources(spec())).toEqual([
+			"vibe-demo-furniture-catalog-api (node)",
+			"vibe-demo-furniture-catalog-db (postgres)",
+			"vibe-demo-furniture-catalog-web (static)",
+		]);
+	});
+
+	// Render changes these in place, so they do not make a new resource.
+	it("does not change when commands, paths, or env vars change", () => {
+		const changed: Manifest = {
+			...fullManifest,
+			services: fullManifest.services.map((service) => ({
+				...service,
+				rootDir: `${service.rootDir}-v2`,
+				buildCommand: "npm ci && npm run build",
+				envVars: [],
+			})),
+		};
+		expect(declaredResources(spec({ manifest: changed }))).toEqual(
+			declaredResources(spec()),
+		);
+	});
+
+	it("changes when a service keeps its name but changes its kind", () => {
+		const [api, web, search] = multiServiceManifest.services;
+		const asSite: Manifest = {
+			...multiServiceManifest,
+			services: [
+				api,
+				web,
+				{ ...search, kind: "static_site", runtime: "static" },
+			],
+		};
+		expect(
+			declaredResources(spec({ manifest: multiServiceManifest })),
+		).toContain("vibe-demo-furniture-catalog-search-service (node)");
+		expect(declaredResources(spec({ manifest: asSite }))).toContain(
+			"vibe-demo-furniture-catalog-search-service (static)",
 		);
 	});
 });

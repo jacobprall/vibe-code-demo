@@ -11,7 +11,12 @@ import {
 	curatorTask,
 	deployManagerTask,
 } from "./agents.js";
-import { appBlueprint, resourceNames, rootBlueprint } from "./blueprint.js";
+import {
+	appBlueprint,
+	declaredResources,
+	resourceNames,
+	rootBlueprint,
+} from "./blueprint.js";
 import { agentJson } from "./claude.js";
 import { appsRepo, renderWorkspaceId } from "./config.js";
 import {
@@ -248,6 +253,15 @@ function manifestToTiers(manifest: Manifest): TierKind[] {
 		tiers.push("postgres");
 	}
 	return tiers;
+}
+
+/**
+ * The spec after a deploy repair. Only the manifest and its tiers change.
+ * Keep resourcePrefix, because it is in the name of every Render resource of
+ * the app. Keep createdAt, because it records the first build.
+ */
+function withManifest(spec: AppSpec, manifest: Manifest): AppSpec {
+	return { ...spec, tiers: manifestToTiers(manifest), manifest };
 }
 
 /* ── Imagery ──────────────────────────────────────────────────────────── */
@@ -718,7 +732,7 @@ async function readAllSpecs(sandbox: Sandbox): Promise<AppSpec[]> {
 
 /* ── Deploy ───────────────────────────────────────────────────────────── */
 
-interface DeployContext {
+export interface DeployContext {
 	mcp: RenderMcp;
 	sandbox: Sandbox;
 	token: string;
@@ -738,10 +752,15 @@ interface DeployContext {
  * 2. Wait for deploys to reach a terminal state
  * 3. If any fail, the deploy-manager agent diagnoses via MCP
  * 4. The builder fixes what the deploy-manager diagnosed
- * 5. Re-verify, re-push, and repeat up to MAX_DEPLOY_REPAIR_ROUNDS
+ * 5. Re-verify, rewrite factory.json and the Blueprints from the repaired
+ *    manifest, re-push, and repeat up to MAX_DEPLOY_REPAIR_ROUNDS
  */
-async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
-	const { mcp, spec, workspaceId } = ctx;
+export async function awaitDeployment(
+	ctx: DeployContext,
+): Promise<WorkflowResult> {
+	const { mcp, workspaceId } = ctx;
+	// A repair replaces the manifest. Read the spec from here, not from ctx.
+	let spec = ctx.spec;
 	const names = resourceNames(spec);
 	const wanted = [...names.services.values()];
 	const heartbeat = runHeartbeat(ctx.runId);
@@ -876,14 +895,29 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 				diagnosisText,
 				"",
 				"Fix exactly what the diagnosis names.",
+				"Keep the same services and databases in the manifest. Do not add, remove, or rename one, and do not change the kind of a service.",
 			].join("\n"),
 			`builder-deploy-fix-${round + 1}`,
 		);
 
+		// The repaired manifest goes to the sandbox and then to Render, so it
+		// must pass the same policy as the first one. It must also keep every
+		// resource, because `names` and `services` above describe them.
+		const repaired = withManifest(spec, buildOutput.manifest);
+		const rejection =
+			checkManifestCommands(repaired.manifest) ??
+			resourceChange(spec, repaired);
+		if (rejection) {
+			return {
+				status: "deploy_failed",
+				summary: `Deploy repair round ${round + 1} was not pushed. ${rejection}`,
+			};
+		}
+
 		const failures = await verify(
 			ctx.sandbox,
 			ctx.appDir,
-			buildOutput.manifest,
+			repaired.manifest,
 			ctx.databaseUrl,
 		);
 		if (failures.length > 0) {
@@ -897,6 +931,11 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 			};
 		}
 
+		// Render deploys from the root Blueprint, which comes from each
+		// factory.json. If these files keep the old manifest, Render keeps the
+		// old commands, paths, and env vars.
+		spec = repaired;
+		await writeBlueprints(ctx.sandbox, spec, ctx.appDir, ctx.repoUrl);
 		const sha = await commitAll(
 			ctx.sandbox,
 			`Fix Render deploy for ${spec.user}/${spec.appName} (round ${round + 1})`,
@@ -967,6 +1006,30 @@ async function awaitDeployment(ctx: DeployContext): Promise<WorkflowResult> {
 			...spec.notes,
 		].join("\n\n"),
 	};
+}
+
+/**
+ * Why a repaired spec cannot replace the deployed one, or null when both
+ * declare the same resources. A removed resource stays live outside the
+ * Blueprint: Render does not delete it, and the factory calls no Render write
+ * API. The deploy loop also cannot monitor an added resource, because it waits
+ * only for the services of the first push.
+ */
+function resourceChange(deployed: AppSpec, repaired: AppSpec): string | null {
+	const before = declaredResources(deployed);
+	const after = declaredResources(repaired);
+	const added = after.filter((resource) => !before.includes(resource));
+	const removed = before.filter((resource) => !after.includes(resource));
+	if (added.length === 0 && removed.length === 0) return null;
+
+	const changes = [
+		...(added.length > 0 ? [`adds ${added.join(", ")}`] : []),
+		...(removed.length > 0 ? [`removes ${removed.join(", ")}`] : []),
+	];
+	return (
+		`The repair ${changes.join(" and ")}. ` +
+		"A repair can change commands, paths, and env vars, but not the resources that the Blueprint declares."
+	);
 }
 
 /**
