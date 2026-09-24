@@ -173,8 +173,14 @@ function renderHistory() {
 
 			const name = document.createElement("strong");
 			name.textContent = run.appName || truncate(run.prompt, 34);
+			// The status is its own element, so the stylesheet can color it by state.
+			const state = document.createElement("span");
+			state.className = "run-state";
+			state.dataset.status = run.status;
+			state.textContent = label(run.status);
 			const meta = document.createElement("span");
-			meta.textContent = `${label(run.status)} · ${formatDate(run.createdAt)}`;
+			meta.className = "run-meta";
+			meta.append(state, ` · ${formatDate(run.createdAt)}`);
 			button.append(name, meta);
 			button.addEventListener("click", () => selectRun(run.runId));
 			return button;
