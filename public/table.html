@@ -18,10 +18,14 @@
 		<link rel="stylesheet" href="/style.css" />
 	</head>
 	<body>
+		<!--
+			The table view of the UI. It shows the same runs as the classic view at
+			/, as tables that explain each stage, so a presenter can talk along.
+		-->
 		<header class="topbar">
 			<span class="wordmark" role="img" aria-label="Render"><svg aria-hidden="true" focusable="false" viewBox="0 0 633 120" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M118.268 28.0601C118.25 27.6558 118.215 27.2603 118.18 26.8561C118.171 26.7594 118.171 26.654 118.154 26.5573C118.127 26.3112 118.092 26.074 118.057 25.8279C118.022 25.5731 117.995 25.327 117.96 25.0809C117.934 24.9052 117.899 24.7294 117.863 24.5624C117.811 24.2549 117.758 23.9385 117.696 23.6309C117.644 23.3848 117.582 23.1476 117.529 22.9015C117.477 22.6642 117.424 22.4357 117.371 22.1985C117.31 21.9524 117.23 21.7151 117.16 21.4691C117.099 21.2406 117.037 21.0209 116.967 20.7924C116.888 20.5463 116.8 20.3003 116.712 20.0542C116.641 19.8433 116.571 19.6324 116.501 19.4215C116.386 19.1139 116.263 18.8151 116.149 18.5163C116.087 18.3669 116.035 18.2263 115.973 18.0769C115.833 17.7517 115.692 17.4354 115.542 17.119C115.49 17.0048 115.437 16.8817 115.384 16.7675C115.243 16.4687 115.085 16.1787 114.936 15.8887C114.865 15.7569 114.804 15.625 114.734 15.4932C114.558 15.1681 114.364 14.8429 114.18 14.5265C114.127 14.4387 114.083 14.3508 114.03 14.2629C113.828 13.929 113.617 13.6038 113.397 13.2787C113.353 13.2083 113.309 13.138 113.265 13.0677C113.002 12.6811 112.729 12.2944 112.448 11.9165C112.184 11.565 111.911 11.2135 111.63 10.8707C111.612 10.8444 111.595 10.818 111.568 10.7917C106.135 4.20945 97.9323 0.026364 88.7449 0.017576V0L88.7185 0.017576H88.7273C86.1777 0.017576 83.6983 0.342732 81.3333 0.949103C79.9179 1.30941 78.5375 1.78396 77.21 2.33761C76.7704 2.52215 76.3308 2.72428 75.9 2.9264C67.1697 7.12706 60.8396 15.4932 59.4417 25.4412H59.4241C58.8086 29.7034 57.4987 33.7371 55.6348 37.4456H55.6963C49.2079 50.3112 35.8795 59.1432 20.4762 59.1432C13.601 59.1432 7.14777 57.3856 1.52099 54.301C0.861601 53.9407 0.0615429 54.4152 0.0615429 55.1622V59.1432H0V118.26H59.1515V88.6972H59.2131V73.9158C59.2131 65.7517 65.8333 59.1344 74.0009 59.1344H88.7888C91.3209 59.1344 93.7738 58.8092 96.1212 58.2029C97.5367 57.8338 98.917 57.368 100.245 56.8144C100.684 56.6298 101.124 56.4277 101.555 56.2256C110.601 51.8667 117.09 43.0348 118.154 32.6034C118.25 31.6104 118.303 30.5998 118.303 29.5804C118.303 29.0707 118.294 28.561 118.268 28.0601Z" fill="currentColor"/><path d="M219.99 20.1157C240.307 20.1157 253.522 31.5753 253.522 50.0037C253.522 63.4932 245.758 73.5028 233.564 77.7825L257.443 118.55H239.736L217.457 79.8828H192.858V118.55H177.622V20.1157H220.007H219.99ZM192.849 33.825V66.323H219.269C231.393 66.323 237.626 59.5738 237.626 50.0037C237.626 40.4335 231.384 33.825 219.269 33.825H192.849Z" fill="currentColor"/><path d="M296.241 47.4639C316.559 47.4639 329.773 62.5529 329.773 81.1922C329.773 83.3717 329.624 85.6214 329.193 87.8623H275.123C275.774 98.3112 284.706 106.502 296.751 106.502C305.464 106.502 312.427 102.802 317.649 94.6027L328.243 102.292C321.781 113.901 309.086 119.991 296.751 119.991C275.703 119.991 260.247 104.472 260.247 83.7935C260.247 63.1153 275.123 47.4551 296.241 47.4551M315.179 77.1234C314.308 67.3336 306.106 60.435 296.092 60.435C285.427 60.435 277.295 67.3248 275.484 77.1234H315.179Z" fill="currentColor"/><path d="M343.11 118.55V48.914H357.555V57.6932C359.877 54.1428 366.479 47.4639 378.964 47.4639C398.121 47.4639 408.214 59.3629 408.214 76.2622V118.55H393.848V79.3028C393.848 67.773 387.536 61.0941 376.722 61.0941C365.908 61.0941 357.494 67.7642 357.494 79.3028V118.55H343.11Z" fill="currentColor"/><path d="M455.031 47.4639C466.856 47.4639 474.698 51.814 479.85 58.4138V16.416H494.216V118.55H479.85V109.05C474.698 115.65 466.856 120 455.031 120C435.223 120 420.048 104.77 420.048 83.3717C420.048 61.9729 435.214 47.4639 455.031 47.4639ZM434.423 83.3717C434.423 96.2109 443.346 107.09 456.771 107.09C470.197 107.09 479.78 96.2109 479.78 83.3717C479.78 70.5324 470.126 60.3735 456.771 60.3735C443.417 60.3735 434.423 70.5324 434.423 83.3717Z" fill="currentColor"/><path d="M542.395 47.4639C562.713 47.4639 575.927 62.5529 575.927 81.1922C575.927 83.3717 575.778 85.6214 575.347 87.8623H521.277C521.928 98.3112 530.86 106.502 542.905 106.502C551.618 106.502 558.581 102.802 563.803 94.6027L574.398 102.292C567.935 113.901 555.24 119.991 542.905 119.991C521.857 119.991 506.401 104.472 506.401 83.7935C506.401 63.045 521.277 47.4551 542.395 47.4551M561.333 77.1234C560.462 67.3336 552.26 60.435 542.246 60.435C531.581 60.435 523.449 67.3248 521.638 77.1234H561.333Z" fill="currentColor"/><path d="M589.81 118.55V48.914H604.255V58.4138C608.176 50.7946 614.778 47.4639 622.401 47.4639C627.843 47.4639 631.984 49.204 631.984 49.204L630.463 62.4035C629.663 62.1135 626.542 60.8041 621.97 60.8041C614.277 60.8041 604.263 64.8642 604.263 80.6122V118.55H589.81Z" fill="currentColor"/></svg></span>
 			<span class="topbar-label">Vibe Code Demo</span>
-			<a class="secondary-button view-switch" href="/table">Table view</a>
+			<a class="secondary-button view-switch" href="/">Classic view</a>
 		</header>
 
 		<main>
@@ -50,116 +54,128 @@
 				</form>
 			</section>
 
-			<div class="workspace">
-				<aside class="panel history-panel">
-					<div class="panel-heading">
-						<div class="heading-text">
-							<p class="eyebrow">History</p>
-							<h2>Your runs</h2>
-						</div>
-						<button id="refresh-runs" class="secondary-button" type="button">Refresh</button>
+			<section class="panel sites-panel">
+				<div class="panel-heading">
+					<div class="heading-text">
+						<p class="eyebrow">History</p>
+						<h2>Your sites</h2>
 					</div>
-					<p id="empty-history" class="empty-history">No runs yet.</p>
-					<div id="run-list" class="run-list"></div>
-				</aside>
+					<button id="refresh-runs" class="secondary-button" type="button">Refresh</button>
+				</div>
+				<p id="empty-history" class="empty-history">No sites yet.</p>
+				<div id="sites" class="table-scroll" hidden>
+					<table class="sites-table">
+						<thead>
+							<tr>
+								<th scope="col">Site</th>
+								<th scope="col">Status</th>
+								<th scope="col">URL</th>
+								<th scope="col">Time to generate</th>
+								<th scope="col">Created</th>
+								<th scope="col"><span class="visually-hidden">Delete</span></th>
+							</tr>
+						</thead>
+						<tbody id="site-rows"></tbody>
+					</table>
+				</div>
+			</section>
 
-				<section id="run-panel" class="panel run-panel" hidden aria-live="polite">
-					<div class="panel-heading">
-						<div class="heading-text">
-							<p class="eyebrow">Selected run</p>
-							<div class="status-line">
-								<h2 id="status">Starting</h2>
-								<span id="activity" class="activity" aria-hidden="true"></span>
-							</div>
+			<section id="run-panel" class="panel run-panel" hidden aria-live="polite">
+				<div class="panel-heading">
+					<div class="heading-text">
+						<p class="eyebrow">Selected run</p>
+						<div class="status-line">
+							<h2 id="status">Starting</h2>
+							<span id="activity" class="activity" aria-hidden="true"></span>
 						</div>
-						<button id="delete-run" class="danger-button" type="button" hidden>Delete app</button>
 					</div>
-					<!--
-						RUN_STAGES in app/store.ts lists the same stages in the same order.
-						Each tooltip tells what its stage does and where it runs.
-					-->
-					<ol id="stages" class="stages">
-						<li data-stage="designing">
-							<button type="button" class="stage-label" aria-describedby="stage-tip-designing">Designing</button>
-							<span id="stage-tip-designing" class="stage-tip" role="tooltip" aria-hidden="true">
-								<span>The architect agent reads the prompt and plans the app: its pages, its content, and the Render resources that it needs.</span>
-								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The architect task on Render Workflows</span>
-							</span>
-						</li>
-						<li data-stage="provisioning">
-							<button type="button" class="stage-label" aria-describedby="stage-tip-provisioning">Provisioning</button>
-							<span id="stage-tip-provisioning" class="stage-tip" role="tooltip" aria-hidden="true">
-								<span>Starts a real Postgres in the sandbox, so that the builder can test its schema and seed data. An app without a database skips this stage.</span>
-								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The Render Sandbox of this run</span>
-							</span>
-						</li>
-						<li data-stage="curating">
-							<button type="button" class="stage-label" aria-describedby="stage-tip-curating">Curating</button>
-							<span id="stage-tip-curating" class="stage-tip" role="tooltip" aria-hidden="true">
-								<span>Finds openly licensed photographs on Wikimedia Commons and downloads them into the app. No model chooses a URL or a file name.</span>
-								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The prompt-to-app task on Render Workflows</span>
-							</span>
-						</li>
-						<li data-stage="building">
-							<button type="button" class="stage-label" aria-describedby="stage-tip-building">Building</button>
-							<span id="stage-tip-building" class="stage-tip" role="tooltip" aria-hidden="true">
-								<span>The builder agent writes the app: it selects the stack, writes the files, and runs commands. It also fixes each failure that verification finds.</span>
-								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The builder task on Render Workflows. Its tools run in the Render Sandbox, which holds no credentials.</span>
-							</span>
-						</li>
-						<li data-stage="verifying">
-							<button type="button" class="stage-label" aria-describedby="stage-tip-verifying">Verifying</button>
-							<span id="stage-tip-verifying" class="stage-tip" role="tooltip" aria-hidden="true">
-								<span>Builds the app from only the files that a commit holds, as Render will. Then it boots the app and checks its endpoints.</span>
-								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The verify-app task on Render Workflows. The builds run in the Render Sandbox.</span>
-							</span>
-						</li>
-						<li data-stage="publishing">
-							<button type="button" class="stage-label" aria-describedby="stage-tip-publishing">Publishing</button>
-							<span id="stage-tip-publishing" class="stage-tip" role="tooltip" aria-hidden="true">
-								<span>Copies the app into a clean clone of the apps repository, writes its Blueprint, and pushes one commit to GitHub.</span>
-								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The publish-app task on Render Workflows, in a second Render Sandbox that no agent uses</span>
-							</span>
-						</li>
-						<li data-stage="waiting_for_services">
-							<button type="button" class="stage-label" aria-describedby="stage-tip-waiting_for_services">Waiting For Services</button>
-							<span id="stage-tip-waiting_for_services" class="stage-tip" role="tooltip" aria-hidden="true">
-								<span>The push starts a Blueprint sync. Render creates the project and the services of the app from render.yaml.</span>
-								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> Render. The prompt-to-app task waits on the Render API.</span>
-							</span>
-						</li>
-						<li data-stage="waiting_for_deploys">
-							<button type="button" class="stage-label" aria-describedby="stage-tip-waiting_for_deploys">Waiting For Deploys</button>
-							<span id="stage-tip-waiting_for_deploys" class="stage-tip" role="tooltip" aria-hidden="true">
-								<span>Render builds and deploys each service. If a deploy fails, the deploy manager agent finds the cause in its logs, and the builder fixes it.</span>
-								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> Render. The prompt-to-app task waits on the Render API. A repair runs in the deploy-manager and builder tasks.</span>
-							</span>
-						</li>
-						<li data-stage="smoke_testing">
-							<button type="button" class="stage-label" aria-describedby="stage-tip-smoke_testing">Smoke Testing</button>
-							<span id="stage-tip-smoke_testing" class="stage-tip" role="tooltip" aria-hidden="true">
-								<span>Render says that the app is live. Now the workflow requests its public URLs and checks the storefront, the data, and CORS.</span>
-								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The prompt-to-app task on Render Workflows</span>
-							</span>
-						</li>
-						<li data-stage="done">
-							<button type="button" class="stage-label" aria-describedby="stage-tip-done">Done</button>
-							<span id="stage-tip-done" class="stage-tip" role="tooltip" aria-hidden="true">
-								<span>The app passed every check and is live on Render.</span>
-								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The app's own project on Render</span>
-							</span>
-						</li>
-					</ol>
-					<p id="progress" class="progress"></p>
-					<div id="result" class="result" hidden>
-						<p class="eyebrow">Here’s what was built</p>
-						<h3 id="result-name">Your website</h3>
-						<p id="summary" class="result-summary"></p>
-						<a id="web-url" class="primary-link" href="/" target="_blank" rel="noreferrer">Visit live website</a>
-					</div>
-					<pre id="run-details" class="run-details" hidden></pre>
-				</section>
-			</div>
+				</div>
+				<p id="progress" class="progress"></p>
+				<div id="result" class="result" hidden>
+					<p class="eyebrow">Here’s what was built</p>
+					<h3 id="result-name">Your website</h3>
+					<p id="summary" class="result-summary"></p>
+					<a id="web-url" class="primary-link" href="/" target="_blank" rel="noreferrer">Visit live website</a>
+				</div>
+				<pre id="run-details" class="run-details" hidden></pre>
+				<!--
+					RUN_STAGES in app/store.ts lists the same stages in the same order.
+					The table is static, so aria-live="off" keeps the live region of the
+					run panel from reading it. table.js fills the Dashboard cells.
+				-->
+				<table id="stages" class="stage-table" aria-live="off">
+					<thead>
+						<tr>
+							<th scope="col">Stage</th>
+							<th scope="col">What it does</th>
+							<th scope="col">Where it runs</th>
+							<th scope="col">Dashboard</th>
+						</tr>
+					</thead>
+					<tbody>
+							<tr data-stage="designing">
+								<th scope="row">Designing</th>
+								<td>The architect agent plans the app and its Render resources. It cannot create anything.</td>
+								<td class="stage-where">Render Workflows <span>architect task</span></td>
+								<td class="stage-links" data-links="workflowRun"></td>
+							</tr>
+							<tr data-stage="provisioning">
+								<th scope="row">Provisioning</th>
+								<td>Starts a real Postgres for the builder and the checks. An app without a database skips this stage.</td>
+								<td class="stage-where">Render Sandbox <span>started by the prompt-to-app task</span></td>
+								<td class="stage-links" data-links="workflowRun sandbox"></td>
+							</tr>
+							<tr data-stage="curating">
+								<th scope="row">Curating</th>
+								<td>Downloads openly licensed photographs from Wikimedia Commons into the app. No model picks a URL.</td>
+								<td class="stage-where">Render Workflows <span>prompt-to-app task</span></td>
+								<td class="stage-links" data-links="workflowRun"></td>
+							</tr>
+							<tr data-stage="building">
+								<th scope="row">Building</th>
+								<td>The builder agent writes the app and runs commands. It also fixes what verification finds.</td>
+								<td class="stage-where">Render Workflows + Sandbox <span>builder task; its tools act in the sandbox</span></td>
+								<td class="stage-links" data-links="workflowRun sandbox"></td>
+							</tr>
+							<tr data-stage="verifying">
+								<th scope="row">Verifying</th>
+								<td>Builds, boots, and queries the app as Render will, from only the files that a commit holds.</td>
+								<td class="stage-where">Render Workflows + Sandbox <span>verify-app task; the builds run in the sandbox</span></td>
+								<td class="stage-links" data-links="workflowRun sandbox"></td>
+							</tr>
+							<tr data-stage="publishing">
+								<th scope="row">Publishing</th>
+								<td>Copies the app into a clean clone of the apps repository, commits it with its Blueprint, and pushes to GitHub.</td>
+								<td class="stage-where">Render Workflows + Sandbox <span>publish-app task, in a second sandbox</span></td>
+								<td class="stage-links" data-links="workflowRun"></td>
+							</tr>
+							<tr data-stage="waiting_for_services">
+								<th scope="row">Waiting For Services</th>
+								<td>The push starts a Blueprint sync. Render creates the app&rsquo;s project and services from render.yaml.</td>
+								<td class="stage-where">Render Blueprints <span>the prompt-to-app task waits on the API</span></td>
+								<td class="stage-links" data-links="workflowRun"></td>
+							</tr>
+							<tr data-stage="waiting_for_deploys">
+								<th scope="row">Waiting For Deploys</th>
+								<td>Render builds and deploys each service. If a deploy fails, the deploy manager diagnoses it and the builder fixes it.</td>
+								<td class="stage-where">Render <span>repairs run in the deploy-manager and builder tasks</span></td>
+								<td class="stage-links" data-links="workflowRun"></td>
+							</tr>
+							<tr data-stage="smoke_testing">
+								<th scope="row">Smoke Testing</th>
+								<td>Render says that the app is live. Now the workflow checks its public URLs, its data, and CORS.</td>
+								<td class="stage-where">Render Workflows <span>prompt-to-app task</span></td>
+								<td class="stage-links" data-links="workflowRun"></td>
+							</tr>
+							<tr data-stage="done">
+								<th scope="row">Done</th>
+								<td>The app passed every check and is live.</td>
+								<td class="stage-where">Render <span>the app&rsquo;s own project</span></td>
+								<td class="stage-links" data-links="workflowRun"></td>
+							</tr>
+					</tbody>
+				</table>
+			</section>
 
 			<dialog
 				id="delete-dialog"
@@ -184,6 +200,6 @@
 				</form>
 			</dialog>
 		</main>
-		<script type="module" src="/app.js"></script>
+		<script type="module" src="/table.js"></script>
 	</body>
 </html>

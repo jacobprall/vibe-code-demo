@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
 	setWorkflowRunId: vi.fn(),
 	startTask: vi.fn(),
 	getTaskRun: vi.fn(),
+	workflowIdOfTaskRun: vi.fn(),
 }));
 
 vi.mock("../app/store.js", () => ({
@@ -28,6 +29,10 @@ vi.mock("../app/store.js", () => ({
 	ping: mocks.ping,
 	setDeleteWorkflowRunId: mocks.setDeleteWorkflowRunId,
 	setWorkflowRunId: mocks.setWorkflowRunId,
+}));
+
+vi.mock("../app/render.js", () => ({
+	workflowIdOfTaskRun: mocks.workflowIdOfTaskRun,
 }));
 
 vi.mock("@renderinc/sdk", () => ({
@@ -70,6 +75,7 @@ beforeEach(() => {
 	mocks.startTask.mockResolvedValue({ taskRunId: "trn-1" });
 	mocks.claimWorkflowCheck.mockResolvedValue(false);
 	mocks.setWorkflowRunId.mockResolvedValue(undefined);
+	mocks.workflowIdOfTaskRun.mockResolvedValue("wfl-1");
 
 	process.env.FACTORY_API_KEY = KEY;
 	process.env.UI_USERNAME = "demo";
@@ -77,6 +83,7 @@ beforeEach(() => {
 	process.env.RENDER_WORKFLOW_SLUG = "wfs-1";
 	delete process.env.UI_AUTH_DISABLED;
 	delete process.env.NODE_ENV;
+	delete process.env.RENDER_USE_LOCAL_DEV;
 });
 
 describe("health", () => {
@@ -242,6 +249,38 @@ describe("browser UI", () => {
 		}
 	});
 
+	it.each(["/table", "/table.js", "/runs.js", "/app.js"])(
+		"requires Basic Auth for %s",
+		async (path) => {
+			expect((await createGateway().request(path)).status).toBe(401);
+			const response = await createGateway().request(path, {
+				headers: { authorization },
+			});
+			expect(response.status).toBe(200);
+		},
+	);
+
+	it("explains each run stage in the table view, with its dashboard links", async () => {
+		const { RUN_STAGES } =
+			await vi.importActual<typeof import("../app/store.js")>("../app/store.js");
+		const response = await createGateway().request("/table", {
+			headers: { authorization },
+		});
+		const html = await response.text();
+		const rows = [...html.matchAll(/<tr data-stage="([a-z_]+)">([\s\S]*?)<\/tr>/g)];
+
+		expect(html).toContain('<a class="secondary-button view-switch" href="/">');
+		expect(rows.map(([, stage]) => stage)).toEqual(RUN_STAGES);
+		for (const [, , cells] of rows) {
+			// The name, what the stage does, where it runs, and its links.
+			const text = [...cells.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/g)].map(
+				([, content]) => content.replace(/<[^>]+>/g, "").trim(),
+			);
+			expect(text.slice(0, 3).every(Boolean)).toBe(true);
+			expect(cells).toMatch(/<td class="stage-links" data-links="workflowRun( sandbox)?">/);
+		}
+	});
+
 	it("allows the explicit auth bypass only outside production", async () => {
 		process.env.UI_AUTH_DISABLED = "true";
 		expect((await createGateway().request("/")).status).toBe(200);
@@ -364,6 +403,60 @@ describe("status", () => {
 		},
 	);
 
+	/** Two reads of the run from one gateway, as the polls of the UI do. */
+	async function readTwice() {
+		const gateway = createGateway();
+		const read = async () =>
+			(await (
+				await gateway.request(`/v1/apps/${RUN_ID}`, {
+					headers: { authorization: `Bearer ${KEY}` },
+				})
+			).json()) as { finishedAt: string; links: Record<string, unknown> };
+		return [await read(), await read()];
+	}
+
+	it("links the run to its task run and its sandbox in the Render Dashboard", async () => {
+		mocks.getRun.mockResolvedValue(
+			storedRun({ sandboxId: "sbx-1", sandboxGroupId: "sbg-1" }),
+		);
+
+		const [first, second] = await readTwice();
+
+		// The workflow ID is read after the first response, and only once.
+		expect(first.links.workflowRun).toBeNull();
+		expect(mocks.workflowIdOfTaskRun).toHaveBeenCalledTimes(1);
+		expect(mocks.workflowIdOfTaskRun).toHaveBeenCalledWith("trn-1");
+		expect(second.finishedAt).toBe("2026-01-01T00:09:00.000Z");
+		expect(second.links).toEqual({
+			workflowRun: "https://dashboard.render.com/wf/wfl-1/runs/trn-1",
+			sandbox: "https://dashboard.render.com/sandbox-group/sbg-1/sandboxes/sbx-1",
+		});
+	});
+
+	it("gives no link that it cannot make", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		mocks.getRun.mockResolvedValue(storedRun({ sandboxId: "sbx-1" }));
+		mocks.workflowIdOfTaskRun.mockRejectedValue(new Error("403"));
+
+		const [, second] = await readTwice();
+		logged.mockRestore();
+
+		expect(second.links).toEqual({ workflowRun: null, sandbox: null });
+		// A failed read is tried again after a minute, not on each poll.
+		expect(mocks.workflowIdOfTaskRun).toHaveBeenCalledTimes(1);
+	});
+
+	// A local task run is not in the Dashboard.
+	it("gives no workflow link in local development", async () => {
+		process.env.RENDER_USE_LOCAL_DEV = "true";
+		mocks.getRun.mockResolvedValue(storedRun());
+
+		const [, second] = await readTwice();
+
+		expect(second.links.workflowRun).toBeNull();
+		expect(mocks.workflowIdOfTaskRun).not.toHaveBeenCalled();
+	});
+
 	it("404s an id that is not a run id without querying Postgres", async () => {
 		const response = await createGateway().request("/v1/apps/not-a-uuid", {
 			headers: { authorization: `Bearer ${KEY}` },
@@ -389,8 +482,11 @@ function storedRun(overrides: Record<string, unknown> = {}) {
 		apiUrl: null,
 		blueprintPath: "apps/demo/furniture-catalog/render.yaml",
 		summary: "Deployed.",
+		sandboxId: null,
+		sandboxGroupId: null,
 		createdAt: "2026-01-01T00:00:00.000Z",
 		updatedAt: "2026-01-01T00:10:00.000Z",
+		finishedAt: "2026-01-01T00:09:00.000Z",
 		...overrides,
 	};
 }

@@ -47,6 +47,8 @@ const mocks = vi.hoisted(() => ({
 	deleteRuns: vi.fn(async () => {}),
 	failDelete: vi.fn(async () => {}),
 	finishRun: vi.fn(async () => {}),
+	setRunSandbox: vi.fn(async () => {}),
+	sandboxGroupId: vi.fn(async (): Promise<string | null> => "sbg-test"),
 }));
 
 vi.mock("../app/agents.js", () => ({
@@ -90,6 +92,7 @@ vi.mock("../app/store.js", () => ({
 	failDelete: mocks.failDelete,
 	finishRun: mocks.finishRun,
 	setDeleteProgress: vi.fn(async () => {}),
+	setRunSandbox: mocks.setRunSandbox,
 	setRunStage: vi.fn(async () => {}),
 	setRunUrls: vi.fn(async () => {}),
 	touchRun: vi.fn(async () => {}),
@@ -113,6 +116,7 @@ vi.mock("../app/sandbox.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../app/sandbox.js")>()),
 	createSandbox: mocks.createSandbox,
 	connectSandbox: mocks.connectSandbox,
+	sandboxGroupId: mocks.sandboxGroupId,
 }));
 
 vi.mock("../app/teardown.js", () => ({
@@ -1484,12 +1488,32 @@ describe("promptToApp", () => {
 			vi.restoreAllMocks();
 		});
 
+		// Only a link in the UI needs the sandbox record.
+		it("runs on when it cannot record the sandbox", async () => {
+			vi.spyOn(console, "error").mockImplementation(() => {});
+			mocks.sandboxGroupId.mockRejectedValueOnce(new Error("forbidden"));
+			mocks.setRunSandbox.mockRejectedValueOnce(new Error("store down"));
+
+			const result = await promptToApp.func(tasks, INPUT);
+
+			expect(result.status, result.summary).toBe("awaiting_blueprint");
+			expect(mocks.setRunSandbox).toHaveBeenCalledWith("run-1", {
+				id: build.sandbox.id,
+				groupId: null,
+			});
+		});
+
 		it("verifies the app and then publishes it", async () => {
 			const { context, runs } = recordSubtasks();
 
 			const result = await promptToApp.func(context, INPUT);
 
 			expect(result.status, result.summary).toBe("awaiting_blueprint");
+			// The UI links to the sandbox of the run in the Render Dashboard.
+			expect(mocks.setRunSandbox).toHaveBeenCalledWith("run-1", {
+				id: build.sandbox.id,
+				groupId: "sbg-test",
+			});
 			expect(runs.map(({ name }) => name)).toEqual([
 				"architect",
 				"builder",

@@ -14,6 +14,7 @@ import { bodyLimit } from "hono/body-limit";
 import { apiKey, uiCredentials } from "./config.js";
 import { createAppRequestSchema } from "./contracts.js";
 import { redactSecrets } from "./policy.js";
+import { workflowIdOfTaskRun } from "./render.js";
 import {
 	claimDelete,
 	claimRun,
@@ -34,6 +35,12 @@ const RUN_ID = /^[0-9a-f-]{36}$/;
 const TASK_NAME = "prompt-to-app";
 const DELETE_TASK_NAME = "delete-app";
 const UNAUTHORIZED = { error: "unauthorized" };
+const DASHBOARD = "https://dashboard.render.com";
+/** A failed read of the workflow ID is tried again after this, not on each poll. */
+const WORKFLOW_ID_RETRY_MS = 60_000;
+
+/** The ID of the workflow for links to the Render Dashboard, if it is known. */
+type WorkflowIdReader = (taskRunId: string | null) => string | null;
 
 export function createGateway(): Hono {
 	const app = new Hono();
@@ -57,6 +64,7 @@ export function createGateway(): Hono {
 		maxSize: MAX_BODY_BYTES,
 		onError: (c) => c.json({ error: "payload too large" }, 413),
 	});
+	const workflowId = workflowIdReader();
 
 	app.get("/health", (c) => c.json({ status: "ok" }));
 
@@ -71,29 +79,40 @@ export function createGateway(): Hono {
 
 	app.use("/v1/*", apiAuth);
 	app.post("/v1/apps", capBody, (c) => createRun(c, "/v1/apps"));
-	app.get("/v1/apps/:runId", readRun);
+	app.get("/v1/apps/:runId", (c) => readRun(c, workflowId));
 	app.delete("/v1/apps/:runId", (c) => deleteRun(c, "/v1/apps"));
 
 	app.use("/ui/*", uiAuth);
-	app.get("/ui/apps", (c) => listRuns(c, credentials.username));
+	app.get("/ui/apps", (c) => listRuns(c, credentials.username, workflowId));
 	app.post("/ui/apps", capBody, (c) =>
 		createRun(c, "/ui/apps", credentials.username),
 	);
-	app.get("/ui/apps/:runId", readRun);
+	app.get("/ui/apps/:runId", (c) => readRun(c, workflowId));
 	app.delete("/ui/apps/:runId", (c) =>
 		deleteRun(c, "/ui/apps", credentials.username),
 	);
+	// Two views of the same UI. Each one has a button that opens the other.
 	app.get("/", uiAuth, serveStatic({ path: "./public/index.html" }));
+	app.get("/table", uiAuth, serveStatic({ path: "./public/table.html" }));
 	app.get("/app.js", uiAuth, serveStatic({ path: "./public/app.js" }));
+	app.get("/table.js", uiAuth, serveStatic({ path: "./public/table.js" }));
+	app.get("/runs.js", uiAuth, serveStatic({ path: "./public/runs.js" }));
 	app.get("/style.css", uiAuth, serveStatic({ path: "./public/style.css" }));
 
 	return app;
 }
 
-async function listRuns(c: Context, user: string): Promise<Response> {
+async function listRuns(
+	c: Context,
+	user: string,
+	workflowId: WorkflowIdReader,
+): Promise<Response> {
 	try {
 		const runs = await listRunsByUser(user);
-		return c.json({ runs: runs.map(runResponse) });
+		const id = workflowId(
+			runs.find((run) => run.workflowRunId)?.workflowRunId ?? null,
+		);
+		return c.json({ runs: runs.map((run) => runResponse(run, id)) });
 	} catch (error) {
 		console.error("Failed to list runs:", error);
 		return c.json({ error: "store unavailable" }, 503);
@@ -167,7 +186,10 @@ async function createRun(
 	);
 }
 
-async function readRun(c: Context): Promise<Response> {
+async function readRun(
+	c: Context,
+	workflowId: WorkflowIdReader,
+): Promise<Response> {
 	const runId = c.req.param("runId");
 	if (!runId || !RUN_ID.test(runId)) return c.json({ error: "not found" }, 404);
 
@@ -184,7 +206,7 @@ async function readRun(c: Context): Promise<Response> {
 			if (!current) return c.json({ error: "not found" }, 404);
 			run = current;
 		}
-		return c.json(runResponse(run));
+		return c.json(runResponse(run, workflowId(run.workflowRunId)));
 	} catch (error) {
 		console.error("Failed to read run:", error);
 		return c.json({ error: "store unavailable" }, 503);
@@ -279,13 +301,20 @@ export interface RunResponse {
 	summary: string | null;
 	createdAt: string;
 	updatedAt: string;
+	/** When the run stopped, or null while it runs. */
+	finishedAt: string | null;
+	/** Pages in the Render Dashboard, or null for a link that cannot be made yet. */
+	links: { workflowRun: string | null; sandbox: string | null };
 }
 
 /**
  * The public shape of a run. Summaries are model text, and progress can hold
  * the error of a failed Render read, so redact both.
  */
-export function runResponse(run: RunRecord): RunResponse {
+export function runResponse(
+	run: RunRecord,
+	workflowId: string | null = null,
+): RunResponse {
 	return {
 		runId: run.id,
 		status: run.status,
@@ -299,6 +328,55 @@ export function runResponse(run: RunRecord): RunResponse {
 		summary: run.summary ? redactSecrets(run.summary) : null,
 		createdAt: run.createdAt,
 		updatedAt: run.updatedAt,
+		finishedAt: run.finishedAt,
+		links: {
+			// The task run that owns the status: prompt-to-app, or delete-app while
+			// the app is deleted. The Dashboard shows the subtasks of a run on its
+			// page. The SDK does not give the ID of a subtask run.
+			workflowRun:
+				workflowId && run.workflowRunId
+					? `${DASHBOARD}/wf/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(run.workflowRunId)}`
+					: null,
+			sandbox:
+				run.sandboxGroupId && run.sandboxId
+					? `${DASHBOARD}/sandbox-group/${encodeURIComponent(run.sandboxGroupId)}/sandboxes/${encodeURIComponent(run.sandboxId)}`
+					: null,
+		},
+	};
+}
+
+/**
+ * Every task run of the factory belongs to the same workflow, so the gateway
+ * reads its ID once, from the task run of any run. The read does not delay a
+ * response: until it is done, the responses have no workflow link. A local
+ * task run is not in the Dashboard, so local development gets no workflow
+ * links.
+ */
+function workflowIdReader(): WorkflowIdReader {
+	let workflowId: string | null = null;
+	let reading = false;
+	return (taskRunId) => {
+		if (
+			workflowId ||
+			reading ||
+			!taskRunId ||
+			process.env.RENDER_USE_LOCAL_DEV === "true"
+		) {
+			return workflowId;
+		}
+		reading = true;
+		workflowIdOfTaskRun(taskRunId).then(
+			(id) => {
+				workflowId = id;
+			},
+			(error) => {
+				console.error("Failed to read the workflow ID:", error);
+				setTimeout(() => {
+					reading = false;
+				}, WORKFLOW_ID_RETRY_MS).unref();
+			},
+		);
+		return null;
 	};
 }
 

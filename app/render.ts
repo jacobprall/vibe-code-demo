@@ -387,6 +387,25 @@ async function readApi<T>(path: string, what: string): Promise<T> {
 	return (await response.json()) as T;
 }
 
+/* ── Workflows ────────────────────────────────────────────────────────── */
+
+/**
+ * The ID of the workflow that a task run belongs to, for links to the Render
+ * Dashboard. A task run names only its task, so this reads the task too.
+ */
+export async function workflowIdOfTaskRun(taskRunId: string): Promise<string> {
+	const run = await readApi<{ taskId: string }>(
+		`/task-runs/${encodeURIComponent(taskRunId)}`,
+		`Reading task run ${taskRunId}`,
+	);
+	const task = await readApi<{ workflowId?: string }>(
+		`/tasks/${encodeURIComponent(run.taskId)}`,
+		`Reading task ${run.taskId}`,
+	);
+	if (!task.workflowId) throw new Error(`Task ${run.taskId} names no workflow`);
+	return task.workflowId;
+}
+
 /* ── Blueprints ───────────────────────────────────────────────────────── */
 
 export interface BlueprintRecord {

@@ -34,12 +34,18 @@ import { awaitDeployment } from "./deploy.js";
 import { initAppDir } from "./git.js";
 import { collectImages } from "./images.js";
 import { oneLine, publishAppTask } from "./publish.js";
-import { createSandbox, ensureSandboxPostgres } from "./sandbox.js";
+import {
+	createSandbox,
+	ensureSandboxPostgres,
+	type Sandbox,
+	sandboxGroupId,
+} from "./sandbox.js";
 import {
 	claimRunApp,
 	deleteRuns,
 	failDelete,
 	finishRun,
+	setRunSandbox,
 	setRunStage,
 } from "./store.js";
 import { materializeTemplate } from "./templates.js";
@@ -128,6 +134,7 @@ async function run(
 		timeoutSeconds: SANDBOX_TIMEOUT_SECONDS,
 	});
 	try {
+		await recordSandbox(runId, sandbox);
 		const appDir = appPath(user, appName);
 		// Every agent path resolves against this, so it has to exist first.
 		// The agents can run any command in this sandbox, so it gets no clone
@@ -212,6 +219,20 @@ async function run(
 			.terminate()
 			.catch((error) => console.error("Failed to terminate sandbox:", error));
 	}
+}
+
+/**
+ * The UI links to the sandbox in the Render Dashboard. Only the link needs
+ * this, so a failure does not stop the run.
+ */
+async function recordSandbox(runId: string, sandbox: Sandbox): Promise<void> {
+	const groupId = await sandboxGroupId().catch((error) => {
+		console.error("Failed to read the sandbox group:", error);
+		return null;
+	});
+	await setRunSandbox(runId, { id: sandbox.id, groupId }).catch((error) =>
+		console.error("Failed to record the sandbox of the run:", error),
+	);
 }
 
 interface DeleteResult {
