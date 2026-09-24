@@ -4,6 +4,7 @@
  */
 import { type TaskContext, task } from "@renderinc/sdk/workflows";
 import { appPath } from "../factory.config.js";
+import { joinServiceDir } from "./blueprint.js";
 import {
 	type Manifest,
 	type Service,
@@ -117,7 +118,7 @@ async function verify(
 		// This check needs no build, so a failed build cannot hide it.
 		failures.push(...checkStaticSiteEnvVars(service));
 
-		const serviceDir = resolveServiceDir(appDir, service.rootDir);
+		const serviceDir = joinServiceDir(appDir, service.rootDir);
 
 		// Run the build command.
 		const build = await runVerification(sandbox, serviceDir, [
@@ -131,7 +132,7 @@ async function verify(
 		}
 
 		if (service.kind === "static_site" && service.staticPublishPath) {
-			const publishDir = resolveServiceDir(
+			const publishDir = joinServiceDir(
 				serviceDir,
 				service.staticPublishPath,
 			);
@@ -345,16 +346,4 @@ async function probeService(
 		status: Number.parseInt(statusLine.trim(), 10) || 0,
 		body: rest.join("\n"),
 	};
-}
-
-/**
- * Join a manifest-declared subdirectory onto a base path. The manifest is
- * agent-authored, so tolerate the two things models get wrong: "." or "./"
- * meaning "this directory", and repeating the base path they were given.
- */
-function resolveServiceDir(base: string, relative: string): string {
-	const cleaned = relative.replace(/^\.\/+/, "").replace(/\/+$/, "");
-	if (!cleaned || cleaned === ".") return base;
-	if (base.endsWith(`/${cleaned}`)) return base;
-	return `${base}/${cleaned}`;
 }

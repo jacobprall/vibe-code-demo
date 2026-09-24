@@ -7,7 +7,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { factoryConfig } from "../factory.config.js";
-import { appsRepo, renderWorkspaceId } from "../app/config.js";
+import {
+	apiKey,
+	appsRepo,
+	renderWorkspaceId,
+	uiCredentials,
+} from "../app/config.js";
 import { githubToken, usingGitHubApp } from "../app/git.js";
 import { RENDER_READ_ONLY_TOOLS } from "../app/policy.js";
 import { findBlueprint, renderMcpUrl } from "../app/render.js";
@@ -52,60 +57,37 @@ async function github<T>(
 	}
 }
 
-function checkConfiguration(): void {
-	heading("Configuration");
-
+/**
+ * Run a validator of app/config.ts, the same one that a process runs when it
+ * starts, and record its message or its error.
+ */
+function validate(check: () => string, fix: string): void {
 	try {
-		const repo = appsRepo();
-		record({ level: "ok", message: `APPS_REPO is ${repo.fullName}` });
+		record({ level: "ok", message: check() });
 	} catch (error) {
 		record({
 			level: "fail",
-			message: "APPS_REPO is missing or malformed",
-			fix: error instanceof Error ? error.message : "Use owner/repo format.",
+			message: error instanceof Error ? error.message : String(error),
+			fix,
 		});
 	}
+}
 
-	const key = process.env.FACTORY_API_KEY?.trim() ?? "";
-	if (!key) {
-		record({
-			level: "fail",
-			message: "FACTORY_API_KEY is missing",
-			fix: "Generate one with: openssl rand -hex 32",
-		});
-	} else if (key.length < 24) {
-		record({
-			level: "fail",
-			message: `FACTORY_API_KEY is only ${key.length} characters`,
-			fix: "Use at least 24. Generate with: openssl rand -hex 32",
-		});
-	} else {
-		record({ level: "ok", message: "FACTORY_API_KEY looks strong" });
-	}
+function checkConfiguration(): void {
+	heading("Configuration");
 
-	const uiUsername = process.env.UI_USERNAME?.trim() ?? "";
-	if (!/^[a-z][a-z0-9-]{2,30}$/.test(uiUsername)) {
-		record({
-			level: "fail",
-			message: "UI_USERNAME is missing or is not a lowercase slug",
-			fix: "Use 3-31 lowercase letters, numbers, or hyphens; it also namespaces generated apps.",
-		});
-	} else {
-		record({
-			level: "ok",
-			message: `UI_USERNAME namespaces apps as ${uiUsername}`,
-		});
-	}
-	const uiPassword = process.env.UI_PASSWORD?.trim() ?? "";
-	if (uiPassword.length < 16) {
-		record({
-			level: "fail",
-			message: "UI_PASSWORD is missing or shorter than 16 characters",
-			fix: "Set a strong password on the gateway.",
-		});
-	} else {
-		record({ level: "ok", message: "UI_PASSWORD looks strong" });
-	}
+	validate(
+		() => `APPS_REPO is ${appsRepo().fullName}`,
+		"Use owner/repo format.",
+	);
+	validate(() => {
+		apiKey();
+		return "FACTORY_API_KEY looks strong";
+	}, "Generate one with: openssl rand -hex 32");
+	validate(
+		() => `UI_USERNAME namespaces apps as ${uiCredentials().username}`,
+		"UI_USERNAME needs 3-31 lowercase letters, numbers, or hyphens, and UI_PASSWORD at least 16 characters.",
+	);
 
 	// The gateway needs this to dispatch, not just the workflows host.
 	present(

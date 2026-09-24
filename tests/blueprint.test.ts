@@ -8,6 +8,7 @@ import { parse } from "yaml";
 import {
 	appBlueprint,
 	declaredResources,
+	joinServiceDir,
 	resourceNames,
 	rootBlueprint,
 } from "../app/blueprint.js";
@@ -128,6 +129,30 @@ function withServices(
 function parsedServices(yaml: string) {
 	return parse(yaml).projects[0].environments[0].services;
 }
+
+/**
+ * The Blueprint and verify-app join the same agent-written directories, so
+ * they must agree on each one.
+ */
+describe("joinServiceDir", () => {
+	it.each([
+		["web", "apps/demo/shop/web"],
+		["./web/", "apps/demo/shop/web"],
+		[".", "apps/demo/shop"],
+		["./", "apps/demo/shop"],
+		// A model repeats the path that it was given, or its end.
+		["shop", "apps/demo/shop"],
+		["apps/demo/shop", "apps/demo/shop"],
+	])("joins %s onto the app directory", (dir, joined) => {
+		expect(joinServiceDir("apps/demo/shop", dir)).toBe(joined);
+	});
+
+	it("joins onto an absolute directory, as verify-app does", () => {
+		const app = "/home/user/repo/apps/demo/shop";
+		expect(joinServiceDir(app, app)).toBe(app);
+		expect(joinServiceDir(`${app}/web`, "dist")).toBe(`${app}/web/dist`);
+	});
+});
 
 describe("resourceNames", () => {
 	// A new default prefix must not rename the resources of an existing app.

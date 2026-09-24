@@ -111,8 +111,8 @@ and defines the MCP allowlist. `render` is imported by `claude` (for the MCP
 URL), by `teardown`, and by `deploy` and `delete`. `blueprint`, `git`,
 `images`, `teardown`, and `store` are used by `workflow` and the stages;
 `teardown` uses `render` and `blueprint`; `gateway` uses `store`, `policy`,
-and `contracts`. `config` and `contracts` are leaves. Adding an edge that
-points backwards is a design smell.
+and `contracts`. `contracts` is a leaf, and `config` uses only its `slug`
+schema. Adding an edge that points backwards is a design smell.
 
 ```text
 factory.config.ts   Directories, branch, plans, asset hosts, model tiers
