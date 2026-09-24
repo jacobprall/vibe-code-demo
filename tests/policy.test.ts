@@ -6,7 +6,12 @@ import {
 	resolveSandboxPath,
 } from "../app/policy.js";
 
-const exec = (command: string) => checkToolCall("sandbox__exec", { command });
+const APP_DIR = "/home/user/repo/apps/demo/shop";
+
+const exec = (command: string) =>
+	checkToolCall("sandbox__exec", { command }, APP_DIR);
+const tool = (name: string, input: Record<string, unknown>) =>
+	checkToolCall(name, input, APP_DIR);
 
 describe("checkToolCall", () => {
 	it("allows ordinary development commands", () => {
@@ -34,56 +39,88 @@ describe("checkToolCall", () => {
 
 	it("blocks path traversal in file tools", () => {
 		expect(
-			checkToolCall("sandbox__write_file", { path: "../../etc/passwd", content: "x" }),
-		).toContain("path traversal");
+			tool("sandbox__write_file", { path: "../../etc/passwd", content: "x" }),
+		).toContain("outside the app directory");
 	});
 
-	it("blocks a sibling directory that merely shares the checkout's prefix", () => {
+	it("blocks a sibling directory that merely shares the app directory's prefix", () => {
 		expect(
-			checkToolCall("sandbox__read_file", { path: "/home/user/repox/x.ts" }),
-		).toContain("outside the checkout");
+			tool("sandbox__read_file", { path: "/home/user/repo/apps/demo/shopx/x.ts" }),
+		).toContain("outside the app directory");
 	});
 
-	it("blocks absolute paths outside the checkout", () => {
-		expect(checkToolCall("sandbox__read_file", { path: "/etc/shadow" })).toContain(
-			"outside the checkout",
+	it("blocks absolute paths outside the app directory", () => {
+		expect(tool("sandbox__read_file", { path: "/etc/shadow" })).toContain(
+			"outside the app directory",
 		);
 	});
 
-	it("allows paths inside the checkout and /tmp", () => {
+	// The builder once wrote to the apps of other users, and to the files at
+	// the root of the apps repository.
+	it.each([
+		["sandbox__write_file", { path: "../../victim/site/index.html", content: "x" }],
+		["sandbox__write_file", { path: "/home/user/repo/render.yaml", content: "x" }],
+		["sandbox__read_file", { path: "/home/user/repo/apps/victim/site/factory.json" }],
+		["sandbox__list_dir", { path: ".." }],
+		["sandbox__search", { pattern: "token", path: "/home/user/repo" }],
+		["sandbox__exec", { command: "ls", cwd: "../../victim/site" }],
+		["sandbox__apply_patch", { diff: "--- a\n+++ b\n", cwd: "/home/user/repo" }],
+		["asset__collect", { subjects: ["walnut chair"], destDir: "/home/user/repo/apps/victim/site/assets" }],
+	])("blocks %s outside the app directory: %j", (name, input) => {
+		expect(tool(name, input)).toContain("outside the app directory");
+	});
+
+	it("allows paths inside the app directory and /tmp", () => {
+		expect(tool("sandbox__read_file", { path: `${APP_DIR}/x.ts` })).toBeNull();
+		expect(tool("sandbox__read_file", { path: "/tmp/scratch" })).toBeNull();
+		expect(tool("sandbox__read_file", { path: "src/index.ts" })).toBeNull();
+		expect(tool("sandbox__list_dir", { path: "web/../api" })).toBeNull();
+		expect(tool("sandbox__search", { pattern: "x" })).toBeNull();
+	});
+
+	// The content of a file is not a path. A JavaScript file can start with
+	// "//", and an import can hold "../".
+	it("checks only the fields that hold a path", () => {
 		expect(
-			checkToolCall("sandbox__read_file", { path: "/home/user/repo/x.ts" }),
+			tool("sandbox__write_file", {
+				path: "web/src/main.ts",
+				content: '// Entry point.\nimport { api } from "../lib/../api";\n',
+			}),
 		).toBeNull();
-		expect(checkToolCall("sandbox__read_file", { path: "/tmp/scratch" })).toBeNull();
-		expect(checkToolCall("sandbox__read_file", { path: "src/index.ts" })).toBeNull();
+	});
+
+	// An agent with sandbox tools always has an app directory. Without one,
+	// no path is inside it.
+	it("blocks a path tool when the agent has no app directory", () => {
+		expect(checkToolCall("sandbox__read_file", { path: "index.html" })).toContain(
+			"has no app directory",
+		);
 	});
 
 	// The bare name matters: Claude reports MCP tools as mcp__factory__<name>,
 	// and claude.ts strips that prefix before calling this.
 	it("applies path rules to the bare tool name", () => {
-		expect(checkToolCall("sandbox__list_dir", { path: "/etc" })).toContain("Blocked");
+		expect(tool("sandbox__list_dir", { path: "/etc" })).toContain("Blocked");
 	});
 
-	it("blocks a cwd outside the checkout without reading the command", () => {
-		expect(
-			checkToolCall("sandbox__exec", { command: "ls", cwd: "/root" }),
-		).toContain("outside the checkout");
+	it("blocks a cwd outside the app directory without reading the command", () => {
+		expect(tool("sandbox__exec", { command: "ls", cwd: "/root" })).toContain(
+			"outside the app directory",
+		);
 		// Absolute paths in the command itself are normal (/usr/bin, /tmp).
-		expect(
-			checkToolCall("sandbox__exec", { command: "/usr/bin/env node -v" }),
-		).toBeNull();
+		expect(tool("sandbox__exec", { command: "/usr/bin/env node -v" })).toBeNull();
 	});
 
 	// asset__fetch takes a URL as well as a path; the URL is not a path.
 	it("checks the destination path of an asset fetch without rejecting its URL", () => {
 		expect(
-			checkToolCall("asset__fetch", {
+			tool("asset__fetch", {
 				url: "https://upload.wikimedia.org/a/b.jpg",
 				path: "/home/user/repo/apps/demo/shop/web/public/assets/b.jpg",
 			}),
 		).toBeNull();
 		expect(
-			checkToolCall("asset__fetch", {
+			tool("asset__fetch", {
 				url: "https://upload.wikimedia.org/a/b.jpg",
 				path: "/etc/cron.d/payload",
 			}),
@@ -96,7 +133,6 @@ describe("checkToolCall", () => {
  * unresolved relative path builds an application nobody can commit.
  */
 describe("resolveSandboxPath", () => {
-	const APP_DIR = "/home/user/repo/apps/demo/shop";
 	const resolved = (path: string) => resolveSandboxPath(APP_DIR, path);
 
 	it.each([
@@ -104,22 +140,28 @@ describe("resolveSandboxPath", () => {
 		[".", APP_DIR],
 		["./api/../web", `${APP_DIR}/web`],
 		[`${APP_DIR}/api`, `${APP_DIR}/api`],
-		["/home/user/repo/render.yaml", "/home/user/repo/render.yaml"],
 		["/tmp/scratch.json", "/tmp/scratch.json"],
 	])("resolves %s", (input, expected) => {
 		expect(resolved(input)).toEqual({ path: expected });
 	});
 
-	// Six segments deep, so six `..` reach the filesystem root. Fewer than that
-	// stays inside the checkout, which is allowed.
 	it.each([
 		"/root",
 		"/etc/passwd",
 		"../../../../../../root/app",
 		"/home/user/repox",
+		// The rest of the apps repository is not part of the app.
+		"..",
+		"../cafe/index.html",
+		"/home/user/repo/render.yaml",
+		"/home/user/repo/apps/victim/site",
+		"/home/user/repo/apps/demo/shopx",
+		"/tmpx/scratch.json",
 	])("rejects %s", (input) => {
 		const result = resolved(input);
-		expect("error" in result && result.error).toContain("outside the checkout");
+		expect("error" in result && result.error).toContain(
+			`outside the app directory (${APP_DIR}) and /tmp`,
+		);
 	});
 
 	it("rejects an empty path", () => {

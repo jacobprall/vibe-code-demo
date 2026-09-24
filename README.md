@@ -32,7 +32,7 @@ User → Gateway (web service) → Render Workflow → Sandbox
 
 2. **Workflows** — The orchestration engine. One task (`prompt-to-app`) runs the entire pipeline: design, build, verify, publish, deploy, smoke-test. Sub-tasks (`architect`, `curator`, `builder`, `deploy-manager`) run as Claude agents with distinct tool grants and trust boundaries. Two more sub-tasks are workflow code: `verify-app` builds, migrates, boots, and queries the app in the sandbox, and `publish-app` generates the Blueprints, commits the app to GitHub, and pushes. A second task, `delete-app`, deletes an app in four sub-tasks, each with its own run and logs: `remove-app-from-blueprint` takes the app out of the Blueprint, `wait-for-blueprint-syncs` waits until no Blueprint sync can bring its Render resources back, `delete-app-resources` deletes them, and `remove-app-files` removes its files.
 
-3. **Sandboxes** — Every run gets a fresh, isolated Linux sandbox. Agents execute code inside it, never on the host. Postgres 18 is installed on the fly inside the sandbox so the builder develops against a real database. The sandbox is terminated in a `finally` block.
+3. **Sandboxes** — Every run gets a fresh, isolated Linux sandbox. Agents execute code inside it, never on the host. It holds only the app of the run, with no clone of the apps repository and no GitHub token; each push clones the repository in a sandbox of its own. Postgres 18 is installed on the fly inside the sandbox so the builder develops against a real database. The sandbox is terminated in a `finally` block.
 
 4. **Postgres** — Two roles: (a) the factory's own `runs` table for durable state, and (b) a sandbox-local Postgres the generated app builds against. Generated apps also get their own Managed Postgres on Render.
 
