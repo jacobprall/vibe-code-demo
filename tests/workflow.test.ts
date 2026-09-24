@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
 	writeAppFiles: vi.fn(),
 	createSandbox: vi.fn(),
 	connectSandbox: vi.fn(),
+	fetchDeployLogs: vi.fn(),
 	findBlueprint: vi.fn(),
 	pageContains: vi.fn(),
 	waitForServices: vi.fn(),
@@ -121,6 +122,7 @@ vi.mock("../app/teardown.js", () => ({
 
 vi.mock("../app/render.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../app/render.js")>()),
+	fetchDeployLogs: mocks.fetchDeployLogs,
 	findBlueprint: mocks.findBlueprint,
 	pageContains: mocks.pageContains,
 	waitForServices: mocks.waitForServices,
@@ -223,6 +225,12 @@ const FAILED: DeployOutcome = {
 	status: "pre_deploy_failed",
 	result: "failed",
 };
+/** The last lines of the logs of the FAILED deploy of the API. */
+const API_LOGS = [
+	"==> Running pre-deploy command 'npm run migrate'",
+	"Connecting to postgres://shop:hunter2@dpg-shop-a/shop",
+	'npm error Missing script: "migrate"',
+].join("\n");
 
 const manifest: Manifest = {
 	services: [
@@ -484,6 +492,7 @@ describe("awaitDeployment repairs", () => {
 					? (apiDeploys.shift() ?? LIVE)
 					: LIVE,
 		);
+		mocks.fetchDeployLogs.mockResolvedValue(API_LOGS);
 		mocks.deployManagerTask.mockResolvedValue({
 			allHealthy: false,
 			failures: [
@@ -539,6 +548,59 @@ describe("awaitDeployment repairs", () => {
 				commit: "b".repeat(40),
 			},
 		]);
+	});
+
+	// No agent can read logs. The Render Dashboard shows the input of each
+	// task run, and logs can hold secrets.
+	it("gives the deploy manager the logs of the failed deploy, without secrets", async () => {
+		builderReturns(repair);
+		const { context, runs } = recordSubtasks();
+
+		await deploy(context);
+
+		expect(mocks.fetchDeployLogs).toHaveBeenCalledTimes(1);
+		expect(mocks.fetchDeployLogs).toHaveBeenCalledWith(
+			"srv-acme-demo-shop-api",
+			"dep-1",
+			"tea-test",
+		);
+		const { message } = runs[0].input as { message: string };
+		expect(message).toContain(
+			[
+				'Service "acme-demo-shop-api" (srv-acme-demo-shop-api), deploy dep-1: deploy status "pre_deploy_failed"',
+				"The last lines of the logs of this deploy:",
+				"==> Running pre-deploy command 'npm run migrate'",
+				"Connecting to [REDACTED]",
+				'npm error Missing script: "migrate"',
+			].join("\n"),
+		);
+		expect(message).not.toContain("hunter2");
+	});
+
+	// A cut before the redaction would keep the end of the connection string,
+	// and redactSecrets() does not find a part of a secret.
+	it("removes the secrets from long logs, and then keeps only their last lines", async () => {
+		builderReturns(repair);
+		mocks.fetchDeployLogs.mockResolvedValue(
+			[
+				...Array.from(
+					{ length: 1_000 },
+					() => "npm warn deprecated glob@7.2.3",
+				),
+				`DATABASE_URL=postgres://shop:${"x".repeat(50_000)}@dpg-shop-a/shop`,
+				'npm error Missing script: "migrate"',
+			].join("\n"),
+		);
+		const { context, runs } = recordSubtasks();
+
+		await deploy(context);
+
+		const { message } = runs[0].input as { message: string };
+		expect(message).toContain(
+			'npm warn deprecated glob@7.2.3\nDATABASE_URL=[REDACTED]\nnpm error Missing script: "migrate"',
+		);
+		expect(message).not.toContain("dpg-shop-a");
+		expect(message.length).toBeLessThan(10_000);
 	});
 
 	it("pushes nothing when the repair fails verification", async () => {
@@ -820,6 +882,12 @@ describe("awaitDeployment repairs", () => {
 				"pre_deploy_failed",
 				"build_failed",
 			]);
+			// Each round reads the logs of the deploy that failed in that round.
+			expect(
+				mocks.fetchDeployLogs.mock.calls.map(
+					([serviceId, deployId]) => `${serviceId} ${deployId}`,
+				),
+			).toEqual([`${API_ID} dep-api1`, `${API_ID} dep-api2`]);
 		});
 
 		it("reports a repair push that started no new deploy", async () => {

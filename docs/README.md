@@ -98,15 +98,16 @@ cap, and no tenant-level quotas.
    commits only the app's directory and the root Blueprint, pushes, and
    verifies the remote SHA. Blueprint sync—not an agent API call—creates the
    infrastructure.
-6. The workflow waits for deployment. On failure, a deploy manager uses
-   read-only Render MCP data to diagnose the deploy and can request bounded
-   builder repairs. `verify-app` verifies each repair, and `publish-app`
-   rewrites `factory.json` and `render.yaml` from its manifest and pushes
-   again. Then the workflow waits for a new deploy of each failed service, not
-   for the deploy that failed. A repair cannot add or remove a resource: a
-   Blueprint sync never deletes one, and the loop watches only the services of
-   the first push. Live services still must pass public storefront, API
-   hostname, health, data, and CORS checks.
+6. The workflow waits for deployment. On failure, the workflow reads the
+   logs of each failed deploy and removes their secrets. A deploy manager
+   diagnoses the deploy from these logs and read-only Render MCP data, and
+   can request bounded builder repairs. `verify-app` verifies each repair,
+   and `publish-app` rewrites `factory.json` and `render.yaml` from its
+   manifest and pushes again. Then the workflow waits for a new deploy of
+   each failed service, not for the deploy that failed. A repair cannot add
+   or remove a resource: a Blueprint sync never deletes one, and the loop
+   watches only the services of the first push. Live services still must
+   pass public storefront, API hostname, health, data, and CORS checks.
 7. Postgres exposes progress and final URLs to reconnecting clients; a
    `finally` block terminates the sandbox.
 
@@ -188,8 +189,10 @@ useful consequences:
   git.
 
 The agents read Render through read-only MCP tools: the architect explores the
-workspace while it designs, and the deploy manager reads the logs of a failed
-deploy. Workflow code reads service and deploy state from the REST API.
+workspace while it designs, and the deploy manager reads the details of a
+service or a deploy. No agent can read logs. Workflow code reads service and
+deploy state, and the logs of a failed deploy, from the REST API. It removes
+the secrets from the logs before the deploy manager gets them.
 
 Deletion is the one exception to the rule. A Blueprint change never deletes a
 resource, so `app/teardown.ts` calls the Render API to delete the resources of

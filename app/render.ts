@@ -3,9 +3,10 @@
  *
  * Workflow code reads the Render REST API, which gives typed records. The
  * agents read Render through the hosted Render MCP server, on a read-only
- * allowlist; renderMcpUrl() names that server. Nothing in this file creates
- * or deletes a resource: creation is app/blueprint.ts plus a Git push, and
- * deletion is app/teardown.ts.
+ * allowlist; renderMcpUrl() names that server. The allowlist has no log tool,
+ * so only workflow code reads logs, with fetchDeployLogs(). Nothing in this
+ * file creates or deletes a resource: creation is app/blueprint.ts plus a Git
+ * push, and deletion is app/teardown.ts.
  */
 import { requireEnv } from "./config.js";
 
@@ -195,6 +196,72 @@ async function latestDeploy(
 	);
 	const deploy = page[0]?.deploy;
 	return deploy ? { id: deploy.id, status: deploy.status ?? "unknown" } : null;
+}
+
+/**
+ * The newest log lines of one deploy, oldest first, for the deploy manager.
+ * No agent can read logs, because logs can hold secrets. The caller must
+ * redact the text before it goes into a task input.
+ *
+ * The read has no type filter. Thus it gets the build logs, the output of the
+ * pre-deploy command, and the logs of the new instance. The time range of the
+ * deploy keeps out the logs of an earlier deploy, for example an error that
+ * an earlier repair round fixed. The range starts at createdAt, because the
+ * API does not document startedAt. The error of a failed deploy is near its
+ * end, so the read gets the newest lines.
+ *
+ * A read that fails is tried again, as retryRead() describes. The logs are
+ * only diagnostic. If the reads cannot finish, the result is empty, and the
+ * run continues.
+ */
+export async function fetchDeployLogs(
+	serviceId: string,
+	deployId: string,
+	workspaceId: string,
+): Promise<string> {
+	try {
+		const deploy = await retryRead(`The lookup of deploy ${deployId}`, () =>
+			readApi<{ createdAt?: string; finishedAt?: string }>(
+				`/services/${encodeURIComponent(serviceId)}/deploys/${encodeURIComponent(deployId)}`,
+				`Reading deploy ${deployId}`,
+			),
+		);
+		// Without a startTime, the API gives the logs of the last hour. They
+		// can be the logs of an earlier deploy.
+		if (!deploy.createdAt) {
+			throw new Error(`Render gave no creation time for ${deployId}.`);
+		}
+		const query = new URLSearchParams({
+			ownerId: workspaceId,
+			resource: serviceId,
+			startTime: deploy.createdAt,
+			direction: "backward",
+			limit: String(PAGE_SIZE),
+		});
+		// A deploy that is still in progress has no end, so the range ends now.
+		if (deploy.finishedAt) query.set("endTime", deploy.finishedAt);
+		const page = await retryRead(`The log lookup of ${serviceId}`, () =>
+			readApi<{ logs?: { message?: string }[] }>(
+				`/logs?${query}`,
+				`Listing the logs of ${serviceId}`,
+			),
+		);
+		// The API gives the newest line first.
+		return (page.logs ?? [])
+			.map((log) => log.message ?? "")
+			.reverse()
+			.join("\n");
+	} catch (error) {
+		console.warn(
+			JSON.stringify({
+				event: "deploy_logs_unavailable",
+				serviceId,
+				deployId,
+				reason: errorText(error),
+			}),
+		);
+		return "";
+	}
 }
 
 export interface HttpProbe {

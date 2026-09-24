@@ -161,6 +161,17 @@ describe("Render MCP allowlist", () => {
 	])("blocks %s", (name) => {
 		expect(checkToolCall(name, {})).toContain("read-only allowlist");
 	});
+
+	// These only read, but logs can hold secrets. Workflow code reads the logs
+	// of a failed deploy and redacts them before the deploy manager gets them.
+	it.each(["mcp__render__list_logs", "mcp__render__list_log_label_values"])(
+		"blocks %s",
+		(name) => {
+			expect(checkToolCall(name, { resource: ["srv-1"] })).toContain(
+				"read-only allowlist",
+			);
+		},
+	);
 });
 
 describe("redactSecrets", () => {
@@ -170,6 +181,15 @@ describe("redactSecrets", () => {
 		expect(redacted).not.toContain("ghp_abcdefghijklmnopqrst");
 		expect(redacted).not.toContain("sk-ant-api03-abcdefghijkl");
 		expect(redacted).toContain("[REDACTED]");
+	});
+
+	// The logs of a failed deploy go into the input of the deploy manager.
+	it("removes a connection string and a Render API key from a log line", () => {
+		expect(
+			redactSecrets(
+				"DATABASE_URL=postgres://shop:hunter2@dpg-shop-a/shop RENDER_API_KEY=rnd_abcdefghijklmnop",
+			),
+		).toBe("DATABASE_URL=[REDACTED] RENDER_API_KEY=[REDACTED]");
 	});
 
 	it("leaves ordinary prose alone", () => {

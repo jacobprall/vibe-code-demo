@@ -107,7 +107,8 @@ sandbox → tools → claude → agents → stages → workflow
 The stages are `build`, `verify`, `publish`, `deploy`, and `delete`.
 `workflow` runs them, `deploy` uses `build`, `verify`, and `publish`, `build`
 uses `verify`, and `delete` uses `publish`. `policy` is imported by `claude`
-and defines the MCP allowlist. `render` is imported by `claude` (for the MCP
+and defines the MCP allowlist; `deploy` uses its `redactSecrets()` for the
+logs of a failed deploy. `render` is imported by `claude` (for the MCP
 URL), by `teardown`, and by `deploy` and `delete`. `blueprint`, `git`,
 `images`, `teardown`, and `store` are used by `workflow` and the stages;
 `teardown` uses `render` and `blueprint`; `gateway` uses `store`, `policy`,
@@ -126,7 +127,7 @@ app/
   policy.ts      checkToolCall, path rules, MCP allowlist, secret redaction
   sandbox.ts     Render Sandboxes, shellEscape, Postgres in the sandbox
   blueprint.ts   render.yaml generation — the only path that creates resources
-  render.ts      REST reads of services, deploys, and Blueprints; HTTP probes
+  render.ts      REST reads of services, deploys, logs, Blueprints; HTTP probes
   teardown.ts    Deletes of a deleted app — the only Render write API calls
   git.ts         Clone, .gitignore, the copy of an app between sandboxes,
                  commit, push, verify, GitHub credentials
@@ -189,6 +190,14 @@ Do not weaken these without an explicit security-model change:
 - The architect gets no sandbox tools and only Render MCP tools from
   `RENDER_READ_ONLY_TOOLS`. `checkToolCall` denies every other Render tool, so
   the allowlist is enforced twice.
+- No agent reads Render logs. `RENDER_READ_ONLY_TOOLS` has no log tool, so
+  `checkToolCall` denies `list_logs` too. Logs can hold secrets, and the
+  factory cannot redact what an agent reads. In a deploy repair round,
+  workflow code reads the logs of each failed deploy with `fetchDeployLogs()`
+  and gives them to the deploy manager in its input. The Render Dashboard
+  shows each task input, so `failedDeployReport()` applies `redactSecrets()`
+  first, and then cuts the logs to `MAX_DEPLOY_LOG_CHARS`. Do not cut first:
+  a cut can divide a secret, and the redaction does not find a part of one.
 - Only the builder gets sandbox tools.
 - Every agent-supplied path is resolved against the workflow-owned `workDir`
  on `ToolContext`, which is the app directory, and must land inside it or
@@ -292,9 +301,10 @@ delete, read Render through `retryRead()` in `app/render.ts`. It does a failed
 read again after the poll interval, and it fails after five failures in
 sequence, with the last error. It fails at once for a 401 or 403, because a
 new attempt cannot repair the API key. `findBlueprint` uses it too, so only a
-lookup that finds no Blueprint gives `awaiting_blueprint`. Workflow code reads
-Render over REST, which gives typed records. Only the agents use the Render
-MCP server.
+lookup that finds no Blueprint gives `awaiting_blueprint`. `fetchDeployLogs`
+uses it too, but when its reads cannot finish, it gives no logs and does not
+fail the run: the logs are only diagnostic. Workflow code reads Render over
+REST, which gives typed records. Only the agents use the Render MCP server.
 
 Postgres enforces two things through constraints rather than application code:
 `runs.idempotency_key` is unique, so a retried curl cannot start a second run,
@@ -409,6 +419,16 @@ terminal: the public URL, data endpoint, and CORS checks must pass before the
 run becomes `deployed`. The storefront check must also pass: the HTML of the
 storefront, or a script that it loads, must contain the public hostname of the
 API. The API checks cannot see the hostname that a browser uses.
+
+When a deploy fails, the deploy manager diagnoses it from the logs of that
+deploy, which workflow code gives it. `fetchDeployLogs()` reads them in the
+time range of the deploy, with no type filter. Thus it gets the build logs,
+the output of the pre-deploy command, and the logs of the new instance, and
+no line of an earlier deploy. A type filter can lose the pre-deploy output,
+because the Render documentation does not give its type. Each round reads
+the deploy that failed in that round. Do not give an agent `list_logs` in
+place of this read: an agent can read the logs of each service in the
+workspace, and the factory cannot redact them first.
 
 A deploy repair ships through the same path as the first build. The repaired
 manifest must pass `verify-app`. Then `publish-app` rewrites `factory.json`

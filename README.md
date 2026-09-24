@@ -38,7 +38,7 @@ User → Gateway (web service) → Render Workflow → Sandbox
 
 5. **Blueprints** — The only way the factory creates resources on Render. Agents never call the Render API. A Blueprint change never deletes a resource, so the `delete-app` task deletes a deleted app's resources with the API, after the app has left the Blueprint. The workflow writes `render.yaml`, commits to GitHub, and Render's Blueprint sync deploys everything. Every deployment is a Git diff.
 
-6. **MCP** — Read-only Render MCP gives the Architect agent visibility into the workspace (existing services, databases) and gives the Deploy Manager logs and deploy status to diagnose failures. Strictly read-only — enforced by allowlist and `PreToolUse` hook.
+6. **MCP** — Read-only Render MCP gives the Architect agent visibility into the workspace (existing services, databases) and gives the Deploy Manager deploy status to diagnose failures. No agent can read logs: the workflow reads the logs of each failed deploy from the Render REST API, removes their secrets, and gives them to the Deploy Manager. Strictly read-only — enforced by allowlist and `PreToolUse` hook.
 
 ## Quick start
 

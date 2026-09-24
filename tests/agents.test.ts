@@ -99,6 +99,24 @@ describe("tool access", () => {
 		}
 	});
 
+	// Logs can hold secrets. Workflow code reads the logs of a failed deploy
+	// and redacts them before an agent gets them.
+	it("gives no agent a Render tool that reads logs", () => {
+		for (const agent of all) {
+			expect(agent.renderTools ?? []).not.toContain("list_logs");
+			expect(agent.renderTools ?? []).not.toContain("list_log_label_values");
+		}
+	});
+
+	it("tells the deploy manager that its instructions hold the logs", () => {
+		expect(agents.deployManager.prompt).toMatch(
+			/the last lines of the\s+logs of that deploy/,
+		);
+		expect(agents.deployManager.prompt).toMatch(
+			/Your Render tools cannot read logs\./,
+		);
+	});
+
 	// Claude's own Bash/Read/Write/Edit would bypass the workflow-owned sandbox.
 	it("never grants a Claude built-in tool", () => {
 		const builtIns = ["Bash", "Read", "Write", "Edit", "NotebookEdit"];

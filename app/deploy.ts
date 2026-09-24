@@ -14,9 +14,11 @@ import {
 	type Service,
 	type WorkflowResult,
 } from "./contracts.js";
+import { redactSecrets } from "./policy.js";
 import { publishAppTask } from "./publish.js";
 import {
 	type DeployOutcome,
+	fetchDeployLogs,
 	findBlueprint,
 	pageContains,
 	type ServiceRecord,
@@ -32,6 +34,12 @@ const MAX_DEPLOY_REPAIR_ROUNDS = 2;
 const SERVICE_TIMEOUT_MS = 6 * 60 * 1000;
 const DEPLOY_TIMEOUT_MS = 15 * 60 * 1000;
 const SITE_TIMEOUT_MS = 3 * 60 * 1000;
+/**
+ * The end of the logs of one failed deploy that goes into the input of the
+ * deploy manager. The Render Dashboard shows each task input, so keep it
+ * small.
+ */
+const MAX_DEPLOY_LOG_CHARS = 4_000;
 
 export interface DeployContext {
 	/** Runs the deploy manager, the builder, verify-app, and publish-app. */
@@ -50,7 +58,8 @@ export interface DeployContext {
  * The deploy-manager loop. After the initial push:
  * 1. Wait for services to appear via Blueprint sync
  * 2. Wait for deploys to reach a terminal state
- * 3. If any fail, the deploy-manager agent diagnoses via MCP
+ * 3. If any fail, read the logs of each failed deploy. The deploy-manager
+ *    agent diagnoses the failures from these logs
  * 4. The builder fixes what the deploy-manager diagnosed
  * 5. verify-app verifies the repair. publish-app rewrites factory.json and
  *    the Blueprints from the repaired manifest, and pushes. Then wait for a
@@ -159,14 +168,11 @@ export async function awaitDeployment(
 			return { status: "deploy_failed", summary: deployFailures(failed) };
 		}
 
-		// Deploy-manager agent diagnoses the failure via Render MCP.
-		const failureSummary = failed
-			.map(
-				({ service, deploy }) =>
-					`Service "${service.name}" (${service.id}): deploy status "${deploy.status}"`,
-			)
-			.join("\n");
-
+		// The deploy manager diagnoses the failures from the logs of each
+		// failed deploy. No agent can read logs, so workflow code reads them.
+		const reports = await Promise.all(
+			failed.map((failure) => failedDeployReport(workspaceId, failure)),
+		);
 		const diagnosis = await agentJson(
 			(message) => ctx.tasks.run(deployManagerTask, { message }),
 			deployDiagnosisSchema,
@@ -174,9 +180,10 @@ export async function awaitDeployment(
 				`Workspace: ${workspaceId}`,
 				"",
 				"The following services failed to deploy:",
-				failureSummary,
 				"",
-				"Use your Render MCP tools to inspect these services, find deploy logs, and diagnose exactly what went wrong.",
+				reports.join("\n\n"),
+				"",
+				"Diagnose exactly what went wrong. Quote the exact error from the logs.",
 			].join("\n"),
 			`deploy-manager-${round + 1}`,
 		);
@@ -338,6 +345,31 @@ function deployFailures(
 		);
 	}
 	return lines.join(" ");
+}
+
+/**
+ * One failed deploy, as the deploy manager gets it: the service, the deploy,
+ * and the last lines of its logs.
+ *
+ * Logs can hold secrets, and the Render Dashboard shows the input of each
+ * task run. So redactSecrets() removes the secrets, and then the text is cut
+ * to MAX_DEPLOY_LOG_CHARS. Do not cut first: a cut can divide a secret, and
+ * redactSecrets() does not find a part of a secret.
+ */
+async function failedDeployReport(
+	workspaceId: string,
+	{ service, deploy }: { service: ServiceRecord; deploy: DeployOutcome },
+): Promise<string> {
+	const heading = `Service "${service.name}" (${service.id}), deploy ${deploy.deployId ?? "none"}: deploy status "${deploy.status}"`;
+	if (!deploy.deployId) {
+		return `${heading}\nRender has no deploy of this service, so there are no logs.`;
+	}
+	const logs = redactSecrets(
+		await fetchDeployLogs(service.id, deploy.deployId, workspaceId),
+	).slice(-MAX_DEPLOY_LOG_CHARS);
+	return logs
+		? `${heading}\nThe last lines of the logs of this deploy:\n${logs}`
+		: `${heading}\nRender gave no logs for this deploy.`;
 }
 
 /**

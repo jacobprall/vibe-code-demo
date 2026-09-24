@@ -4,6 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	fetchDeployLogs,
 	findBlueprint,
 	pageContains,
 	pageScripts,
@@ -376,6 +377,166 @@ describe("pageContains", () => {
 		});
 		expect(await pageContains(PAGE, API_HOST)).toBe(false);
 		expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([PAGE]);
+	});
+});
+
+/**
+ * No agent can read logs, so this read is how the deploy manager gets them.
+ * It must get the logs of the failed deploy, and no line of an earlier one.
+ */
+describe("fetchDeployLogs", () => {
+	const DEPLOY = {
+		id: "dep-api2",
+		status: "pre_deploy_failed",
+		commit: { id: "c0ffee", createdAt: "2026-09-23T09:00:00Z" },
+		createdAt: "2026-09-23T10:00:00Z",
+		startedAt: "2026-09-23T10:00:05Z",
+		finishedAt: "2026-09-23T10:03:00Z",
+	};
+	/** As the logs API gives them: newest first, with labels. */
+	const LOGS = {
+		hasMore: true,
+		logs: [
+			['npm error Missing script: "migrate"', "build"],
+			["==> Running pre-deploy command 'npm run migrate'", "build"],
+			["==> Build successful", "build"],
+		].map(([message, type], n) => ({
+			id: `log-${n}`,
+			message,
+			labels: [{ name: "type", value: type }],
+			timestamp: `2026-09-23T10:02:5${9 - n}Z`,
+		})),
+	};
+
+	beforeEach(() => {
+		vi.stubEnv("RENDER_API_KEY", "rnd_test");
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+	});
+
+	/**
+	 * The read of the deploy gets `deploy`. Each read of the logs gets the
+	 * next result: a page, an error status, or an error to throw. After the
+	 * last one, each read gets the last one again. Returns each URL.
+	 */
+	function serve(deploy: object, ...logs: (object | number | Error)[]): URL[] {
+		const urls: URL[] = [];
+		let reads = 0;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request) => {
+				const parsed = new URL(String(url));
+				urls.push(parsed);
+				if (parsed.pathname !== "/v1/logs") return Response.json(deploy);
+				const result = logs[Math.min(reads++, logs.length - 1)];
+				if (result instanceof Error) throw result;
+				if (typeof result === "number") {
+					return new Response("", { status: result });
+				}
+				return Response.json(result);
+			}),
+		);
+		return urls;
+	}
+
+	/** The JSON events that the read wrote with console.warn. */
+	function warnings(): Record<string, unknown>[] {
+		return vi
+			.mocked(console.warn)
+			.mock.calls.map(([line]) => JSON.parse(String(line)));
+	}
+
+	// The commit has a createdAt too, but a commit can be days older than its
+	// deploy.
+	it("reads the logs of each type in the time range of the deploy, oldest first", async () => {
+		const urls = serve(DEPLOY, LOGS);
+
+		expect(await fetchDeployLogs("srv-api", "dep-api2", "tea-test")).toBe(
+			[
+				"==> Build successful",
+				"==> Running pre-deploy command 'npm run migrate'",
+				'npm error Missing script: "migrate"',
+			].join("\n"),
+		);
+		expect(urls.map((url) => url.pathname)).toEqual([
+			"/v1/services/srv-api/deploys/dep-api2",
+			"/v1/logs",
+		]);
+		expect(Object.fromEntries(urls[1].searchParams)).toEqual({
+			ownerId: "tea-test",
+			resource: "srv-api",
+			startTime: "2026-09-23T10:00:00Z",
+			endTime: "2026-09-23T10:03:00Z",
+			direction: "backward",
+			limit: "100",
+		});
+	});
+
+	// A deploy that timed out in the wait is still in progress.
+	it("reads to now while the deploy runs", async () => {
+		const urls = serve(
+			{ ...DEPLOY, status: "update_in_progress", finishedAt: undefined },
+			LOGS,
+		);
+
+		await fetchDeployLogs("srv-api", "dep-api2", "tea-test");
+
+		expect(urls[1].searchParams.get("startTime")).toBe("2026-09-23T10:00:00Z");
+		expect(urls[1].searchParams.has("endTime")).toBe(false);
+	});
+
+	// Without a startTime, the logs API gives the logs of the last hour. They
+	// can be the logs of an earlier deploy.
+	it("reads no logs when Render gives no creation time for the deploy", async () => {
+		const urls = serve({ id: "dep-api2", status: "build_failed" }, LOGS);
+
+		expect(await fetchDeployLogs("srv-api", "dep-api2", "tea-test")).toBe("");
+		expect(urls).toHaveLength(1);
+		expect(warnings()).toEqual([
+			{
+				event: "deploy_logs_unavailable",
+				serviceId: "srv-api",
+				deployId: "dep-api2",
+				reason: "Render gave no creation time for dep-api2.",
+			},
+		]);
+	});
+
+	it("reads again after a read fails", async () => {
+		vi.useFakeTimers();
+		const urls = serve(DEPLOY, 503, LOGS);
+
+		const [logs] = await Promise.all([
+			fetchDeployLogs("srv-api", "dep-api2", "tea-test"),
+			vi.runAllTimersAsync(),
+		]);
+
+		expect(logs).toContain('npm error Missing script: "migrate"');
+		expect(urls).toHaveLength(3);
+	});
+
+	// The logs are only diagnostic. A read that cannot finish must not end a
+	// run that a repair can still fix.
+	it("gives no logs, and no error, when a read cannot finish", async () => {
+		const urls = serve(DEPLOY, 401);
+
+		expect(await fetchDeployLogs("srv-api", "dep-api2", "tea-test")).toBe("");
+		expect(urls).toHaveLength(2);
+		expect(warnings()).toEqual([
+			{
+				event: "deploy_logs_unavailable",
+				serviceId: "srv-api",
+				deployId: "dep-api2",
+				reason:
+					"Listing the logs of srv-api failed with 401. The API key needs read access to the workspace.",
+			},
+		]);
 	});
 });
 

@@ -199,21 +199,25 @@ export const deployManager: Agent = {
 	id: "deploy-manager",
 	model: "medium",
 	effort: "low",
+	// The read-only tools have no log tool. Workflow code reads the logs of
+	// each failed deploy, redacts them, and puts them in the instructions.
 	renderTools: RENDER_READ_ONLY_TOOLS,
 	maxTurns: 20,
 	plan: "standard",
 	prompt: md`
-		You are the deploy manager. You monitor Render deployments via the
-		read-only MCP tools you have and diagnose failures.
+		You are the deploy manager. You diagnose Render deploys that failed.
 
-		You will receive a list of service names and their deploy status. For
-		any service that failed, use your Render tools to:
-		1. Look up the service by name to get its ID
-		2. List its deploys to find the failing one
-		3. Examine build logs and deploy details
+		Your instructions give each service that failed: its name and ID, the
+		ID and the status of the deploy that failed, and the last lines of the
+		logs of that deploy. The logs start when Render created the deploy.
+		They can include the build, the pre-deploy command, and the new
+		instance. Workflow code reads the logs and replaces each secret with
+		[REDACTED]. Your Render tools cannot read logs. Use them only to read
+		the settings of a service and the details of a deploy.
 
-		Then produce a diagnosis: what went wrong and what the builder should
-		fix. Be specific — quote the exact error from the logs.
+		For each service that failed, find the error in its logs. Then tell the
+		builder what to fix. Be specific: quote the exact error from the logs.
+		If the logs do not show the cause, say so.
 
 		Respond ONLY with JSON:
 		{
