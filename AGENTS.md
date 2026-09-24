@@ -93,6 +93,14 @@ and is injected as the app namespace; never accept a browser-supplied `user`.
 deletes only a run in that namespace, and the UI restores selection from local
 storage while treating Postgres as the source of truth.
 
+Runs build in parallel, up to `maxConcurrentRuns`. The UI disables the submit
+button only while the gateway accepts a prompt. It reads `GET /ui/apps` again
+every 5 seconds while a run or a delete is in progress, and renders the
+history and the selected run from that list. It does not poll each run, so
+the list reconciles each run that a task owns, as `GET /ui/apps/:runId` does.
+Keep the error of a submit in the form and the error of a delete in its
+dialog: each refresh renders the run panel again.
+
 The UI has two views of the same runs, and each has a button that opens the
 other. The classic view at `/` explains each stage in a tooltip. The table
 view at `/table` shows the sites in a table, with each URL, the time that each
@@ -259,8 +267,8 @@ Do not weaken these without an explicit security-model change:
   then the project, which Render deletes only when it is empty.
 - A delete claims every run of one app, and `claimRunApp` claims an app name
   for a run. Both take the same Postgres advisory lock. So no run builds an app
-  while a delete of it is in progress, and a delete is refused while a run of
-  the app is running.
+  while a delete of it is in progress, a delete is refused while a run of the
+  app is running, and no two runs build the same app at one time.
 - Verification is workflow-owned. The `verify-app` subtask runs the same
   install, build, and pre-deploy commands the Blueprint gives Render, against
   a real Postgres running in the sandbox, and `publish-app` runs only after it
@@ -283,9 +291,9 @@ Do not weaken these without an explicit security-model change:
 
 There is no step memoization. A failed run is not resumed; the caller retries
 by posting the prompt again. The gateway persists the Render task-run ID.
-While a caller polls, it marks a run failed when its task run failed or was
-canceled, so an interrupted task cannot leave a database row `running`
-forever. A task that succeeds writes its result before it returns, so the
+While a caller polls a run, or the UI polls its list of runs, the gateway
+marks a run failed when its task run failed or was canceled, so an
+interrupted task cannot leave a database row `running` forever. A task that succeeds writes its result before it returns, so the
 gateway does not read the result. Long service, deploy, and HTTP
 waits heartbeat `progress`; keep those waits bounded.
 

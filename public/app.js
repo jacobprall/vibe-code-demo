@@ -1,4 +1,4 @@
-import { activeStatuses, formatDate, label, startRunsPage, truncate } from "/runs.js";
+import { activeStatuses, formatDate, startRunsPage, statusLabel, truncate } from "/runs.js";
 
 const runList = document.querySelector("#run-list");
 const stages = document.querySelector("#stages");
@@ -32,6 +32,7 @@ function renderHistory(runs, selectedRunId, { select }) {
 			button.type = "button";
 			button.className = `run-item${run.runId === selectedRunId ? " selected" : ""}`;
 			button.dataset.runId = run.runId;
+			button.dataset.focusKey = run.runId;
 			button.setAttribute("aria-pressed", String(run.runId === selectedRunId));
 
 			const name = document.createElement("strong");
@@ -40,7 +41,7 @@ function renderHistory(runs, selectedRunId, { select }) {
 			const state = document.createElement("span");
 			state.className = "run-state";
 			state.dataset.status = run.status;
-			state.textContent = label(run.status);
+			state.textContent = statusLabel(run);
 			const meta = document.createElement("span");
 			meta.className = "run-meta";
 			meta.append(state, ` · ${formatDate(run.createdAt)}`);

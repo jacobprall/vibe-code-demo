@@ -188,6 +188,12 @@ describe("dispatch", () => {
 		const response = await post({ prompt: PROMPT });
 
 		expect(response.status).toBe(429);
+		// The UI shows the detail below the prompt.
+		expect(await response.json()).toEqual({
+			error: "too many concurrent runs",
+			detail:
+				"The factory builds at most 3 apps at a time, for all users. Submit the prompt again when a run finishes.",
+		});
 		expect(mocks.startTask).not.toHaveBeenCalled();
 	});
 
@@ -318,6 +324,68 @@ describe("browser UI", () => {
 		expect(response.status).toBe(200);
 		expect(mocks.listRunsByUser).toHaveBeenCalledWith("demo");
 		expect(await response.json()).toEqual({ runs: [] });
+	});
+
+	// The UI polls only the list, so the list marks a run failed when its task
+	// run failed. Else the run keeps a concurrency slot until someone selects it.
+	it("reconciles each run that a task owns before it lists the runs", async () => {
+		const building = storedRun({
+			id: "run-building",
+			status: "running",
+			workflowRunId: "trn-building",
+		});
+		const crashed = storedRun({
+			id: "run-crashed",
+			status: "running",
+			workflowRunId: "trn-crashed",
+		});
+		const deployed = storedRun({ id: "run-deployed" });
+		mocks.listRunsByUser
+			.mockResolvedValueOnce([building, crashed, deployed])
+			.mockResolvedValueOnce([
+				building,
+				{ ...crashed, status: "failed", summary: "Workflow failed: timed out" },
+				deployed,
+			]);
+		mocks.claimWorkflowCheck.mockResolvedValue(true);
+		mocks.getTaskRun.mockImplementation(async (id: string) =>
+			id === "trn-crashed"
+				? { status: "failed", error: "timed out" }
+				: { status: "running" },
+		);
+
+		const response = await createGateway().request("/ui/apps", {
+			headers: { authorization },
+		});
+		const body = (await response.json()) as {
+			runs: { runId: string; status: string }[];
+		};
+
+		expect(mocks.claimWorkflowCheck.mock.calls).toEqual([
+			["run-building"],
+			["run-crashed"],
+		]);
+		expect(mocks.finishRun).toHaveBeenCalledOnce();
+		expect(mocks.finishRun).toHaveBeenCalledWith("run-crashed", "failed", {
+			summary: "Workflow failed: timed out",
+		});
+		expect(body.runs.map((run) => [run.runId, run.status])).toEqual([
+			["run-building", "running"],
+			["run-crashed", "failed"],
+			["run-deployed", "deployed"],
+		]);
+	});
+
+	it("reads the list one time when no task owns a run", async () => {
+		mocks.listRunsByUser.mockResolvedValue([storedRun()]);
+
+		const response = await createGateway().request("/ui/apps", {
+			headers: { authorization },
+		});
+
+		expect(response.status).toBe(200);
+		expect(mocks.listRunsByUser).toHaveBeenCalledOnce();
+		expect(mocks.claimWorkflowCheck).not.toHaveBeenCalled();
 	});
 });
 

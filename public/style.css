@@ -248,6 +248,17 @@ input {
 	gap: 12px;
 }
 
+/* Why the gateway refused the request of a form: a submit or a delete. */
+.form-error {
+	color: var(--danger);
+	font-size: 14px;
+	line-height: 20px;
+}
+
+.form-error:empty {
+	display: none;
+}
+
 /*
  * Buttons change color at once on hover, with no transition, as a tool does.
  * The primary button is neutral until hover. Only one is in view.

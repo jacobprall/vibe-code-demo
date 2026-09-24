@@ -299,6 +299,8 @@ real, billable resources. Local development changes where orchestration runs;
 it does not emulate the Render data plane.
 
 Open `http://localhost:3000` and sign in with `UI_USERNAME` and `UI_PASSWORD`.
+You can submit a prompt while other runs build, up to the cap of three runs.
+The history shows the stage of each run.
 The **Table view** button opens `/table`, which shows the same runs as tables:
 the sites with their URLs, the time that each run took, and a delete button,
 and the stages with what each one does, where it runs, and links to the
@@ -405,8 +407,9 @@ Copy `.env.example` when setting up locally.
 All deploy and HTTP waits have deadlines and heartbeat the database. The
 gateway also stores the Render task-run ID and periodically reconciles a
 `running` or `deleting` row with Workflows. If the task failed or was canceled
-before it wrote its result, for example at a timeout, the next status poll
-marks the row failed and releases its concurrency slot. A task that succeeds
+before it wrote its result, for example at a timeout, the next status poll,
+or the next refresh of the list in the UI, marks the row failed and releases
+its concurrency slot. A task that succeeds
 writes its result before it returns.
 
 A service or deploy wait does a failed Render read again after five seconds,
@@ -489,7 +492,8 @@ See [AGENTS.md](../AGENTS.md) for checklists when adding agents, primitives, or 
   the app's name, in the app's own project. The UI can delete only the runs of
   its own namespace.
 - A delete and a run of the same app take the same Postgres advisory lock, so a
-  run cannot build an app while it is being deleted.
+  run cannot build an app while it is being deleted, or while a different run
+  builds it.
 - The image download accepts only HTTPS, only allowlisted hosts, and only
   `image/*` responses under the size cap. It writes only into the `assets/`
   directory of the app, under a name that it makes.

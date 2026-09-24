@@ -1,22 +1,26 @@
 /**
  * What the two views of the UI share: the prompt form, the history of runs,
- * the poll of the selected run, the run panel, the stages, and the delete
- * dialog. The two pages use the same IDs for these elements. Each view renders
- * its own history, and it can add to the run panel.
+ * the refresh of the runs, the run panel, the stages, and the delete dialog.
+ * The two pages use the same IDs for these elements. Each view renders its
+ * own history, and it can add to the run panel.
  */
 
-/** A task still owns these runs, so the page keeps polling them. */
+/** A task still owns these runs, so the page keeps reading them. */
 export const activeStatuses = ["running", "deleting"];
 const healthyStatuses = [...activeStatuses, "deployed", "awaiting_blueprint"];
+/** How long the page waits before it reads the runs again. */
+const REFRESH_MS = 5000;
 
 /**
  * Start the page. `view.renderHistory(runs, selectedRunId, actions)` renders
  * the history, and `view.renderRun(run, actions)`, if the view has it, adds to
  * the run panel. `actions`, which this also returns, has `select(runId)` and
- * `openDeleteDialog(run)`.
+ * `openDeleteDialog(run)`. A control in the history that has
+ * `data-focus-key` gets the focus again after the history renders.
  */
 export function startRunsPage(view) {
 	const form = document.querySelector("#prompt-form");
+	const formError = document.querySelector("#form-error");
 	const runPanel = document.querySelector("#run-panel");
 	const emptyHistory = document.querySelector("#empty-history");
 	const refreshRuns = document.querySelector("#refresh-runs");
@@ -37,13 +41,14 @@ export function startRunsPage(view) {
 	const deleteConfirmField = document.querySelector("#delete-confirm-field");
 	const deleteAppName = document.querySelector("#delete-app-name");
 	const deleteConfirm = document.querySelector("#delete-confirm");
+	const deleteError = document.querySelector("#delete-error");
 	const deleteSubmit = document.querySelector("#delete-submit");
 	const deleteCancel = document.querySelector("#delete-cancel");
 
 	/**
-	 * The stages are static HTML. A poll changes only the class of each stage.
-	 * It does not replace the stages, so the live region of the run panel
-	 * does not read them again, and a focused stage keeps the focus.
+	 * The stages are static HTML. A refresh changes only the class of each
+	 * stage. It does not replace the stages, so the live region of the run
+	 * panel does not read them again, and a focused stage keeps the focus.
 	 */
 	const stageItems = [...stages.querySelectorAll("[data-stage]")];
 	const stageOrder = stageItems.map((item) => item.dataset.stage);
@@ -51,33 +56,33 @@ export function startRunsPage(view) {
 	const actions = { select: selectRun, openDeleteDialog };
 	let runs = [];
 	let selectedRunId = null;
-	let pollGeneration = 0;
+	/** The run in the run panel, as JSON. A refresh renders it only when it changes. */
+	let shownRun = null;
+	let refreshTimer;
+	/** The number of reads of the runs. Only the newest read changes the page. */
+	let reads = 0;
 
+	/**
+	 * The button is busy only while the gateway accepts the prompt. Then the
+	 * form takes the next prompt, and the runs build in parallel.
+	 */
 	form.addEventListener("submit", async (event) => {
 		event.preventDefault();
-		setBusy(true);
-		runPanel.hidden = false;
-		status.textContent = "Submitting prompt";
-
+		setSubmitting(true);
+		formError.textContent = "";
 		try {
-			const response = await fetch("/ui/apps", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ prompt: form.prompt.value }),
-			});
-			const body = await response.json();
-			if (!response.ok || !body.runId) {
-				throw new Error(body.detail || body.error || `Request failed (${response.status})`);
-			}
+			const runId = await submitPrompt(form.prompt.value);
 			form.reset();
-			await loadRuns(body.runId);
+			loadRuns(runId).catch(showFailure);
 		} catch (error) {
-			showFailure(error instanceof Error ? error.message : String(error));
+			formError.textContent = messageOf(error);
+		} finally {
+			setSubmitting(false);
 		}
 	});
 
 	refreshRuns.addEventListener("click", () => {
-		loadRuns(selectedRunId).catch((error) => showFailure(error.message));
+		loadRuns().catch(showFailure);
 	});
 
 	deleteConfirm.addEventListener("input", () => {
@@ -87,14 +92,26 @@ export function startRunsPage(view) {
 
 	deleteCancel.addEventListener("click", () => deleteDialog.close());
 
+	/**
+	 * The dialog stays open until the gateway accepts the delete, and it shows
+	 * the error of a delete that fails. The run panel cannot show it: the next
+	 * refresh renders the run panel again.
+	 */
 	deleteForm.addEventListener("submit", async (event) => {
 		event.preventDefault();
-		deleteDialog.close();
+		const { runId } = deleteForm.dataset;
+		deleteSubmit.disabled = true;
+		deleteError.textContent = "";
 		try {
-			await deleteRun(deleteForm.dataset.runId);
+			await deleteRun(runId);
 		} catch (error) {
-			showFailure(error instanceof Error ? error.message : String(error));
+			deleteError.textContent = messageOf(error);
+			deleteSubmit.disabled = false;
+			return;
 		}
+		deleteDialog.close();
+		// Each run of the app is deleting now. A run with no app is gone.
+		loadRuns(runId).catch(showFailure);
 	});
 
 	/**
@@ -117,100 +134,78 @@ export function startRunsPage(view) {
 		deleteConfirmField.hidden = !appName;
 		deleteAppName.textContent = appName;
 		deleteConfirm.value = "";
+		deleteError.textContent = "";
 		deleteSubmit.disabled = Boolean(appName);
 		deleteDialog.showModal();
 		(appName ? deleteConfirm : deleteSubmit).focus();
 	}
 
-	async function deleteRun(runId) {
-		const response = await fetch(`/ui/apps/${encodeURIComponent(runId)}`, {
-			method: "DELETE",
-		});
-		const body = await response.json().catch(() => ({}));
-		if (!response.ok) {
-			throw new Error(body.error || `Delete failed (${response.status})`);
-		}
-		if (body.status === "deleted") {
-			await runRemoved();
-			return;
-		}
-		// Every run of the app is deleting now, so read them all again.
-		await loadRuns(runId);
-	}
-
-	/** The run is gone: a delete finished, or the run had no app to delete. */
-	async function runRemoved() {
-		selectedRunId = null;
-		pollGeneration += 1;
-		runPanel.hidden = true;
-		await loadRuns();
-	}
-
+	/**
+	 * Read the runs, and select the preferred run, the selected run, or the
+	 * newest run. While a task owns a run, read them again after REFRESH_MS.
+	 * A read that fails is tried again too, so that a short outage of the
+	 * gateway does not stop the updates.
+	 */
 	async function loadRuns(preferredRunId) {
-		const response = await fetch("/ui/apps");
-		if (!response.ok) throw new Error(`Could not load run history (${response.status})`);
-		const body = await response.json();
-		runs = body.runs || [];
-		renderHistory();
-
-		const nextRunId =
-			(preferredRunId && runs.some((run) => run.runId === preferredRunId)
-				? preferredRunId
-				: null) ||
-			(selectedRunId && runs.some((run) => run.runId === selectedRunId)
-				? selectedRunId
-				: null) ||
-			runs[0]?.runId;
-		if (nextRunId) await selectRun(nextRunId);
+		window.clearTimeout(refreshTimer);
+		const read = ++reads;
+		try {
+			const response = await fetch("/ui/apps");
+			const body = response.ok ? await response.json() : null;
+			// A newer read started, for example after a submit.
+			if (read !== reads) return;
+			if (!body) throw new Error(`Could not load run history (${response.status})`);
+			runs = body.runs || [];
+			const listed = (runId) => runs.some((run) => run.runId === runId);
+			selectRun(
+				[preferredRunId, selectedRunId].find((runId) => runId && listed(runId)) ??
+					runs[0]?.runId ??
+					null,
+			);
+		} finally {
+			if (read === reads && runs.some((run) => activeStatuses.includes(run.status))) {
+				refreshTimer = window.setTimeout(() => loadRuns().catch(showFailure), REFRESH_MS);
+			}
+		}
 	}
 
+	function selectRun(runId) {
+		selectedRunId = runId;
+		if (runId) localStorage.setItem("vibe-code-selected-run", runId);
+		renderHistory();
+		renderSelectedRun();
+	}
+
+	/** A view replaces its history, so give the focus back to the same control. */
 	function renderHistory() {
 		emptyHistory.hidden = runs.length > 0;
+		const focusKey = document.activeElement?.dataset.focusKey;
 		view.renderHistory(runs, selectedRunId, actions);
-	}
-
-	async function selectRun(runId) {
-		selectedRunId = runId;
-		localStorage.setItem("vibe-code-selected-run", runId);
-		pollGeneration += 1;
-		const generation = pollGeneration;
-		renderHistory();
-		await poll(runId, generation);
-	}
-
-	async function poll(runId, generation) {
-		while (generation === pollGeneration && runId === selectedRunId) {
-			const response = await fetch(`/ui/apps/${encodeURIComponent(runId)}`);
-			if (generation !== pollGeneration) return;
-			// A delete that finished removed the run.
-			if (response.status === 404) {
-				await runRemoved();
-				return;
-			}
-			if (!response.ok) throw new Error(`Status check failed (${response.status})`);
-			const run = await response.json();
-			upsertRun(run);
-			renderRun(run);
-			renderHistory();
-			if (!activeStatuses.includes(run.status)) return;
-			await new Promise((resolve) => setTimeout(resolve, 5000));
+		if (focusKey) {
+			document.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
 		}
 	}
 
-	function upsertRun(run) {
-		const index = runs.findIndex((candidate) => candidate.runId === run.runId);
-		if (index === -1) runs.unshift(run);
-		else runs[index] = run;
+	function renderSelectedRun() {
+		const run = runs.find((candidate) => candidate.runId === selectedRunId);
+		if (!run) {
+			runPanel.hidden = true;
+			shownRun = null;
+			return;
+		}
+		// The run panel is a live region, so change it only when the run changes.
+		const json = JSON.stringify(run);
+		if (json === shownRun) return;
+		shownRun = json;
+		renderRun(run);
 	}
 
 	function renderRun(run) {
 		runPanel.hidden = false;
 		runPanel.classList.toggle("failed", !healthyStatuses.includes(run.status));
-		status.textContent =
-			run.status === "running" ? label(run.stage || "queued") : label(run.status);
+		status.textContent = statusLabel(run);
 		progress.textContent = run.progress || "";
 		activity.hidden = !activeStatuses.includes(run.status);
-		setBusy(run.status === "running");
 		// The stages are those of a build, so a delete does not show them.
 		stages.hidden = ["deleting", "delete_failed"].includes(run.status);
 
@@ -246,23 +241,55 @@ export function startRunsPage(view) {
 		view.renderRun?.(run, actions);
 	}
 
-	function setBusy(busy) {
-		submit.disabled = busy;
-		submit.textContent = busy ? "Building…" : "Build and deploy";
+	function setSubmitting(submitting) {
+		submit.disabled = submitting;
+		submit.textContent = submitting ? "Submitting…" : "Build and deploy";
 	}
 
-	function showFailure(message) {
+	/** A read of the runs failed. The next read that succeeds shows the run again. */
+	function showFailure(error) {
+		shownRun = null;
 		runPanel.hidden = false;
 		runPanel.classList.add("failed");
 		status.textContent = "Request failed";
-		progress.textContent = message;
-		setBusy(false);
+		progress.textContent = messageOf(error);
 	}
 
-	loadRuns(localStorage.getItem("vibe-code-selected-run")).catch((error) =>
-		showFailure(error.message),
-	);
+	loadRuns(localStorage.getItem("vibe-code-selected-run")).catch(showFailure);
 	return actions;
+}
+
+/** Start a run. The gateway gives its ID, or an error that the form shows. */
+async function submitPrompt(prompt) {
+	const response = await fetch("/ui/apps", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ prompt }),
+	});
+	const body = await response.json().catch(() => ({}));
+	if (!response.ok || !body.runId) {
+		throw new Error(body.detail || body.error || `Request failed (${response.status})`);
+	}
+	return body.runId;
+}
+
+async function deleteRun(runId) {
+	const response = await fetch(`/ui/apps/${encodeURIComponent(runId)}`, {
+		method: "DELETE",
+	});
+	const body = await response.json().catch(() => ({}));
+	if (!response.ok) {
+		throw new Error(body.error || `Delete failed (${response.status})`);
+	}
+}
+
+function messageOf(error) {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/** The stage of a run that builds, or else its status. */
+export function statusLabel(run) {
+	return run.status === "running" ? label(run.stage || "queued") : label(run.status);
 }
 
 export function label(value) {

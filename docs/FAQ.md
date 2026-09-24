@@ -176,13 +176,16 @@ A: The workflow has a repair loop — up to 2 build-fix rounds with the builder.
 A: The workflow reads the logs of each failed deploy and removes their secrets. The Deploy Manager agent diagnoses the issue from these logs and its read-only MCP tools, and hands it to the Builder for repair. Up to 2 deploy-repair rounds. After that it's `deploy_failed`. The workflow verifies each repair in the sandbox and writes its manifest back to `factory.json` and the Blueprints, so changed commands reach Render. After each repair push, it waits for a new deploy of each failed service. If a repair adds or removes a service or database, or changes the kind of a service, the run ends as `deploy_failed` with no push. If a repair changes no files, or Render starts no new deploy in 15 minutes, the run ends as `deploy_failed` at once.
 
 **Q: What if a run gets stuck?**
-A: Heartbeats and deadlines prevent silent hangs. If the task of a run failed or was canceled before it wrote its result, for example at a timeout, the next status poll marks the run failed and releases its concurrency slot. `GET /v1/apps/:runId` always shows the current stage.
+A: Heartbeats and deadlines prevent silent hangs. If the task of a run failed or was canceled before it wrote its result, for example at a timeout, the next status poll, or the next refresh of the UI, marks the run failed and releases its concurrency slot. `GET /v1/apps/:runId` always shows the current stage.
 
 **Q: How do I delete a generated app?**
 A: Select one of its runs in the UI and click **Delete app**, or send `DELETE /v1/apps/:runId`. The delete removes the app with all of its runs. The workflow takes the app out of the root Blueprint, waits until no Blueprint sync can bring its resources back, deletes its services, database, and project, and then removes its files from the apps repo. It takes a few minutes. The files stay in the Git history. If it ends as `delete_failed`, the summary says why; fix that and delete again. In the Render Dashboard, each step is a run of its own under the `delete-app` run, with its own logs, so you can see which step failed.
 
 **Q: Can multiple people demo at once?**
 A: Yes, up to 3 concurrent runs (configurable). Each run gets its own sandbox and app namespace (`vibe-<user>-<app>-{web,api,db}`). Concurrent runs push to the same branch: a run whose push fails takes the new tip and makes its commit again.
+
+**Q: Can I build more than one app at a time?**
+A: Yes. Submit the next prompt while the first run builds. The history shows the stage of each run, and updates every 5 seconds while a run is in progress. When 3 runs are in progress, the gateway refuses a new prompt, and the UI tells why below the prompt. Two runs of the same app cannot build at one time: if the architect gives a new run the name of an app that a different run builds, the new run stops as `failed`. Submit it again when the first run finishes.
 
 **Q: Is this safe for public/untrusted users?**
 A: No. It's a demonstration. Auth is HTTP Basic, there's no tenant isolation, no quotas, and no abuse controls. See [When to use this reference](README.md#when-to-use-this-reference) and [Current limitations](README.md#current-limitations).

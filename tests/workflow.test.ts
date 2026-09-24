@@ -12,6 +12,7 @@ import type { AppSpec, Manifest, Service } from "../app/contracts.js";
 import type { AppFile } from "../app/git.js";
 import type { DeployOutcome } from "../app/render.js";
 import type { ExecResult, Sandbox } from "../app/sandbox.js";
+import type { AppClaim } from "../app/store.js";
 import {
 	deleteResourcesTask,
 	removeFilesTask,
@@ -43,7 +44,7 @@ const mocks = vi.hoisted(() => ({
 	waitForHttpOk: vi.fn(),
 	deleteAppResources: vi.fn(),
 	waitForBlueprintSyncs: vi.fn(),
-	claimRunApp: vi.fn(async () => true),
+	claimRunApp: vi.fn(async (): Promise<AppClaim> => ({ claimed: true })),
 	deleteRuns: vi.fn(async () => {}),
 	failDelete: vi.fn(async () => {}),
 	finishRun: vi.fn(async () => {}),
@@ -1375,7 +1376,10 @@ describe("promptToApp", () => {
 
 	// The delete would remove what the run publishes.
 	it("builds nothing when a delete of the app is in progress", async () => {
-		mocks.claimRunApp.mockResolvedValueOnce(false);
+		mocks.claimRunApp.mockResolvedValueOnce({
+			claimed: false,
+			reason: "deleting",
+		});
 
 		const result = await promptToApp.func(tasks, {
 			prompt: "Sell handmade walnut furniture online",
@@ -1395,6 +1399,28 @@ describe("promptToApp", () => {
 		expect(mocks.finishRun).toHaveBeenCalledWith("run-1", "failed", {
 			summary: expect.stringContaining("being deleted"),
 		});
+	});
+
+	// Both runs would write apps/demo/shop/, and each one would wait for the
+	// deploys of the other.
+	it("builds nothing when a different run builds the same app", async () => {
+		mocks.claimRunApp.mockResolvedValueOnce({
+			claimed: false,
+			reason: "running",
+		});
+
+		const result = await promptToApp.func(tasks, {
+			prompt: "Sell handmade walnut furniture online",
+			user: "demo",
+			runId: "run-2",
+		});
+
+		expect(result).toEqual({
+			status: "failed",
+			summary:
+				"A different run is building demo/shop. Submit the prompt again when that run finishes.",
+		});
+		expect(mocks.createSandbox).not.toHaveBeenCalled();
 	});
 
 	// A failed run is final. The task sets its runs row to "failed" and throws,

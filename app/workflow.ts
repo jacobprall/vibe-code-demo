@@ -121,12 +121,16 @@ async function run(
 
 	const appName = plan.appName;
 	const blueprintPath = `${appRelativePath(user, appName)}/render.yaml`;
-	// Returned, not thrown: a delete in progress is an expected result, not a
-	// fault in the run.
-	if (!(await claimRunApp(runId, user, { appName, blueprintPath }))) {
+	// Returned, not thrown: a delete in progress, or a different run of the
+	// same app, is an expected result, not a fault in the run.
+	const claim = await claimRunApp(runId, user, { appName, blueprintPath });
+	if (!claim.claimed) {
 		return {
 			status: "failed",
-			summary: `${user}/${appName} is being deleted. Submit the prompt again when the delete finishes.`,
+			summary:
+				claim.reason === "deleting"
+					? `${user}/${appName} is being deleted. Submit the prompt again when the delete finishes.`
+					: `A different run is building ${user}/${appName}. Submit the prompt again when that run finishes.`,
 		};
 	}
 

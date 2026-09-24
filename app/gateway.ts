@@ -7,10 +7,12 @@
  */
 import { randomUUID } from "node:crypto";
 import { serveStatic } from "@hono/node-server/serve-static";
+import { Render } from "@renderinc/sdk";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { basicAuth } from "hono/basic-auth";
 import { bearerAuth } from "hono/bearer-auth";
 import { bodyLimit } from "hono/body-limit";
+import { factoryConfig } from "../factory.config.js";
 import { apiKey, uiCredentials } from "./config.js";
 import { createAppRequestSchema } from "./contracts.js";
 import { redactSecrets } from "./policy.js";
@@ -102,13 +104,22 @@ export function createGateway(): Hono {
 	return app;
 }
 
+/**
+ * The UI polls only this list, also while runs build in parallel. So the list
+ * reconciles each run that a task owns, as a read of one run does.
+ */
 async function listRuns(
 	c: Context,
 	user: string,
 	workflowId: WorkflowIdReader,
 ): Promise<Response> {
 	try {
-		const runs = await listRunsByUser(user);
+		let runs = await listRunsByUser(user);
+		const owned = runs.filter(ownedByTask);
+		if (owned.length > 0) {
+			await Promise.all(owned.map(reconcileWorkflowRun));
+			runs = await listRunsByUser(user);
+		}
 		const id = workflowId(
 			runs.find((run) => run.workflowRunId)?.workflowRunId ?? null,
 		);
@@ -162,7 +173,13 @@ async function createRun(
 	if (!claim.claimed) {
 		return claim.reason === "duplicate"
 			? c.json({ runId: claim.runId, duplicate: true }, 200)
-			: c.json({ error: "too many concurrent runs" }, 429);
+			: c.json(
+					{
+						error: "too many concurrent runs",
+						detail: `The factory builds at most ${factoryConfig.maxConcurrentRuns} apps at a time, for all users. Submit the prompt again when a run finishes.`,
+					},
+					429,
+				);
 	}
 
 	const workflowRunId = await dispatchWorkflow(TASK_NAME, {
@@ -196,10 +213,7 @@ async function readRun(
 	try {
 		let run = await getRun(runId);
 		if (!run) return c.json({ error: "not found" }, 404);
-		if (
-			(run.status === "running" || run.status === "deleting") &&
-			run.workflowRunId
-		) {
+		if (ownedByTask(run)) {
 			await reconcileWorkflowRun(run);
 			const current = await getRun(runId);
 			// A delete that finished removed the run.
@@ -380,6 +394,14 @@ function workflowIdReader(): WorkflowIdReader {
 	};
 }
 
+/** A task run owns the status of this run: prompt-to-app or delete-app. */
+function ownedByTask(run: RunRecord): boolean {
+	return (
+		(run.status === "running" || run.status === "deleting") &&
+		Boolean(run.workflowRunId)
+	);
+}
+
 /**
  * A timeout, a crash, or a cancel stops a task before its own catch block,
  * so its row stays running or deleting. Mark that row failed. A task that
@@ -389,7 +411,6 @@ async function reconcileWorkflowRun(run: RunRecord): Promise<void> {
 	if (!run.workflowRunId || !(await claimWorkflowCheck(run.id))) return;
 
 	try {
-		const { Render } = await import("@renderinc/sdk");
 		const taskRun = await new Render().workflows.getTaskRun(run.workflowRunId);
 		if (taskRun.status !== "failed" && taskRun.status !== "canceled") return;
 
@@ -428,7 +449,6 @@ export async function dispatchWorkflow(
 	}
 
 	try {
-		const { Render } = await import("@renderinc/sdk");
 		const started = await new Render().workflows.startTask(
 			`${slug}/${taskName}`,
 			[payload],

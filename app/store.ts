@@ -70,6 +70,13 @@ export type ClaimResult =
 	| { claimed: false; reason: "duplicate"; runId: string }
 	| { claimed: false; reason: "at_capacity" };
 
+export type AppClaim =
+	| { claimed: true }
+	/** A delete of the app is in progress. */
+	| { claimed: false; reason: "deleting" }
+	/** A different run builds the app now. */
+	| { claimed: false; reason: "running" };
+
 export type DeleteClaim =
 	| { claimed: true; runIds: string[] }
 	/** A delete of the app is already in progress. */
@@ -110,7 +117,8 @@ export async function ping(): Promise<void> {
 /**
  * Run statements in one transaction that holds the lock of one app. A delete
  * takes the lock to claim the runs of the app, and a run takes it to claim an
- * app name. So a run cannot start to build an app while it is being deleted.
+ * app name. So a run cannot start to build an app while it is being deleted,
+ * or while a different run builds it.
  */
 async function withAppLock<T>(
 	user: string,
@@ -216,24 +224,33 @@ export async function claimWorkflowCheck(id: string): Promise<boolean> {
 
 /**
  * Record the app that a run builds. Refused while a delete of the same app is
- * in progress, because the delete removes what this run publishes.
+ * in progress, because the delete removes what this run publishes. Also
+ * refused while a different run builds the app: the two runs would write the
+ * same directory, and each one would wait for the deploys of the other.
  */
 export async function claimRunApp(
 	id: string,
 	user: string,
 	app: { appName: string; blueprintPath: string },
-): Promise<boolean> {
+): Promise<AppClaim> {
 	return withAppLock(user, app.appName, async (client) => {
-		const result = await client.query(
-			`update runs set app_name = $3, blueprint_path = $4, updated_at = now()
-			 where id = $1
-			   and not exists (
-			     select 1 from runs
-			     where user_name = $2 and app_name = $3 and status = 'deleting'
-			   )`,
-			[id, user, app.appName, app.blueprintPath],
+		const { rows } = await client.query<{ status: RunStatus }>(
+			`select status from runs
+			 where user_name = $1 and app_name = $2 and id <> $3
+			   and status in ('running', 'deleting')`,
+			[user, app.appName, id],
 		);
-		return result.rowCount === 1;
+		if (rows.some((row) => row.status === "deleting")) {
+			return { claimed: false, reason: "deleting" };
+		}
+		if (rows.length > 0) return { claimed: false, reason: "running" };
+
+		await client.query(
+			`update runs set app_name = $2, blueprint_path = $3, updated_at = now()
+			 where id = $1`,
+			[id, app.appName, app.blueprintPath],
+		);
+		return { claimed: true };
 	});
 }
 

@@ -1,4 +1,4 @@
-import { activeStatuses, formatDate, label, startRunsPage, truncate } from "/runs.js";
+import { activeStatuses, formatDate, startRunsPage, statusLabel, truncate } from "/runs.js";
 
 const sites = document.querySelector("#sites");
 const siteRows = document.querySelector("#site-rows");
@@ -27,6 +27,7 @@ function renderHistory(runs, selectedRunId, { select, openDeleteDialog }) {
 			name.className = "site-name";
 			name.textContent = run.appName || truncate(run.prompt, 34);
 			name.setAttribute("aria-pressed", String(selected));
+			name.dataset.focusKey = `${run.runId}:name`;
 			name.addEventListener("click", () => select(run.runId));
 			const nameCell = document.createElement("th");
 			nameCell.scope = "row";
@@ -35,7 +36,7 @@ function renderHistory(runs, selectedRunId, { select, openDeleteDialog }) {
 			const state = document.createElement("span");
 			state.className = "run-state";
 			state.dataset.status = run.status;
-			state.textContent = label(run.status);
+			state.textContent = statusLabel(run);
 
 			const remove = document.createElement("button");
 			remove.type = "button";
@@ -43,12 +44,13 @@ function renderHistory(runs, selectedRunId, { select, openDeleteDialog }) {
 			remove.textContent = "Delete";
 			remove.setAttribute("aria-label", `Delete ${run.appName || "this run"}`);
 			remove.hidden = activeStatuses.includes(run.status);
+			remove.dataset.focusKey = `${run.runId}:delete`;
 			remove.addEventListener("click", () => openDeleteDialog(run));
 
 			row.append(
 				nameCell,
 				cell(state),
-				cell(run.urls?.web ? siteLink(run.urls.web) : none()),
+				cell(run.urls?.web ? siteLink(run.urls.web, run.runId) : none()),
 				cell(generationTime(run)),
 				cell(formatDate(run.createdAt)),
 				cell(remove),
@@ -82,10 +84,11 @@ function cell(content) {
 	return td;
 }
 
-function siteLink(url) {
+function siteLink(url, runId) {
 	const anchor = dashboardLink(url, new URL(url).host);
 	anchor.className = "site-url";
 	anchor.title = url;
+	anchor.dataset.focusKey = `${runId}:url`;
 	return anchor;
 }
 
