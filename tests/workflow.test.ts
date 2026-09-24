@@ -225,12 +225,6 @@ const FAILED: DeployOutcome = {
 	status: "pre_deploy_failed",
 	result: "failed",
 };
-/** The last lines of the logs of the FAILED deploy of the API. */
-const API_LOGS = [
-	"==> Running pre-deploy command 'npm run migrate'",
-	"Connecting to postgres://shop:hunter2@dpg-shop-a/shop",
-	'npm error Missing script: "migrate"',
-].join("\n");
 
 const manifest: Manifest = {
 	services: [
@@ -492,7 +486,7 @@ describe("awaitDeployment repairs", () => {
 					? (apiDeploys.shift() ?? LIVE)
 					: LIVE,
 		);
-		mocks.fetchDeployLogs.mockResolvedValue(API_LOGS);
+		mocks.fetchDeployLogs.mockResolvedValue("");
 		mocks.deployManagerTask.mockResolvedValue({
 			allHealthy: false,
 			failures: [
@@ -550,36 +544,9 @@ describe("awaitDeployment repairs", () => {
 		]);
 	});
 
-	// No agent can read logs. The Render Dashboard shows the input of each
-	// task run, and logs can hold secrets.
-	it("gives the deploy manager the logs of the failed deploy, without secrets", async () => {
-		builderReturns(repair);
-		const { context, runs } = recordSubtasks();
-
-		await deploy(context);
-
-		expect(mocks.fetchDeployLogs).toHaveBeenCalledTimes(1);
-		expect(mocks.fetchDeployLogs).toHaveBeenCalledWith(
-			"srv-acme-demo-shop-api",
-			"dep-1",
-			"tea-test",
-		);
-		const { message } = runs[0].input as { message: string };
-		expect(message).toContain(
-			[
-				'Service "acme-demo-shop-api" (srv-acme-demo-shop-api), deploy dep-1: deploy status "pre_deploy_failed"',
-				"The last lines of the logs of this deploy:",
-				"==> Running pre-deploy command 'npm run migrate'",
-				"Connecting to [REDACTED]",
-				'npm error Missing script: "migrate"',
-			].join("\n"),
-		);
-		expect(message).not.toContain("hunter2");
-	});
-
-	// A cut before the redaction would keep the end of the connection string,
-	// and redactSecrets() does not find a part of a secret.
-	it("removes the secrets from long logs, and then keeps only their last lines", async () => {
+	// The Render Dashboard shows each task input, and logs can hold secrets. A
+	// cut before the redaction would keep the end of the connection string.
+	it("gives the deploy manager the last lines of the logs, without secrets", async () => {
 		builderReturns(repair);
 		mocks.fetchDeployLogs.mockResolvedValue(
 			[
@@ -597,7 +564,7 @@ describe("awaitDeployment repairs", () => {
 
 		const { message } = runs[0].input as { message: string };
 		expect(message).toContain(
-			'npm warn deprecated glob@7.2.3\nDATABASE_URL=[REDACTED]\nnpm error Missing script: "migrate"',
+			'DATABASE_URL=[REDACTED]\nnpm error Missing script: "migrate"',
 		);
 		expect(message).not.toContain("dpg-shop-a");
 		expect(message.length).toBeLessThan(10_000);

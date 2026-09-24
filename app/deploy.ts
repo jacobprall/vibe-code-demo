@@ -34,11 +34,7 @@ const MAX_DEPLOY_REPAIR_ROUNDS = 2;
 const SERVICE_TIMEOUT_MS = 6 * 60 * 1000;
 const DEPLOY_TIMEOUT_MS = 15 * 60 * 1000;
 const SITE_TIMEOUT_MS = 3 * 60 * 1000;
-/**
- * The end of the logs of one failed deploy that goes into the input of the
- * deploy manager. The Render Dashboard shows each task input, so keep it
- * small.
- */
+/** The Render Dashboard shows each task input, so keep the logs in it small. */
 const MAX_DEPLOY_LOG_CHARS = 4_000;
 
 export interface DeployContext {
@@ -348,28 +344,22 @@ function deployFailures(
 }
 
 /**
- * One failed deploy, as the deploy manager gets it: the service, the deploy,
- * and the last lines of its logs.
- *
- * Logs can hold secrets, and the Render Dashboard shows the input of each
- * task run. So redactSecrets() removes the secrets, and then the text is cut
- * to MAX_DEPLOY_LOG_CHARS. Do not cut first: a cut can divide a secret, and
- * redactSecrets() does not find a part of a secret.
+ * One failed deploy, with the last lines of its logs. Redact before the cut:
+ * a cut can divide a secret, and redactSecrets() does not find a part of one.
  */
 async function failedDeployReport(
 	workspaceId: string,
 	{ service, deploy }: { service: ServiceRecord; deploy: DeployOutcome },
 ): Promise<string> {
-	const heading = `Service "${service.name}" (${service.id}), deploy ${deploy.deployId ?? "none"}: deploy status "${deploy.status}"`;
-	if (!deploy.deployId) {
-		return `${heading}\nRender has no deploy of this service, so there are no logs.`;
-	}
-	const logs = redactSecrets(
-		await fetchDeployLogs(service.id, deploy.deployId, workspaceId),
-	).slice(-MAX_DEPLOY_LOG_CHARS);
-	return logs
-		? `${heading}\nThe last lines of the logs of this deploy:\n${logs}`
-		: `${heading}\nRender gave no logs for this deploy.`;
+	const logs = deploy.deployId
+		? redactSecrets(
+				await fetchDeployLogs(service.id, deploy.deployId, workspaceId),
+			).slice(-MAX_DEPLOY_LOG_CHARS)
+		: "";
+	return [
+		`Service "${service.name}" (${service.id}), deploy ${deploy.deployId ?? "none"}: deploy status "${deploy.status}"`,
+		logs ? `The last lines of its logs:\n${logs}` : "Render gave no logs.",
+	].join("\n");
 }
 
 /**
