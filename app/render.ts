@@ -202,7 +202,8 @@ async function latestDeploy(
  * the caller must redact them before they go into a task input.
  *
  * The read has no type filter, so it gets the build, the pre-deploy command,
- * and the new instance. The time range of the deploy keeps out the lines of
+ * and the new instance. The API gives the pre-deploy output as app logs, so a
+ * build filter loses it. The time range of the deploy keeps out the lines of
  * an earlier deploy. It starts at createdAt: the API does not document
  * startedAt. The logs are only diagnostic, so a read that cannot finish gives
  * no logs and does not fail the run.
