@@ -54,21 +54,13 @@ function api(): { client: SandboxesClient; ownerId?: `tea-${string}` } {
 export class Sandbox {
 	constructor(readonly id: string) {}
 
-	async exec(
-		command: string,
-		opts?: { signal?: AbortSignal },
-	): Promise<AsyncGenerator<ExecEvent>> {
+	async exec(command: string): Promise<AsyncGenerator<ExecEvent>> {
 		const { client, ownerId } = api();
-		return mapExecEvents(
-			await client.exec(this.id, command, ownerId, opts?.signal),
-		);
+		return mapExecEvents(await client.exec(this.id, command, ownerId));
 	}
 
-	async run(
-		command: string,
-		opts?: { signal?: AbortSignal },
-	): Promise<ExecResult> {
-		return collectExecOutput(await this.exec(command, opts));
+	async run(command: string): Promise<ExecResult> {
+		return collectExecOutput(await this.exec(command));
 	}
 
 	async mustRun(command: string, label: string): Promise<string> {

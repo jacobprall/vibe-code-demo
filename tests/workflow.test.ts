@@ -290,9 +290,10 @@ function withApi(changes: Partial<Service>): Manifest {
 }
 
 function builderReturns(repaired: Manifest): void {
-	mocks.buildTask.mockResolvedValue(
-		JSON.stringify({ summary: "Fixed the migration.", manifest: repaired }),
-	);
+	mocks.buildTask.mockResolvedValue({
+		summary: "Fixed the migration.",
+		manifest: repaired,
+	});
 }
 
 /** The API service in a Blueprint, after a YAML parse. */
@@ -487,18 +488,16 @@ describe("awaitDeployment repairs", () => {
 					? (apiDeploys.shift() ?? LIVE)
 					: LIVE,
 		);
-		mocks.deployManagerTask.mockResolvedValue(
-			JSON.stringify({
-				allHealthy: false,
-				failures: [
-					{
-						serviceName: "acme-demo-shop-api",
-						status: "pre_deploy_failed",
-						diagnosis: 'npm error Missing script: "migrate"',
-					},
-				],
-			}),
-		);
+		mocks.deployManagerTask.mockResolvedValue({
+			allHealthy: false,
+			failures: [
+				{
+					serviceName: "acme-demo-shop-api",
+					status: "pre_deploy_failed",
+					diagnosis: 'npm error Missing script: "migrate"',
+				},
+			],
+		});
 		mocks.waitForHttpOk.mockResolvedValue({
 			ok: true,
 			status: 200,
@@ -1312,22 +1311,18 @@ describe("promptToApp", () => {
 		process.env.APPS_REPO = "acme/apps";
 		process.env.RENDER_WORKSPACE_ID = "tea-test";
 		process.env.RENDER_API_KEY = "rnd_test";
-		mocks.architectTask.mockResolvedValue(
-			JSON.stringify({
-				appName: "shop",
-				summary: "A storefront for handmade walnut furniture.",
-				tiers: [
-					{ kind: "static_site", reason: "The catalog does not change." },
-				],
-				assetQueries: [],
-				brief: {
-					pages: ["Home"],
-					features: [],
-					voice: "Warm and plain",
-					content: "Walnut chairs, oak tables, and ash stools.",
-				},
-			}),
-		);
+		mocks.architectTask.mockResolvedValue({
+			appName: "shop",
+			summary: "A storefront for handmade walnut furniture.",
+			tiers: [{ kind: "static_site", reason: "The catalog does not change." }],
+			assetQueries: [],
+			brief: {
+				pages: ["Home"],
+				features: [],
+				voice: "Warm and plain",
+				content: "Walnut chairs, oak tables, and ash stools.",
+			},
+		});
 	});
 
 	// The delete would remove what the run publishes.
@@ -1413,8 +1408,8 @@ describe("promptToApp", () => {
 		const VICTIM_DIR = appPath("victim", "site");
 		const PUBLISHED_PATHS = ["apps/demo/shop", factoryConfig.blueprintPath];
 
-		function builderOutput(built: Manifest): string {
-			return JSON.stringify({ summary: "A storefront.", manifest: built });
+		function builderOutput(built: Manifest) {
+			return { summary: "A storefront.", manifest: built };
 		}
 
 		beforeEach(() => {

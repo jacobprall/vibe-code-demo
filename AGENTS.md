@@ -118,7 +118,7 @@ app/
   contracts.ts   Zod schemas for API input, agent output, and the stored spec
   gateway.ts     Bearer auth, body cap, dispatch, health, status
   agents.ts      The four agents, their prompts, and agentTask()
-  claude.ts      The Agent type, runClaude(), md, parseModelJson, agentJson
+  claude.ts      The Agent type, runClaude(), md, agentJson
   tools.ts       Sandbox tools, asset tools, and the Tool contract
   policy.ts      checkToolCall, path rules, MCP allowlist, secret redaction
   sandbox.ts     Render Sandboxes, shellEscape, Postgres in the sandbox

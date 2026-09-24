@@ -22,7 +22,6 @@ export interface ToolContext {
 	 * outside the app.
 	 */
 	readonly workDir: string;
-	readonly signal?: AbortSignal;
 }
 
 export interface ToolResult {
@@ -145,7 +144,6 @@ export const sandboxSearch: Tool<typeof searchSchema> = {
 
 		const { output, exitCode } = await ctx.sandbox.run(
 			args.map(shellEscape).join(" "),
-			{ signal: ctx.signal },
 		);
 		// ripgrep exits 1 when there are simply no matches.
 		if (exitCode === 1) return { content: "(no matches)" };
@@ -181,9 +179,7 @@ export const sandboxExec: Tool<typeof execSchema> = {
 		if ("error" in cwd) return pathError(cwd.error);
 
 		const command = `cd ${shellEscape(cwd.path)} && ${input.command}`;
-		const { output, exitCode } = await ctx.sandbox.run(command, {
-			signal: ctx.signal,
-		});
+		const { output, exitCode } = await ctx.sandbox.run(command);
 		const body = truncate(output) || "(no output)";
 		return {
 			content: exitCode === 0 ? body : `Exit code: ${exitCode}\n${body}`,
@@ -218,7 +214,6 @@ export const sandboxApplyPatch: Tool<typeof applyPatchSchema> = {
 
 		const { output, exitCode } = await ctx.sandbox.run(
 			`cd ${shellEscape(cwd.path)} && git apply --whitespace=nowarn ${patchPath} && rm ${patchPath}`,
-			{ signal: ctx.signal },
 		);
 		if (exitCode !== 0) {
 			return {
