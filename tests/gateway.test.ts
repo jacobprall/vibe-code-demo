@@ -10,10 +10,7 @@ const mocks = vi.hoisted(() => ({
 	getRun: vi.fn(),
 	listRunsByUser: vi.fn(),
 	ping: vi.fn(),
-	reopenPausedRun: vi.fn(),
 	setDeleteWorkflowRunId: vi.fn(),
-	setRunApp: vi.fn(),
-	setRunUrls: vi.fn(),
 	setWorkflowRunId: vi.fn(),
 	startTask: vi.fn(),
 	getTaskRun: vi.fn(),
@@ -29,10 +26,7 @@ vi.mock("../app/store.js", () => ({
 	getRun: mocks.getRun,
 	listRunsByUser: mocks.listRunsByUser,
 	ping: mocks.ping,
-	reopenPausedRun: mocks.reopenPausedRun,
 	setDeleteWorkflowRunId: mocks.setDeleteWorkflowRunId,
-	setRunApp: mocks.setRunApp,
-	setRunUrls: mocks.setRunUrls,
 	setWorkflowRunId: mocks.setWorkflowRunId,
 }));
 
@@ -73,11 +67,8 @@ beforeEach(() => {
 	mocks.finishRun.mockResolvedValue(undefined);
 	mocks.listRunsByUser.mockResolvedValue([]);
 	mocks.ping.mockResolvedValue(undefined);
-	mocks.reopenPausedRun.mockResolvedValue(undefined);
 	mocks.startTask.mockResolvedValue({ taskRunId: "trn-1" });
 	mocks.claimWorkflowCheck.mockResolvedValue(false);
-	mocks.setRunApp.mockResolvedValue(undefined);
-	mocks.setRunUrls.mockResolvedValue(undefined);
 	mocks.setWorkflowRunId.mockResolvedValue(undefined);
 
 	process.env.FACTORY_API_KEY = KEY;
@@ -112,6 +103,17 @@ describe("authentication", () => {
 	it("rejects a wrong bearer token", async () => {
 		const response = await post({ prompt: PROMPT }, { key: "nope" });
 		expect(response.status).toBe(401);
+	});
+
+	// RFC 6750 gives 400 for a header that is not a bearer token.
+	it("rejects an authorization header that is not a bearer token", async () => {
+		const response = await createGateway().request("/v1/apps", {
+			method: "POST",
+			headers: { authorization: UI_AUTH, "content-type": "application/json" },
+			body: JSON.stringify({ prompt: PROMPT }),
+		});
+		expect(response.status).toBe(400);
+		expect(mocks.claimRun).not.toHaveBeenCalled();
 	});
 
 	it("rejects a body over the size cap", async () => {
@@ -303,88 +305,46 @@ describe("status", () => {
 		);
 	});
 
-	it("recovers a completed workflow that did not finalize its database row", async () => {
-		const running = {
-			id: "6f9619ff-8b86-d011-b42d-00cf4fc964ff",
-			idempotencyKey: "k",
-			prompt: PROMPT,
-			user: "demo",
-			status: "running",
-			stage: "smoke_testing",
-			progress: "Checking the app",
-			workflowRunId: "trn-1",
-			appName: "furniture-catalog",
-			webUrl: "https://vibe-demo-furniture-catalog-web.onrender.com",
-			apiUrl: null,
-			blueprintPath: "apps/demo/furniture-catalog/render.yaml",
-			summary: null,
-			createdAt: "2026-01-01T00:00:00.000Z",
-			updatedAt: "2026-01-01T00:10:00.000Z",
-		};
-		mocks.getRun.mockResolvedValue(running);
-		mocks.claimWorkflowCheck.mockResolvedValue(true);
-		mocks.getTaskRun.mockResolvedValue({
-			status: "succeeded",
-			results: [
-				{
-					status: "deployed",
-					user: "demo",
-					appName: "furniture-catalog",
-					webUrl: running.webUrl,
-					apiUrl: null,
-					summary: "Deployed.",
-				},
-			],
+	function readV1Run() {
+		return createGateway().request(`/v1/apps/${RUN_ID}`, {
+			headers: { authorization: `Bearer ${KEY}` },
 		});
+	}
 
-		const response = await createGateway().request(
-			"/v1/apps/6f9619ff-8b86-d011-b42d-00cf4fc964ff",
-			{ headers: { authorization: `Bearer ${KEY}` } },
-		);
+	// prompt-to-app writes its result before it returns.
+	it("does not change the row of a task run that succeeded", async () => {
+		mocks.getRun.mockResolvedValue(storedRun({ status: "running" }));
+		mocks.claimWorkflowCheck.mockResolvedValue(true);
+		mocks.getTaskRun.mockResolvedValue({ status: "succeeded", results: [] });
 
-		expect(response.status).toBe(200);
-		expect(mocks.finishRun).toHaveBeenCalledWith(
-			running.id,
-			"deployed",
-			{ summary: "Deployed." },
-		);
+		expect((await readV1Run()).status).toBe(200);
+		expect(mocks.getTaskRun).toHaveBeenCalledWith("trn-1");
+		expect(mocks.finishRun).not.toHaveBeenCalled();
 	});
 
-	it("keeps paused workflows running and repairs prior false failures", async () => {
-		const base = {
-			id: "6f9619ff-8b86-d011-b42d-00cf4fc964ff",
-			idempotencyKey: "k",
-			prompt: PROMPT,
-			user: "demo",
-			stage: "waiting_for_deploys",
-			progress: null,
-			workflowRunId: "trn-1",
-			appName: "furniture-catalog",
-			webUrl: "https://vibe-demo-furniture-catalog-web.onrender.com",
-			apiUrl: null,
-			blueprintPath: "apps/demo/furniture-catalog/render.yaml",
-			createdAt: "2026-01-01T00:00:00.000Z",
-			updatedAt: "2026-01-01T00:10:00.000Z",
-		};
-		const failed = {
-			...base,
-			status: "failed",
-			summary: "Workflow paused: no error was reported",
-		};
-		const repaired = { ...base, status: "running", summary: null };
-		mocks.getRun.mockResolvedValueOnce(failed).mockResolvedValue(repaired);
+	it("keeps a run running while its task run is paused", async () => {
+		mocks.getRun.mockResolvedValue(storedRun({ status: "running" }));
 		mocks.claimWorkflowCheck.mockResolvedValue(true);
 		mocks.getTaskRun.mockResolvedValue({ status: "paused", results: [] });
 
-		const response = await createGateway().request(
-			"/v1/apps/6f9619ff-8b86-d011-b42d-00cf4fc964ff",
-			{ headers: { authorization: `Bearer ${KEY}` } },
-		);
-
-		expect(response.status).toBe(200);
-		expect(mocks.reopenPausedRun).toHaveBeenCalledWith(base.id);
+		expect((await readV1Run()).status).toBe(200);
 		expect(mocks.finishRun).not.toHaveBeenCalled();
 	});
+
+	// A timeout stops the task before its catch block can write the failure.
+	it.each(["failed", "canceled"])(
+		"marks a run failed when its task run is %s",
+		async (status) => {
+			mocks.getRun.mockResolvedValue(storedRun({ status: "running" }));
+			mocks.claimWorkflowCheck.mockResolvedValue(true);
+			mocks.getTaskRun.mockResolvedValue({ status, error: "timed out" });
+
+			expect((await readV1Run()).status).toBe(200);
+			expect(mocks.finishRun).toHaveBeenCalledWith(RUN_ID, "failed", {
+				summary: `Workflow ${status}: timed out`,
+			});
+		},
+	);
 
 	it("404s an id that is not a run id without querying Postgres", async () => {
 		const response = await createGateway().request("/v1/apps/not-a-uuid", {

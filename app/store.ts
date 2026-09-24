@@ -200,29 +200,6 @@ export async function claimWorkflowCheck(id: string): Promise<boolean> {
 	return result.rowCount === 1;
 }
 
-/** Repair rows misclassified when Workflows briefly reported `paused`. */
-export async function reopenPausedRun(id: string): Promise<void> {
-	await db().query(
-		`update runs
-		 set status = 'running', progress = 'Workflow paused; waiting to resume',
-		     updated_at = now()
-		 where id = $1 and status = 'failed'
-		   and summary like 'Workflow paused:%'`,
-		[id],
-	);
-}
-
-export async function setRunApp(
-	id: string,
-	app: { appName: string; blueprintPath: string },
-): Promise<void> {
-	await db().query(
-		`update runs set app_name = $2, blueprint_path = $3, updated_at = now()
-		 where id = $1`,
-		[id, app.appName, app.blueprintPath],
-	);
-}
-
 /**
  * Record the app that a run builds. Refused while a delete of the same app is
  * in progress, because the delete removes what this run publishes.

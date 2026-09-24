@@ -393,9 +393,10 @@ Copy `.env.example` when setting up locally.
 
 All deploy and HTTP waits have deadlines and heartbeat the database. The
 gateway also stores the Render task-run ID and periodically reconciles a
-`running` or `deleting` row with Workflows. If the task succeeded, failed, or
-was canceled without finalizing Postgres, the next status poll repairs the row
-and releases its concurrency slot.
+`running` or `deleting` row with Workflows. If the task failed or was canceled
+before it wrote its result, for example at a timeout, the next status poll
+marks the row failed and releases its concurrency slot. A task that succeeds
+writes its result before it returns.
 
 A service or deploy wait does a failed Render read again after five seconds,
 and `progress` shows the attempt and the error. Five failures in sequence end
