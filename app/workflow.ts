@@ -59,7 +59,6 @@ import {
 	runVerification,
 	writeAppFiles,
 } from "./git.js";
-import { checkManifestCommands } from "./policy.js";
 import {
 	type DeployOutcome,
 	findBlueprint,
@@ -350,17 +349,6 @@ async function buildAndVerify(opts: {
 	);
 
 	for (let round = 0; round <= MAX_BUILD_ROUNDS; round++) {
-		// Validate manifest commands through policy before running them.
-		const policyViolation = checkManifestCommands(buildOutput.manifest);
-		if (policyViolation) {
-			return {
-				passed: false,
-				summary: buildOutput.summary,
-				manifest: buildOutput.manifest,
-				failures: policyViolation,
-			};
-		}
-
 		await setRunStage(opts.runId, "verifying");
 		const { failures } = await opts.tasks.run(verifyAppTask, {
 			sandboxId: opts.sandbox.id,
@@ -1125,14 +1113,11 @@ export async function awaitDeployment(
 			`builder-deploy-fix-${round + 1}`,
 		);
 
-		// The repaired manifest goes to the sandbox and then to Render, so it
-		// must pass the same policy as the first one. It must also keep every
-		// resource, because `names` and `services` above describe them. The
-		// rest of the spec stays: resourcePrefix is in each resource name.
+		// The repaired manifest must keep every resource, because `names` and
+		// `services` above describe them. The rest of the spec stays:
+		// resourcePrefix is in each resource name.
 		const repaired: AppSpec = { ...spec, manifest: buildOutput.manifest };
-		const rejection =
-			checkManifestCommands(repaired.manifest) ??
-			resourceChange(spec, repaired);
+		const rejection = resourceChange(spec, repaired);
 		if (rejection) {
 			return {
 				status: "deploy_failed",

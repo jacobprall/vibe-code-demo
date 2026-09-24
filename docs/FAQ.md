@@ -110,7 +110,7 @@ Architecture overview and how Render products fit together: [README.md](README.m
 | **Sandbox isolation** | Agents run code only in a throwaway Sandbox that holds only the app of the run: no other user's app, and no GitHub token. No access to the host, other services, or production databases. |
 | **Read-only MCP** | Architect and Deploy Manager get a strict allowlist of MCP tools — read-only inspection only. Enforced in code, not just prompts. |
 | **No git for agents** | Agents cannot push. Workflow code copies the app's files into a clean sandbox, commits only that app's directory and the root Blueprint, pushes, and verifies the remote SHA. |
-| **Tool-call gating** | `PreToolUse` hook blocks destructive commands (`rm -rf`, `git push`, `DROP TABLE`), secret exfiltration, and paths outside the app directory. |
+| **Tool-call gating** | `PreToolUse` hook blocks paths outside the app directory and every Render tool that is not read-only. It does not filter shell commands: the sandbox, which holds no credential, limits what a command can reach. |
 | **Secret separation** | Gateway never sees Anthropic key or GitHub credentials. Model-generated text is redacted for secret-shaped strings. |
 | **Capability-based, not prompt-based** | Adding a new agent capability requires code changes to the tool allowlist — not a prompt edit. |
 
