@@ -40,7 +40,6 @@ import {
 	type PublishAppInput,
 	publishAppInputSchema,
 	type Service,
-	type TierKind,
 	type VerifyAppInput,
 	verifyAppInputSchema,
 	type WaitForSyncsInput,
@@ -244,8 +243,6 @@ async function run(
 			return { status: "build_failed", summary: built.failures.slice(0, 2_000) };
 		}
 
-		const manifest = built.manifest;
-		const tiers = manifestToTiers(manifest);
 		const spec: AppSpec = {
 			user,
 			appName,
@@ -253,9 +250,7 @@ async function run(
 			summary: plan.summary,
 			createdAt: new Date().toISOString(),
 			resourcePrefix: factoryConfig.resourcePrefix,
-			tiers,
-			manifest,
-			notes: [],
+			manifest: built.manifest,
 		};
 
 		// ── Publish ─────────────────────────────────────────────────────
@@ -288,32 +283,6 @@ async function run(
 			.terminate()
 			.catch((error) => console.error("Failed to terminate sandbox:", error));
 	}
-}
-
-/** Derive the tiers list from the manifest for storage. */
-function manifestToTiers(manifest: Manifest): TierKind[] {
-	const tiers: TierKind[] = [];
-	for (const service of manifest.services) {
-		if (service.kind === "static_site" && !tiers.includes("static_site")) {
-			tiers.push("static_site");
-		}
-		if (service.kind === "web_service" && !tiers.includes("web_service")) {
-			tiers.push("web_service");
-		}
-	}
-	if ((manifest.databases ?? []).length > 0) {
-		tiers.push("postgres");
-	}
-	return tiers;
-}
-
-/**
- * The spec after a deploy repair. Only the manifest and its tiers change.
- * Keep resourcePrefix, because it is in the name of every Render resource of
- * the app. Keep createdAt, because it records the first build.
- */
-function withManifest(spec: AppSpec, manifest: Manifest): AppSpec {
-	return { ...spec, tiers: manifestToTiers(manifest), manifest };
 }
 
 /* ── Imagery ──────────────────────────────────────────────────────────── */
@@ -884,17 +853,17 @@ async function writeRootBlueprint(sandbox: Sandbox): Promise<string[]> {
 }
 
 /**
- * A spec counts only in the directory of the app that it names. The builder
- * writes the files of its app directory, and one of them can be an airo.json
- * that names a different app, with resources that no run verified.
+ * The spec of each app in the clone. A spec counts only in the directory of
+ * the app that it names, so a file in one app directory cannot declare the
+ * resources of a different app.
  */
 async function readAllSpecs(sandbox: Sandbox): Promise<AppSpec[]> {
 	const root = `${factoryConfig.repoDir}/${factoryConfig.appsDir}`;
 	const found = await sandbox.run(
-		`find ${shellEscape(root)} -mindepth 3 -maxdepth 3 \\( -name factory.json -o -name airo.json \\) -print 2>/dev/null || true`,
+		`find ${shellEscape(root)} -mindepth 3 -maxdepth 3 -name factory.json -print 2>/dev/null || true`,
 	);
 
-	const specs = new Map<string, { spec: AppSpec; current: boolean }>();
+	const specs: AppSpec[] = [];
 	for (const path of found.output.split("\n").map((line) => line.trim())) {
 		if (!path.startsWith(`${root}/`)) continue;
 		const raw = await sandbox.run(`cat ${shellEscape(path)}`);
@@ -912,14 +881,12 @@ async function readAllSpecs(sandbox: Sandbox): Promise<AppSpec[]> {
 				);
 				continue;
 			}
-			const key = `${spec.user}/${spec.appName}`;
-			const current = path.endsWith("/factory.json");
-			if (current || !specs.has(key)) specs.set(key, { spec, current });
+			specs.push(spec);
 		} catch {
 			console.warn(JSON.stringify({ event: "skipped_app_spec", path }));
 		}
 	}
-	return [...specs.values()].map(({ spec }) => spec);
+	return specs;
 }
 
 /** A sandbox that holds a clone of the apps repository, and how to push it. */
@@ -1041,7 +1008,6 @@ export async function awaitDeployment(
 				ctx.summary,
 				`Committed to ${ctx.repoUrl} on ${factoryConfig.branch}, but no Blueprint in workspace ${workspaceId} is watching ${factoryConfig.blueprintPath}.`,
 				"Create one once in that workspace in the Render Dashboard (New > Blueprint) and every later run deploys on push.",
-				...spec.notes,
 			].join("\n\n"),
 		};
 	}
@@ -1167,8 +1133,9 @@ export async function awaitDeployment(
 
 		// The repaired manifest goes to the sandbox and then to Render, so it
 		// must pass the same policy as the first one. It must also keep every
-		// resource, because `names` and `services` above describe them.
-		const repaired = withManifest(spec, buildOutput.manifest);
+		// resource, because `names` and `services` above describe them. The
+		// rest of the spec stays: resourcePrefix is in each resource name.
+		const repaired: AppSpec = { ...spec, manifest: buildOutput.manifest };
 		const rejection =
 			checkManifestCommands(repaired.manifest) ??
 			resourceChange(spec, repaired);
@@ -1272,7 +1239,6 @@ export async function awaitDeployment(
 		summary: [
 			ctx.summary,
 			`Deployed ${[...services.values()].length} service(s)${hasDb ? " and a Postgres database" : ""} from ${factoryConfig.blueprintPath} (Blueprint ${blueprint.id}).`,
-			...spec.notes,
 		].join("\n\n"),
 	};
 }
@@ -1498,8 +1464,8 @@ const DELETE_STEP = {
 };
 
 interface RemovedFromBlueprint {
-	/** As in factory.json. When it is unset, the legacy prefix names the resources. */
-	resourcePrefix?: string;
+	/** As in factory.json. It is in the name of each Render resource of the app. */
+	resourcePrefix: string;
 	/** The commit that took the app out, or null if an earlier attempt pushed it. */
 	commit: string | null;
 	/** When this attempt pushed that commit, or null. */
@@ -1658,31 +1624,28 @@ async function readSpec(
 	user: string,
 	appName: string,
 ): Promise<AppSpec | null> {
-	for (const file of ["factory.json", "airo.json"]) {
-		const path = `${appPath(user, appName)}/${file}`;
-		const exists = await sandbox.run(`test -e ${shellEscape(path)}`);
-		if (exists.exitCode !== 0) continue;
+	const path = `${appPath(user, appName)}/factory.json`;
+	const exists = await sandbox.run(`test -e ${shellEscape(path)}`);
+	if (exists.exitCode !== 0) return null;
 
-		const raw = await sandbox.readFile(path);
-		let value: unknown = null;
-		try {
-			value = JSON.parse(raw);
-		} catch {
-			// Reported below with the schema failure.
-		}
-		const parsed = appSpecSchema.safeParse(value);
-		if (
-			!parsed.success ||
-			parsed.data.user !== user ||
-			parsed.data.appName !== appName
-		) {
-			throw new Error(
-				`${appRelativePath(user, appName)}/${file} is not a valid spec of ${user}/${appName}, so the delete stopped.`,
-			);
-		}
-		return parsed.data;
+	const raw = await sandbox.readFile(path);
+	let value: unknown = null;
+	try {
+		value = JSON.parse(raw);
+	} catch {
+		// Reported below with the schema failure.
 	}
-	return null;
+	const parsed = appSpecSchema.safeParse(value);
+	if (
+		!parsed.success ||
+		parsed.data.user !== user ||
+		parsed.data.appName !== appName
+	) {
+		throw new Error(
+			`${appRelativePath(user, appName)}/factory.json is not a valid spec of ${user}/${appName}, so the delete stopped.`,
+		);
+	}
+	return parsed.data;
 }
 
 /* ── Prompts ──────────────────────────────────────────────────────────── */
@@ -1820,8 +1783,7 @@ function appReadme(spec: AppSpec, repoUrl: string): string {
 		"",
 		"## Infrastructure",
 		"",
-		...spec.tiers.map((tier) => `- ${tier}`),
-		...spec.notes.map((note) => `- ${note}`),
+		...declaredResources(spec).map((resource) => `- ${resource}`),
 		"",
 		"## Deploying this app on its own",
 		"",

@@ -11,15 +11,11 @@ const POLL_INTERVAL_MS = 10_000;
 const TIMEOUT_MS = 45 * 60 * 1000;
 
 const gateway = (
-	process.env.FACTORY_GATEWAY_URL ??
-	process.env.AIRO_GATEWAY_URL ??
-	"http://localhost:3000"
+	process.env.FACTORY_GATEWAY_URL ?? "http://localhost:3000"
 ).replace(/\/$/, "");
-const key =
-	process.env.FACTORY_API_KEY?.trim() || process.env.AIRO_API_KEY?.trim();
+const key = process.env.FACTORY_API_KEY?.trim();
 const prompt = process.argv.slice(2).join(" ").trim() || DEFAULT_PROMPT;
-const user =
-	process.env.FACTORY_USER?.trim() || process.env.AIRO_USER?.trim() || "demo";
+const user = process.env.FACTORY_USER?.trim() || "demo";
 
 if (!key) {
 	console.error(red("FACTORY_API_KEY is not set."));

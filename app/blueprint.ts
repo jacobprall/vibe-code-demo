@@ -19,9 +19,6 @@
 import { factoryConfig, appRelativePath } from "../factory.config.js";
 import type { AppSpec, Manifest, Service } from "./contracts.js";
 
-// Specs written before the neutral rename did not persist their prefix.
-const LEGACY_RESOURCE_PREFIX = "airo";
-
 /** Render requires a project to have an environment; an app needs only one. */
 const ENVIRONMENT = "production";
 
@@ -49,7 +46,7 @@ export function resourceStem(
 	spec: Pick<AppSpec, "resourcePrefix" | "user" | "appName">,
 ): string {
 	return [
-		spec.resourcePrefix ?? LEGACY_RESOURCE_PREFIX,
+		spec.resourcePrefix,
 		spec.user.slice(0, 12),
 		spec.appName.slice(0, 24),
 	].join("-");

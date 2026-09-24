@@ -119,7 +119,7 @@ Architecture overview and how Render products fit together: [README.md](README.m
 ## Common questions
 
 **Q: Can it build any app?**
-A: It builds full-stack apps with a static site frontend, a Node.js API, and Postgres. The supported primitives are `static_site`, `web_service`, and `postgres`. `key_value` is defined in the schema but not wired — it's a deliberate extension point. The template is Vite + React + Tailwind + Hono + node-postgres.
+A: It builds full-stack apps with a static site frontend, a Node.js API, and Postgres. The supported primitives are `static_site`, `web_service`, and `postgres`. AGENTS.md shows how to add another, such as Key Value. The template is Vite + React + Tailwind + Hono + node-postgres.
 
 **Q: What if the build fails?**
 A: The workflow has a repair loop — up to 2 build-fix rounds with the builder. If it still fails, the run ends as `build_failed` with the failure reason. In the Render Dashboard, each verification is a `verify-app` run under the `prompt-to-app` run, with its failures in its result. The commit and push is a `publish-app` run.

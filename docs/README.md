@@ -427,8 +427,7 @@ Run `npm run doctor` to verify factory and Blueprint wiring before debugging ind
 
 - **Render primitives:** extend the manifest contract, Blueprint generator, and
   verification together. Keeping that path closed forces each resource type to
-  be modeled deliberately instead of accepting arbitrary agent-authored YAML;
-  the current `key_value` mismatch is called out under [Current limitations](#current-limitations).
+  be modeled deliberately instead of accepting arbitrary agent-authored YAML.
 - **Agent roles:** add a task only when a distinct context or capability
   boundary is useful. Grant sandbox or Render tools explicitly and keep the
   allowlist test as the executable access review.
@@ -512,8 +511,6 @@ Implementation details and invariants for contributors are in [AGENTS.md](../AGE
   after 15 minutes, and a workspace only gets one free Postgres.
 - The sandbox's Postgres is a fresh 18 with no extensions installed, so an app
   that needs one will pass verification only if it installs it itself.
-- `key_value` is in `TIER_KINDS` and nowhere else, so an architect that asks
-  for one gets nothing and no warning.
 - No reviewer stage or step-level resumability. Terminal Workflows runs are
   reconciled.
 - A failed run is final. Render Workflows does not retry `prompt-to-app`,

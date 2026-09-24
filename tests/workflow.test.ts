@@ -277,9 +277,7 @@ const spec: AppSpec = {
 	// Not the default prefix. If a repair makes a new spec instead of a copy,
 	// every resource name changes and these tests fail.
 	resourcePrefix: "acme",
-	tiers: ["static_site", "web_service", "postgres"],
 	manifest,
-	notes: [],
 };
 
 /** A repair that changes only how the API deploys: no source file changes. */
@@ -314,9 +312,9 @@ function apiBlock(blueprint: string | undefined) {
 /** The in-memory file system of each fake sandbox. */
 const filesystems = new WeakMap<Sandbox, Map<string, string>>();
 
-/** Specs as `find` in readAllSpecs() lists them: apps/<user>/<app>/<file>. */
+/** Specs as `find` in readAllSpecs() lists them: apps/<user>/<app>/factory.json. */
 const SPEC_PATH = new RegExp(
-	`^${factoryConfig.repoDir}/${factoryConfig.appsDir}/[^/]+/[^/]+/(?:factory|airo)\\.json$`,
+	`^${factoryConfig.repoDir}/${factoryConfig.appsDir}/[^/]+/[^/]+/factory\\.json$`,
 );
 
 /**
@@ -1196,25 +1194,6 @@ describe("removeApp", () => {
 		expect(fake.sandbox.terminate).toHaveBeenCalledTimes(1);
 	});
 
-	it("deletes an app that has only the legacy spec", async () => {
-		clone([
-			[`${APP_DIR}/airo.json`, json({ ...spec, resourcePrefix: undefined })],
-			[APP_SOURCE, STOREFRONT_HTML],
-			[CAFE_SPEC, json(cafe)],
-		]);
-
-		await removeApp(tasks, SHOP_APP);
-
-		// The task input has no resourcePrefix, as JSON drops an unset field.
-		expect(mocks.deleteAppResources).toHaveBeenCalledWith(
-			{ user: "demo", appName: "shop" },
-			expect.anything(),
-		);
-		expect(
-			[...files.keys()].filter((path) => path.startsWith(APP_DIR)),
-		).toEqual([]);
-	});
-
 	// A delete of one app changes no file of another app.
 	it("commits only the directory of the app and the root Blueprint", async () => {
 		await removeApp(tasks, SHOP_APP);
@@ -1648,13 +1627,28 @@ describe("promptToApp", () => {
 			);
 		});
 
-		// The root Blueprint takes each spec of the repository. A spec in the
-		// app directory once added resources that no run verified.
-		it("leaves a spec that names a different app out of the root Blueprint", async () => {
+		// publish-app writes the spec of the run over a factory.json of the
+		// builder, so a build cannot add resources that no run verified.
+		it("replaces a factory.json that the builder wrote", async () => {
 			buildFiles.set(
-				`${APP_DIR}/airo.json`,
+				APP_SPEC,
 				json({ ...victim, user: "demo", appName: "evil" }),
 			);
+
+			await promptToApp.func(tasks, INPUT);
+
+			expect(JSON.parse(files.get(APP_SPEC) ?? "")).toMatchObject({
+				user: "demo",
+				appName: "shop",
+			});
+			expect(files.get(ROOT_BLUEPRINT)).not.toContain("demo-evil");
+		});
+
+		// The root Blueprint takes each spec of the repository, but only in the
+		// directory of the app that it names.
+		it("leaves a spec that names a different app out of the root Blueprint", async () => {
+			const decoy = `${appPath("demo", "decoy")}/factory.json`;
+			files.set(decoy, json({ ...victim, user: "demo", appName: "evil" }));
 
 			await promptToApp.func(tasks, INPUT);
 
@@ -1664,7 +1658,7 @@ describe("promptToApp", () => {
 			expect(root).not.toContain("demo-evil");
 			expect(logged("warn")).toContainEqual({
 				event: "skipped_app_spec",
-				path: `${APP_DIR}/airo.json`,
+				path: decoy,
 				reason: "it names demo/evil",
 			});
 		});

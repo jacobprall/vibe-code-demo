@@ -268,33 +268,36 @@ describe("deleteAppInputSchema", () => {
 });
 
 describe("appSpecSchema", () => {
+	const spec = {
+		user: "demo",
+		appName: "furniture-catalog",
+		prompt: "Create an online catalog to sell handcrafted furniture",
+		summary: "A catalog.",
+		createdAt: "2026-01-01T00:00:00.000Z",
+		resourcePrefix: "vibe",
+		manifest: validManifest,
+	};
+
 	it("keeps deletedAt, which takes an app out of the root Blueprint", () => {
-		const spec = {
-			user: "demo",
-			appName: "furniture-catalog",
-			prompt: "Create an online catalog to sell handcrafted furniture",
-			summary: "A catalog.",
-			createdAt: "2026-01-01T00:00:00.000Z",
-			tiers: ["static_site"],
-			manifest: validManifest,
-			notes: [],
-			deletedAt: "2026-02-01T00:00:00.000Z",
-		};
-		expect(appSpecSchema.parse(spec).deletedAt).toBe(spec.deletedAt);
+		const deleting = { ...spec, deletedAt: "2026-02-01T00:00:00.000Z" };
+		expect(appSpecSchema.parse(deleting).deletedAt).toBe(deleting.deletedAt);
 	});
 
 	it("round-trips the spec committed beside a generated app", () => {
-		const spec = {
-			user: "demo",
-			appName: "furniture-catalog",
-			prompt: "Create an online catalog to sell handcrafted furniture",
-			summary: "A catalog.",
-			createdAt: new Date().toISOString(),
-			tiers: ["static_site"],
-			manifest: validManifest,
-			notes: [],
-		};
 		expect(appSpecSchema.parse(JSON.parse(JSON.stringify(spec)))).toEqual(spec);
+	});
+
+	// The resource names come from the prefix in the spec, never from a default.
+	it("requires resourcePrefix", () => {
+		const { resourcePrefix: _, ...unprefixed } = spec;
+		expect(appSpecSchema.safeParse(unprefixed).success).toBe(false);
+	});
+
+	// Earlier specs in the apps repository also hold tiers and notes.
+	it("reads a spec with fields that the factory no longer writes", () => {
+		expect(
+			appSpecSchema.parse({ ...spec, tiers: ["static_site"], notes: [] }),
+		).toEqual(spec);
 	});
 });
 

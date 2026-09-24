@@ -18,12 +18,6 @@ export function requireEnv(name: string): string {
 	return value;
 }
 
-function envWithLegacyAlias(name: string, legacyName: string): string {
-	const value = process.env[name]?.trim() || process.env[legacyName]?.trim();
-	if (!value) throw new Error(`${name} is not set`);
-	return value;
-}
-
 /**
  * The one repository generated apps live in. Every run adds a directory under
  * apps/<user>/<app> and updates the Blueprint at the repository root; Render
@@ -48,7 +42,7 @@ export function appsRepo(): Repository {
 
 /** The bearer token callers present to the public API. */
 export function apiKey(): string {
-	const key = envWithLegacyAlias("FACTORY_API_KEY", "AIRO_API_KEY");
+	const key = requireEnv("FACTORY_API_KEY");
 	if (key.length < 24) {
 		throw new Error("FACTORY_API_KEY must be at least 24 characters");
 	}

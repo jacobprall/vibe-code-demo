@@ -34,7 +34,6 @@ const ENV_ALLOWLIST = [
 export interface Agent {
 	/** Also the registered Render task name. Must be unique and stable. */
 	readonly id: string;
-	readonly description?: string;
 	readonly model: ModelTier;
 	readonly prompt: string;
 	/** Adaptive-thinking depth. Lower effort reduces latency for stage demos. */
