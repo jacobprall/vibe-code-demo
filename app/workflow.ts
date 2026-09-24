@@ -782,11 +782,12 @@ export const publishAppTask = task(
 		if ("error" in built) {
 			throw new Error(`publish-app did not copy the app. ${built.error}`);
 		}
-		const commit = await inAppsClone(PUBLISH_TIMEOUT_SECONDS, async (clone) => {
-			await writeAppFiles(clone.sandbox, appDir, built.files);
-			await writeBlueprints(clone.sandbox, spec, appDir, repoUrl);
-			return commitAndPush(clone, spec, message);
-		});
+		const commit = await inAppsClone(PUBLISH_TIMEOUT_SECONDS, (clone) =>
+			commitAndPush(clone, spec, message, async () => {
+				await writeAppFiles(clone.sandbox, appDir, built.files);
+				await writeBlueprints(clone.sandbox, spec, appDir, repoUrl);
+			}),
+		);
 		console.log(
 			JSON.stringify({
 				event: "app_published",
@@ -820,21 +821,20 @@ async function writeBlueprints(
 /**
  * Regenerate the repository-root Blueprint from every app's factory.json.
  *
- * Derived state, never merged: a concurrent run appends its own app to the
- * same file, so this is also what resolves a rebase conflict on it. Returns
- * the paths it owns, which is the contract pushVerified's resolver expects.
+ * Derived state, never merged: a concurrent run adds its own app to the same
+ * file. So when another run pushes first, the change that calls this runs
+ * again on the new tip, and the file gets the apps of both runs.
  *
  * It reads the specs from a clone that no agent used. In it, the builder
  * wrote only the files of its own app, and publish-app wrote its
  * factory.json.
  */
-async function writeRootBlueprint(sandbox: Sandbox): Promise<string[]> {
+async function writeRootBlueprint(sandbox: Sandbox): Promise<void> {
 	const specs = await readAllSpecs(sandbox);
 	await sandbox.writeFile(
 		`${factoryConfig.repoDir}/${factoryConfig.blueprintPath}`,
 		rootBlueprint(specs),
 	);
-	return [factoryConfig.blueprintPath];
 }
 
 /**
@@ -913,27 +913,34 @@ async function inAppsClone<T>(
 }
 
 /**
- * Commit and push the changes of one app: its directory and the root
- * Blueprint. A commit that changes nothing is not made, and there is nothing
- * to push. Returns the commit that it pushed, or null.
+ * Make the change of one app in the clone, commit it, and push it. The
+ * commit holds only the app's directory and the root Blueprint. When another
+ * run pushes first, `change` runs again on the new tip. A change that
+ * changes no file makes no commit, and there is nothing to push. Returns the
+ * commit that it pushed, or null.
  */
 async function commitAndPush(
 	clone: AppsClone,
 	app: { user: string; appName: string },
 	message: string,
+	change: () => Promise<void>,
 ): Promise<string | null> {
 	const paths = [
 		appRelativePath(app.user, app.appName),
 		factoryConfig.blueprintPath,
 	];
-	if (!(await commitPaths(clone.sandbox, message, paths))) return null;
+	const commit = async () => {
+		await change();
+		return commitPaths(clone.sandbox, message, paths);
+	};
+	if (!(await commit())) return null;
 	return pushVerified(
 		clone.sandbox,
 		clone.token,
 		clone.remoteUrl,
 		factoryConfig.branch,
 		paths,
-		() => writeRootBlueprint(clone.sandbox),
+		commit,
 	);
 }
 
@@ -1486,15 +1493,17 @@ export const removeFromBlueprintTask = task(
 				...spec,
 				deletedAt: spec.deletedAt ?? new Date().toISOString(),
 			};
-			await clone.sandbox.writeFile(
-				`${appPath(user, appName)}/factory.json`,
-				`${JSON.stringify(deleting, null, 2)}\n`,
-			);
-			await writeRootBlueprint(clone.sandbox);
 			const commit = await commitAndPush(
 				clone,
 				{ user, appName },
 				`Delete ${user}/${appName}: remove it from the Blueprint`,
+				async () => {
+					await clone.sandbox.writeFile(
+						`${appPath(user, appName)}/factory.json`,
+						`${JSON.stringify(deleting, null, 2)}\n`,
+					);
+					await writeRootBlueprint(clone.sandbox);
+				},
 			);
 			const pushedAt = commit ? Date.now() : null;
 			console.log(
@@ -1576,14 +1585,16 @@ export const removeFilesTask = task(
 		);
 
 		return inAppsClone(DELETE_STEP_TIMEOUT_SECONDS, async (clone) => {
-			await clone.sandbox.mustRun(
-				`rm -rf ${shellEscape(appPath(user, appName))}`,
-				"Remove the app directory",
-			);
 			const commit = await commitAndPush(
 				clone,
 				{ user, appName },
 				`Delete ${user}/${appName}`,
+				async () => {
+					await clone.sandbox.mustRun(
+						`rm -rf ${shellEscape(appPath(user, appName))}`,
+						"Remove the app directory",
+					);
+				},
 			);
 			console.log(
 				JSON.stringify({ event: "app_files_removed", user, appName, commit }),

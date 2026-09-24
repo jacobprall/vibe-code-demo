@@ -501,8 +501,9 @@ Implementation details and invariants for contributors are in [AGENTS.md](../AGE
 - A workspace can hold only one factory from this `render.yaml`. Render does
   not yet replicate workflows, so it rejects a second Blueprint that defines
   `vibe-factory-workflows`.
-- One deployment is bound to one apps repository and one branch. Concurrent
-  runs rebase onto that branch; the cap is three at a time.
+- One deployment is bound to one apps repository and one branch. When
+  concurrent runs push at one time, a run whose push fails takes the new tip
+  and makes its change again; the cap is three runs at a time.
 - UI authentication and user slugs are demonstration conveniences, not
   tenant isolation, authorization, quotas, or abuse controls.
 - Generated apps keep running until you delete them. Every run leaves a web

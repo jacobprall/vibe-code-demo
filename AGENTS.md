@@ -210,7 +210,7 @@ Do not weaken these without an explicit security-model change:
   the repository.
 - A commit changes only `apps/<user>/<app>/` and the root `render.yaml`.
   `commitPaths()` stages only these paths, and `pushVerified()` refuses a
-  commit that changes a different path, also after a rebase. This is true for
+  commit that changes a different path, before each attempt. This is true for
   `publish-app` and for the two steps of `delete-app` that push.
 - The root Blueprint comes from the `factory.json` of each app in the clone of
   the push. `readAllSpecs()` accepts a spec only in the directory of the app
@@ -268,8 +268,10 @@ a terminal status. Do not turn these retries on without resumability.
 
 A transient fault is not a reason to retry the full run. Retry the one call
 that failed, with a limit, as `pushVerified` does when another run pushed
-first. Agent subtasks keep the default retries: the parent waits for each one,
-so the row stays `running` and inside the concurrency limit.
+first: the clone takes the new tip, and the change of the push runs again.
+Each change of the factory is derived from its inputs, so it is never merged.
+Agent subtasks keep the default retries: the parent waits for each one, so the
+row stays `running` and inside the concurrency limit.
 
 `verify-app` and `publish-app` set `maxRetries: 0`, so a failed one fails the
 run. A retry of `publish-app` after its push finds nothing to commit, and the
@@ -375,8 +377,8 @@ code that deploys it, and so CI builds it. If you change it:
 readable — a new stage should read as one call with its detail in a function
 below. Fetch large state inside the workflow rather than passing it through
 dispatch, and keep repeated execution safe: a rerun of the same prompt
-replaces the app directory with the files of the new build and rebases onto
-the branch.
+replaces the app directory with the files of the new build, on the newest tip
+of the branch.
 
 Verification and the publish are subtasks of `prompt-to-app`, as the agents
 are. `verify-app` gives its failures as a result, not as an error, and

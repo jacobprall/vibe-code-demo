@@ -257,16 +257,15 @@ export async function commitPaths(
 }
 
 /**
- * Rewrites the files a rebase must recompute rather than merge, and returns
- * the repository-relative paths it owns. Anything else still conflicting is
- * a real conflict and aborts the rebase.
- */
-export type RebaseResolver = () => Promise<readonly string[]>;
-
-/**
- * Push to the shared branch, rebasing if another run got there first, then
- * confirm the remote holds the commit we verified. Render deploys from this
- * branch, so a mismatch here would mean deploying something unverified.
+ * Push the commit at HEAD to the shared branch, then confirm that the remote
+ * holds it. Render deploys from this branch, so a mismatch here would mean
+ * deploying something unverified.
+ *
+ * When the push fails, for example because another run pushed first, the
+ * clone takes the new tip of the branch, and `redo` makes the same change
+ * and commit on it. Each change of the factory is derived from its inputs,
+ * so it applies to any tip, and no merge is necessary. `redo` returns the
+ * new commit, or null when the tip already holds the change.
  *
  * The push stops before it sends a commit that changes a path outside
  * `paths`, which are relative to the root of the clone.
@@ -277,12 +276,12 @@ export async function pushVerified(
 	remoteUrl: string,
 	branch: string,
 	paths: readonly string[],
-	resolveRebase?: RebaseResolver,
+	redo: () => Promise<string | null>,
 ): Promise<string> {
 	const ref = `refs/heads/${branch}`;
 
 	for (let attempt = 1; attempt <= PUSH_ATTEMPTS; attempt++) {
-		// Before each attempt, because a rebase makes the commit again.
+		// Before each attempt, because a new attempt makes a new commit.
 		await checkCommitPaths(sandbox, paths);
 		const push = await execGitWithToken(sandbox, token, [
 			"git",
@@ -297,23 +296,13 @@ export async function pushVerified(
 		if (attempt === PUSH_ATTEMPTS) {
 			throw new Error(`Push failed: ${push.output.slice(0, 500)}`);
 		}
-		// Another run appended its app to the Blueprint first. Replay ours on
-		// top and try again.
-		const rebase = await execGitWithToken(sandbox, token, [
-			"git",
-			"-C",
-			REPO_DIR,
-			"pull",
-			"--rebase",
-			remoteUrl,
-			branch,
-		]);
-		if (rebase.exitCode !== 0) {
-			await finishRebase(sandbox, branch, rebase.output, resolveRebase);
-		}
+		await takeTip(sandbox, token, remoteUrl, branch);
+		// A push can reach the remote although git reports a failure. Then
+		// the tip that the clone took already holds the change.
+		if (!(await redo())) return headRevision(sandbox);
 	}
 
-	const head = (await git(sandbox, "rev-parse HEAD", "Pushed revision")).trim();
+	const head = await headRevision(sandbox);
 	const remote = await execGitWithToken(sandbox, token, [
 		"git",
 		"ls-remote",
@@ -330,9 +319,38 @@ export async function pushVerified(
 }
 
 /**
+ * Set the clone to the newest commit of the branch. This drops the commit
+ * of the failed push, and its change in the files that the clone tracks.
+ */
+async function takeTip(
+	sandbox: Sandbox,
+	token: string,
+	remoteUrl: string,
+	branch: string,
+): Promise<void> {
+	const fetched = await execGitWithToken(sandbox, token, [
+		"git",
+		"-C",
+		REPO_DIR,
+		"fetch",
+		"-q",
+		"--depth=1",
+		remoteUrl,
+		branch,
+	]);
+	if (fetched.exitCode !== 0) {
+		throw new Error(`Fetch of ${branch} failed: ${fetched.output.slice(0, 500)}`);
+	}
+	await git(sandbox, "reset -q --hard FETCH_HEAD", "Take the tip of the branch");
+}
+
+async function headRevision(sandbox: Sandbox): Promise<string> {
+	return (await git(sandbox, "rev-parse HEAD", "Pushed revision")).trim();
+}
+
+/**
  * Refuse a commit that changes a path outside `paths`. A push adds one
- * commit, at HEAD: commitPaths() makes it on the tip of the clone, and a
- * rebase makes it again on the new tip.
+ * commit, at HEAD: commitPaths() makes it on the tip of the clone.
  */
 async function checkCommitPaths(
 	sandbox: Sandbox,
@@ -365,70 +383,6 @@ async function checkCommitPaths(
 			`The commit changes paths outside ${paths.join(" and ")}, so it was not pushed: ${outside.slice(0, 10).join(", ")}`,
 		);
 	}
-}
-
-/**
- * A rebase stopped on a conflict. Generated files are recomputed rather than
- * merged: the repository-root Blueprint holds every app the factory has built,
- * so two concurrent runs rewrite the same lines and git can never resolve it
- * — the loser used to fail after building and verifying an app successfully.
- */
-async function finishRebase(
-	sandbox: Sandbox,
-	branch: string,
-	output: string,
-	resolve?: RebaseResolver,
-): Promise<void> {
-	const abort = async (reason: string): Promise<never> => {
-		await sandbox
-			.run(`git -C ${shellEscape(REPO_DIR)} rebase --abort`)
-			.catch(() => {});
-		throw new Error(reason);
-	};
-
-	if (!resolve) {
-		return abort(`Rebase onto ${branch} failed: ${output.slice(0, 500)}`);
-	}
-
-	const conflicted = await conflictedPaths(sandbox);
-	if (conflicted.length === 0) {
-		return abort(`Rebase onto ${branch} failed: ${output.slice(0, 500)}`);
-	}
-
-	const regenerated = new Set(await resolve());
-	const unresolved = conflicted.filter((path) => !regenerated.has(path));
-	if (unresolved.length > 0) {
-		return abort(
-			`Rebase onto ${branch} conflicted outside generated files: ${unresolved.join(", ")}`,
-		);
-	}
-
-	// Only these paths: the rebase already staged the rest of the commit.
-	await git(
-		sandbox,
-		`add -- ${conflicted.map(shellEscape).join(" ")}`,
-		"Stage regenerated files",
-	);
-	// GIT_EDITOR: --continue reuses the original message, but git still opens an
-	// editor for it, and there is no terminal here.
-	const done = await sandbox.run(
-		`GIT_EDITOR=true git -c core.hooksPath=/dev/null -C ${shellEscape(REPO_DIR)} rebase --continue`,
-	);
-	if (done.exitCode !== 0) {
-		return abort(`Rebase onto ${branch} could not continue: ${done.output.slice(0, 500)}`);
-	}
-}
-
-async function conflictedPaths(sandbox: Sandbox): Promise<string[]> {
-	const listed = await git(
-		sandbox,
-		"diff --name-only --diff-filter=U",
-		"List conflicted paths",
-	);
-	return listed
-		.split("\n")
-		.map((line) => line.trim())
-		.filter(Boolean);
 }
 
 /** Run commands in a directory and summarize failures. */

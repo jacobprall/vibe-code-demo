@@ -607,18 +607,31 @@ describe("awaitDeployment repairs", () => {
 
 	// A concurrent push makes the rebase regenerate the root Blueprint from
 	// each factory.json, so the rewritten one must be what it reads.
-	it("keeps the repair when a rebase regenerates the root Blueprint", async () => {
+	// When another run pushes first, the clone takes the new tip, and the
+	// change of the repair runs again on it.
+	it("makes the repair again on the new tip", async () => {
 		builderReturns(repair);
 		await deploy();
 
-		const resolveRebase = mocks.pushVerified.mock.calls[0][5];
-		files.delete(ROOT_BLUEPRINT);
-		await expect(resolveRebase()).resolves.toEqual([
-			factoryConfig.blueprintPath,
-		]);
-		expect(apiBlock(files.get(ROOT_BLUEPRINT))).toMatchObject({
-			preDeployCommand: "npm run db:migrate",
-		});
+		const redo = mocks.pushVerified.mock.calls[0][5];
+		// The new tip, as the other run left it: its own app, and a root
+		// Blueprint without the repair.
+		files.set(CAFE_SPEC, json(cafe));
+		files.set(ROOT_BLUEPRINT, rootBlueprint([cafe]));
+		await expect(redo()).resolves.toBe("b".repeat(40));
+
+		const services = parse(files.get(ROOT_BLUEPRINT) ?? "").projects.flatMap(
+			(project: { environments: { services: { name: string }[] }[] }) =>
+				project.environments[0].services,
+		);
+		expect(
+			services.find(
+				(service: { name: string }) => service.name === "acme-demo-shop-api",
+			),
+		).toMatchObject({ preDeployCommand: "npm run db:migrate" });
+		expect(services.map((service: { name: string }) => service.name)).toContain(
+			"acme-demo-cafe-web",
+		);
 	});
 
 	it.each<{ change: string; repaired: Manifest; message: string }>([
