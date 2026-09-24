@@ -10,12 +10,7 @@ import { appPath, factoryConfig } from "../factory.config.js";
 import { rootBlueprint } from "../app/blueprint.js";
 import type { AppSpec, Manifest, Service } from "../app/contracts.js";
 import type { AppFile } from "../app/git.js";
-import {
-	type DeployOutcome,
-	type DeployRecord,
-	McpError,
-	type RenderMcp,
-} from "../app/render.js";
+import type { DeployOutcome } from "../app/render.js";
 import type { ExecResult, Sandbox } from "../app/sandbox.js";
 import {
 	awaitDeployment,
@@ -431,10 +426,9 @@ function newBuild(entries: [string, string][] = []): void {
 	build = fakeSandbox(buildFiles, "sbx-build");
 }
 
-function deploy(mcp = {} as RenderMcp, context = tasks) {
+function deploy(context = tasks) {
 	return awaitDeployment({
 		tasks: context,
-		mcp,
 		sandbox: build.sandbox,
 		workspaceId: "tea-test",
 		repoUrl: "https://github.com/acme/apps",
@@ -479,7 +473,7 @@ describe("awaitDeployment repairs", () => {
 			path: "render.yaml",
 		});
 		mocks.waitForServices.mockImplementation(
-			async (_mcp: RenderMcp, _workspaceId: string, names: string[]) =>
+			async (_workspaceId: string, names: string[]) =>
 				new Map(
 					names.map((name) => [
 						name,
@@ -491,7 +485,7 @@ describe("awaitDeployment repairs", () => {
 		// The API fails its first deploy. After that, every deploy is live.
 		const apiDeploys = [FAILED];
 		mocks.waitForDeploy.mockImplementation(
-			async (_mcp: RenderMcp, serviceId: string) =>
+			async (serviceId: string) =>
 				serviceId === "srv-acme-demo-shop-api"
 					? (apiDeploys.shift() ?? LIVE)
 					: LIVE,
@@ -532,7 +526,7 @@ describe("awaitDeployment repairs", () => {
 		builderReturns(repair);
 		const { context, runs } = recordSubtasks();
 
-		await deploy(undefined, context);
+		await deploy(context);
 
 		expect(runs.map(({ name }) => name)).toEqual([
 			"deploy-manager",
@@ -704,17 +698,14 @@ describe("awaitDeployment repairs", () => {
 	 * deploy as the result of the repair. It then repaired again, and at the
 	 * end it reported a status from before the repair.
 	 *
-	 * These tests use the real waitForDeploy(). A fake MCP server gives the
-	 * result of each list_deploys poll.
+	 * These tests use the real waitForDeploy(). A fake Render API gives the
+	 * result of each poll of the deploys of a service.
 	 */
 	describe("after a repair push", () => {
 		const WEB_ID = "srv-acme-demo-shop-web";
 		const API_ID = "srv-acme-demo-shop-api";
-		const LIVE_WEB: DeployRecord = { id: "dep-web1", status: "live" };
-		const FAILED_API: DeployRecord = {
-			id: "dep-api1",
-			status: "pre_deploy_failed",
-		};
+		const LIVE_WEB = { id: "dep-web1", status: "live" };
+		const FAILED_API = { id: "dep-api1", status: "pre_deploy_failed" };
 
 		beforeEach(async () => {
 			const render =
@@ -723,41 +714,49 @@ describe("awaitDeployment repairs", () => {
 				);
 			mocks.waitForDeploy.mockImplementation(render.waitForDeploy);
 			vi.useFakeTimers();
+			vi.stubEnv("RENDER_API_KEY", "rnd_test");
 			vi.spyOn(console, "warn").mockImplementation(() => {});
 		});
 
 		afterEach(() => {
 			vi.useRealTimers();
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
 			vi.mocked(console.warn).mockRestore();
 		});
 
 		/**
-		 * Each list_deploys call for a service returns the next deploy in its
-		 * script, or throws the next error. After the last one, each call does
-		 * the last one again.
+		 * Each poll of the deploys of a service gets the next deploy in its
+		 * script, or the next error status. After the last one, each poll gets
+		 * the last one again. Returns the number of polls of each service.
 		 */
-		function fakeRender(scripts: Record<string, (DeployRecord | Error)[]>) {
+		function fakeRender(
+			scripts: Record<string, ({ id: string; status: string } | number)[]>,
+		): Map<string, number> {
 			const polls = new Map<string, number>();
-			const callTool = vi.fn(
-				async (tool: string, args: Record<string, unknown>) => {
-					const serviceId = String(args.serviceId);
-					const script = scripts[serviceId];
-					if (tool !== "list_deploys" || !script) {
-						throw new Error(`Unexpected ${tool} call for ${serviceId}`);
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (url: string | URL | Request) => {
+					const path = new URL(String(url)).pathname;
+					const serviceId = path.match(/^\/v1\/services\/([^/]+)\/deploys$/)?.[1];
+					const script = serviceId ? scripts[serviceId] : undefined;
+					if (!serviceId || !script) {
+						throw new Error(`Unexpected request to ${url}`);
 					}
 					const poll = polls.get(serviceId) ?? 0;
 					polls.set(serviceId, poll + 1);
 					const result = script[Math.min(poll, script.length - 1)];
-					if (result instanceof Error) throw result;
-					return [result];
-				},
+					return typeof result === "number"
+						? new Response("", { status: result })
+						: Response.json([{ deploy: result, cursor: "c" }]);
+				}),
 			);
-			return { mcp: { callTool } as unknown as RenderMcp, polls };
+			return polls;
 		}
 
 		/** Deploy, and run the sleeps between the polls at once. */
-		async function deployOn(mcp: RenderMcp) {
-			const [result] = await Promise.all([deploy(mcp), vi.runAllTimersAsync()]);
+		async function deployOn() {
+			const [result] = await Promise.all([deploy(), vi.runAllTimersAsync()]);
 			return result;
 		}
 
@@ -770,7 +769,7 @@ describe("awaitDeployment repairs", () => {
 
 		it("waits past the failed deploy that is still the newest", async () => {
 			builderReturns(repair);
-			const render = fakeRender({
+			const polls = fakeRender({
 				[WEB_ID]: [LIVE_WEB],
 				[API_ID]: [
 					FAILED_API,
@@ -782,41 +781,39 @@ describe("awaitDeployment repairs", () => {
 				],
 			});
 
-			const result = await deployOn(render.mcp);
+			const result = await deployOn();
 
 			expect(result.status, result.summary).toBe("deployed");
 			expect(mocks.buildTask).toHaveBeenCalledTimes(1);
 			expect(mocks.pushVerified).toHaveBeenCalledTimes(1);
-			expect(render.polls.get(API_ID)).toBe(4);
+			expect(polls.get(API_ID)).toBe(4);
 			// The storefront was live, and the repair did not change it.
-			expect(render.polls.get(WEB_ID)).toBe(1);
+			expect(polls.get(WEB_ID)).toBe(1);
 		});
 
 		// The run pushed, and Render deploys the push. A poll that fails once
 		// must not end the run.
 		it("continues to wait when a poll fails after the repair push", async () => {
 			builderReturns(repair);
-			const render = fakeRender({
+			const polls = fakeRender({
 				[WEB_ID]: [LIVE_WEB],
 				[API_ID]: [
 					FAILED_API,
-					new McpError("Render MCP responded 502: Bad Gateway", {
-						status: 502,
-					}),
+					502,
 					{ id: "dep-api2", status: "live" },
 				],
 			});
 
-			const result = await deployOn(render.mcp);
+			const result = await deployOn();
 
 			expect(result.status, result.summary).toBe("deployed");
 			expect(mocks.pushVerified).toHaveBeenCalledTimes(1);
-			expect(render.polls.get(API_ID)).toBe(3);
+			expect(polls.get(API_ID)).toBe(3);
 		});
 
 		it("reports the status of the deploy of the last repair", async () => {
 			builderReturns(repair);
-			const render = fakeRender({
+			fakeRender({
 				[WEB_ID]: [LIVE_WEB],
 				[API_ID]: [
 					FAILED_API,
@@ -827,7 +824,7 @@ describe("awaitDeployment repairs", () => {
 				],
 			});
 
-			const result = await deployOn(render.mcp);
+			const result = await deployOn();
 
 			expect(result).toEqual({
 				status: "deploy_failed",
@@ -842,12 +839,12 @@ describe("awaitDeployment repairs", () => {
 
 		it("reports a repair push that started no new deploy", async () => {
 			builderReturns(repair);
-			const render = fakeRender({
+			fakeRender({
 				[WEB_ID]: [LIVE_WEB],
 				[API_ID]: [FAILED_API],
 			});
 
-			const result = await deployOn(render.mcp);
+			const result = await deployOn();
 
 			expect(result).toEqual({
 				status: "deploy_failed",
@@ -867,12 +864,12 @@ describe("awaitDeployment repairs", () => {
 		it("fails when the repair changes no files", async () => {
 			builderReturns(manifest);
 			mocks.commitPaths.mockResolvedValue(null);
-			const render = fakeRender({
+			fakeRender({
 				[WEB_ID]: [LIVE_WEB],
 				[API_ID]: [FAILED_API],
 			});
 
-			const result = await deployOn(render.mcp);
+			const result = await deployOn();
 
 			expect(result).toEqual({
 				status: "deploy_failed",

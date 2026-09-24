@@ -1,29 +1,23 @@
 /**
  * Everything the factory reads back from Render.
  *
- * Reads go over the hosted Render MCP server — the same server the architect
- * agent talks to, on a read-only allowlist. The one exception is Blueprints,
- * which MCP does not expose; those come from the REST API. Nothing in this
- * file creates or deletes a resource: creation is app/blueprint.ts plus a Git
- * push, and deletion is app/teardown.ts.
+ * Workflow code reads the Render REST API, which gives typed records. The
+ * agents read Render through the hosted Render MCP server, on a read-only
+ * allowlist; renderMcpUrl() names that server. Nothing in this file creates
+ * or deletes a resource: creation is app/blueprint.ts plus a Git push, and
+ * deletion is app/teardown.ts.
  */
 import { requireEnv } from "./config.js";
 
-const PROTOCOL_VERSION = "2025-06-18";
-const DEFAULT_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 5_000;
 /** The attempts of one read before an error that stays fails it. */
 const READ_ATTEMPTS = 5;
 /** The API key is not valid, or it cannot read the resource. */
 const AUTH_FAILURES = new Set([401, 403]);
-const MAX_LOG_CHARS = 8_000;
 const REST_API = "https://api.render.com/v1";
 /** The largest page that the Render API sends. */
-const BLUEPRINT_PAGE_SIZE = 100;
+const PAGE_SIZE = 100;
 
-const SERVICE_ID = /^srv-[A-Za-z0-9]+$/;
-const DEPLOY_ID = /^dep-[A-Za-z0-9]+$/;
-const RENDER_URL = /^https:\/\/[A-Za-z0-9-]+\.onrender\.com\/?$/;
 const MAX_PAGE_SCRIPTS = 20;
 const MODULE_PRELOAD = /\srel\s*=\s*["']?modulepreload\b/i;
 const SCRIPT_REF = /\s(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
@@ -37,24 +31,9 @@ const DEPLOY_FAILURE = new Set([
 	"deactivated",
 ]);
 
+/** The Render MCP server that the agents read Render through. */
 export function renderMcpUrl(): string {
 	return process.env.RENDER_MCP_URL?.trim() || "https://mcp.render.com/mcp";
-}
-
-export class McpError extends Error {
-	readonly tool?: string;
-	/**
-	 * The HTTP status of the failure, if it is known: of the MCP request, or
-	 * of the Render API request behind a failed tool call.
-	 */
-	readonly status?: number;
-
-	constructor(message: string, opts: { tool?: string; status?: number } = {}) {
-		super(message);
-		this.name = "McpError";
-		this.tool = opts.tool;
-		this.status = opts.status;
-	}
 }
 
 /** A Render REST API request that got an error status. */
@@ -65,140 +44,6 @@ class RenderApiError extends Error {
 	) {
 		super(message);
 		this.name = "RenderApiError";
-	}
-}
-
-interface JsonRpcResponse {
-	id?: number;
-	result?: unknown;
-	error?: { code: number; message: string };
-}
-
-/* ── MCP transport ────────────────────────────────────────────────────── */
-
-export class RenderMcp {
-	private sessionId?: string;
-	private nextId = 1;
-	private ready?: Promise<void>;
-
-	constructor(
-		private readonly url: string,
-		private readonly token: string,
-	) {}
-
-	static fromEnv(): RenderMcp {
-		return new RenderMcp(renderMcpUrl(), requireEnv("RENDER_API_KEY"));
-	}
-
-	/** Call a tool and return its payload, parsed as JSON where possible. */
-	async callTool(
-		name: string,
-		args: Record<string, unknown>,
-		opts: { timeoutMs?: number } = {},
-	): Promise<unknown> {
-		await this.initialize();
-		const result = await this.rpc(
-			"tools/call",
-			{ name, arguments: args },
-			opts.timeoutMs,
-		);
-		return toolPayload(name, result);
-	}
-
-	private initialize(): Promise<void> {
-		if (!this.ready) {
-			const ready = this.handshake();
-			this.ready = ready;
-			// Keep only a handshake that succeeds. Without this, one failed
-			// handshake fails each later call, with no new request.
-			ready.catch(() => {
-				if (this.ready === ready) this.ready = undefined;
-			});
-		}
-		return this.ready;
-	}
-
-	private async handshake(): Promise<void> {
-		// A new session. An initialize request carries no session ID.
-		this.sessionId = undefined;
-		await this.rpc("initialize", {
-			protocolVersion: PROTOCOL_VERSION,
-			capabilities: {},
-			clientInfo: { name: "vibe-factory", version: "0.1.0" },
-		});
-		// Required by the spec before any other request is served.
-		await this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
-	}
-
-	private async rpc(
-		method: string,
-		params: Record<string, unknown>,
-		timeoutMs = DEFAULT_TIMEOUT_MS,
-	): Promise<unknown> {
-		const id = this.nextId++;
-		const messages = await this.send(
-			{ jsonrpc: "2.0", id, method, params },
-			timeoutMs,
-		);
-		if (!messages) throw new McpError(`${method} returned no body`);
-
-		const message = messages.find((candidate) => candidate.id === id);
-		if (!message) throw new McpError(`No MCP response for request ${id}`);
-		if (message.error) {
-			throw new McpError(`${method} failed: ${message.error.message}`);
-		}
-		return message.result;
-	}
-
-	private async send(
-		body: Record<string, unknown>,
-		timeoutMs = DEFAULT_TIMEOUT_MS,
-	): Promise<JsonRpcResponse[] | null> {
-		const headers: Record<string, string> = {
-			"content-type": "application/json",
-			// Streamable HTTP servers may answer with either.
-			accept: "application/json, text/event-stream",
-			authorization: `Bearer ${this.token}`,
-			"mcp-protocol-version": PROTOCOL_VERSION,
-		};
-		const session = this.sessionId;
-		if (session) headers["mcp-session-id"] = session;
-
-		const response = await fetch(this.url, {
-			method: "POST",
-			headers,
-			body: JSON.stringify(body),
-			signal: AbortSignal.timeout(timeoutMs),
-		});
-
-		const assigned = response.headers.get("mcp-session-id");
-		if (assigned) this.sessionId = assigned;
-
-		if (!response.ok) {
-			// A 404 to a request in a session means that the server ended the
-			// session, because it was idle or because the server restarted. The
-			// MCP specification then tells the client to start a new session,
-			// and the next call does. A 404 in a session that a new session
-			// already replaced changes nothing.
-			if (response.status === 404 && session && session === this.sessionId) {
-				this.ready = undefined;
-			}
-			const detail = await response.text().catch(() => "");
-			throw new McpError(
-				`Render MCP responded ${response.status}: ${detail.slice(0, 300)}`,
-				{ status: response.status },
-			);
-		}
-		// Notifications are answered with 202 and no body.
-		if (response.status === 202) return null;
-
-		const text = await response.text();
-		if (!text.trim()) return null;
-		return (response.headers.get("content-type") ?? "").includes(
-			"text/event-stream",
-		)
-			? parseSse(text)
-			: [JSON.parse(text) as JsonRpcResponse];
 	}
 }
 
@@ -220,20 +65,12 @@ export interface DeployOutcome {
 	result: "live" | "failed" | "timed_out" | "not_started";
 }
 
-export async function listServices(
-	mcp: RenderMcp,
-	workspaceId: string,
-): Promise<ServiceRecord[]> {
-	return serviceRecords(await mcp.callTool("list_services", { workspaceId }));
-}
-
 /**
  * Wait for a Blueprint sync to produce the services we asked for. There is no
  * "sync finished" signal to subscribe to, so the services appearing by name is
  * the signal. A poll that fails is tried again, as retryRead() describes.
  */
 export async function waitForServices(
-	mcp: RenderMcp,
 	workspaceId: string,
 	names: readonly string[],
 	timeoutMs: number,
@@ -245,10 +82,11 @@ export async function waitForServices(
 
 	while (Date.now() < deadline) {
 		const services = await retryRead(
-			"list_services",
-			() => listServices(mcp, workspaceId),
+			"The service lookup",
+			() => listServices(workspaceId, names),
 			onPoll,
 		);
+		// Only an exact match counts, whatever the API's name filter matches.
 		found = new Map(
 			services
 				.filter((service) => wanted.has(service.name))
@@ -259,6 +97,39 @@ export async function waitForServices(
 		await sleep(POLL_INTERVAL_MS);
 	}
 	return found;
+}
+
+/** One page. An app has far fewer services than a page holds. */
+async function listServices(
+	workspaceId: string,
+	names: readonly string[],
+): Promise<ServiceRecord[]> {
+	const query = new URLSearchParams({
+		ownerId: workspaceId,
+		limit: String(PAGE_SIZE),
+	});
+	for (const name of names) query.append("name", name);
+	const page = await readApi<
+		{
+			service?: {
+				id: string;
+				name: string;
+				serviceDetails?: { url?: string };
+			};
+		}[]
+	>(`/services?${query}`, "Listing services");
+	return page.flatMap(({ service }) =>
+		service
+			? [
+					{
+						id: service.id,
+						name: service.name,
+						// A smoke check adds a path to this URL.
+						url: service.serviceDetails?.url?.replace(/\/$/, "") ?? null,
+					},
+				]
+			: [],
+	);
 }
 
 /**
@@ -272,10 +143,8 @@ export async function waitForServices(
  * the service. A poll that fails is tried again, as retryRead() describes.
  */
 export async function waitForDeploy(
-	mcp: RenderMcp,
 	serviceId: string,
 	opts: {
-		workspaceId: string;
 		timeoutMs: number;
 		/** The deploy from before the push. Only a newer deploy is a result. */
 		after?: string | null;
@@ -288,17 +157,10 @@ export async function waitForDeploy(
 	let stale = false;
 
 	while (Date.now() < deadline) {
-		const [latest] = findDeploys(
-			await retryRead(
-				`list_deploys for ${serviceId}`,
-				() =>
-					mcp.callTool("list_deploys", {
-						serviceId,
-						limit: 1,
-						workspaceId: opts.workspaceId,
-					}),
-				opts.onPoll,
-			),
+		const latest = await retryRead(
+			`The deploy lookup of ${serviceId}`,
+			() => latestDeploy(serviceId),
+			opts.onPoll,
 		);
 		if (latest) {
 			deployId = latest.id;
@@ -323,27 +185,16 @@ export async function waitForDeploy(
 	return { deployId, status: `timed out while ${status}`, result: "timed_out" };
 }
 
-/** Build logs for a failing deploy, for the builder agent to read. */
-export async function fetchBuildLogs(
-	mcp: RenderMcp,
+/** The newest deploy of a service, or null when it has none. */
+async function latestDeploy(
 	serviceId: string,
-	workspaceId: string,
-): Promise<string> {
-	try {
-		const payload = await mcp.callTool("list_logs", {
-			resource: [serviceId],
-			type: ["build"],
-			limit: 100,
-			direction: "backward",
-			workspaceId,
-		});
-		return findLogMessages(payload).join("\n").slice(-MAX_LOG_CHARS);
-	} catch (error) {
-		// Logs are diagnostic. Losing them must not turn a reportable failure
-		// into a thrown run.
-		console.error("Failed to fetch build logs:", error);
-		return "";
-	}
+): Promise<{ id: string; status: string } | null> {
+	const page = await readApi<{ deploy?: { id: string; status?: string } }[]>(
+		`/services/${encodeURIComponent(serviceId)}/deploys?limit=1`,
+		`Listing the deploys of ${serviceId}`,
+	);
+	const deploy = page[0]?.deploy;
+	return deploy ? { id: deploy.id, status: deploy.status ?? "unknown" } : null;
 }
 
 export interface HttpProbe {
@@ -446,9 +297,9 @@ async function readText(url: string): Promise<string | null> {
 	}
 }
 
-/* ── Blueprints (REST; not exposed over MCP) ──────────────────────────── */
+/* ── REST API ─────────────────────────────────────────────────────────── */
 
-/** One call to the Render REST API, for what the MCP server does not expose. */
+/** One call to the Render REST API. */
 export function renderApi(
 	path: string,
 	method: "GET" | "DELETE" = "GET",
@@ -462,6 +313,26 @@ export function renderApi(
 		signal: AbortSignal.timeout(30_000),
 	});
 }
+
+/**
+ * One read of the Render REST API. An error status is a RenderApiError, so
+ * that retryRead() can tell an authentication failure from a temporary one.
+ */
+async function readApi<T>(path: string, what: string): Promise<T> {
+	const response = await renderApi(path);
+	if (!response.ok) {
+		const hint = AUTH_FAILURES.has(response.status)
+			? " The API key needs read access to the workspace."
+			: "";
+		throw new RenderApiError(
+			`${what} failed with ${response.status}.${hint}`,
+			response.status,
+		);
+	}
+	return (await response.json()) as T;
+}
+
+/* ── Blueprints ───────────────────────────────────────────────────────── */
 
 export interface BlueprintRecord {
 	id: string;
@@ -504,11 +375,14 @@ export async function findBlueprint(target: {
 	do {
 		const query = new URLSearchParams({
 			ownerId: target.workspaceId,
-			limit: String(BLUEPRINT_PAGE_SIZE),
+			limit: String(PAGE_SIZE),
 		});
 		if (cursor) query.set("cursor", cursor);
 		const page = await retryRead("The Blueprint lookup", () =>
-			blueprintPage(query),
+			readApi<{ blueprint?: BlueprintRecord; cursor?: string }[]>(
+				`/blueprints?${query}`,
+				"Listing Blueprints",
+			),
 		);
 		const match = page
 			.map((entry) => entry.blueprint)
@@ -521,27 +395,9 @@ export async function findBlueprint(target: {
 			);
 		if (match) return match;
 		// A short page is the last page.
-		cursor =
-			page.length === BLUEPRINT_PAGE_SIZE ? page.at(-1)?.cursor : undefined;
+		cursor = page.length === PAGE_SIZE ? page.at(-1)?.cursor : undefined;
 	} while (cursor);
 	return null;
-}
-
-/** One page of the Blueprint list. */
-type BlueprintPage = { blueprint?: BlueprintRecord; cursor?: string }[];
-
-async function blueprintPage(query: URLSearchParams): Promise<BlueprintPage> {
-	const response = await renderApi(`/blueprints?${query}`);
-	if (!response.ok) {
-		const hint = AUTH_FAILURES.has(response.status)
-			? " The API key needs read access to the workspace."
-			: "";
-		throw new RenderApiError(
-			`Listing Blueprints failed with ${response.status}.${hint}`,
-			response.status,
-		);
-	}
-	return (await response.json()) as BlueprintPage;
 }
 
 /**
@@ -549,16 +405,10 @@ async function blueprintPage(query: URLSearchParams): Promise<BlueprintPage> {
  * resources from the Blueprint file starts no sync.
  */
 export async function listBlueprintSyncs(id: string): Promise<BlueprintSync[]> {
-	const response = await renderApi(
+	const page = await readApi<unknown>(
 		`/blueprints/${encodeURIComponent(id)}/syncs?limit=20`,
+		`Listing the syncs of Blueprint ${id}`,
 	);
-	if (!response.ok) {
-		throw new RenderApiError(
-			`Listing the syncs of Blueprint ${id} failed with ${response.status}.`,
-			response.status,
-		);
-	}
-	const page = (await response.json()) as unknown;
 	// Without the list, a running sync would look like no sync. Stop instead.
 	if (!Array.isArray(page)) {
 		throw new Error(`Blueprint ${id} returned no list of syncs.`);
@@ -583,9 +433,8 @@ function normalizeRepo(repo: string): string {
 /**
  * Do one read of Render state, and do it again if it fails. A run or a delete
  * reads Render for many minutes after its push, and most failures are
- * temporary: a network error, a timeout, a 429 or a 5xx, or an MCP session
- * that the server ended. Without this, one failed poll ends the run or the
- * delete.
+ * temporary: a network error, a timeout, a 429, or a 5xx. Without this, one
+ * failed poll ends the run or the delete.
  *
  * An authentication failure is thrown at once, because a new attempt cannot
  * repair the API key. A different error is thrown when READ_ATTEMPTS
@@ -621,11 +470,7 @@ export async function retryRead<T>(
 }
 
 function isAuthFailure(error: unknown): boolean {
-	return (
-		(error instanceof McpError || error instanceof RenderApiError) &&
-		error.status !== undefined &&
-		AUTH_FAILURES.has(error.status)
-	);
+	return error instanceof RenderApiError && AUTH_FAILURES.has(error.status);
 }
 
 function errorText(error: unknown): string {
@@ -633,194 +478,6 @@ function errorText(error: unknown): string {
 	// fetch() gives "fetch failed" for each network error. The cause tells why.
 	const cause = error.cause instanceof Error ? error.cause.message : "";
 	return cause ? `${error.message}: ${cause}` : error.message;
-}
-
-/* ── Payload extraction ───────────────────────────────────────────────── */
-
-export interface DeployRecord {
-	id: string;
-	status: string;
-}
-
-/**
- * MCP tool results are shaped by the server, not by a contract we own, and
- * Render wraps created resources differently from listed ones. Rather than
- * guess at one envelope, walk the payload for the fields we need.
- */
-export function serviceRecords(payload: unknown): ServiceRecord[] {
-	const services: ServiceRecord[] = [];
-	walk(payload, (node) => {
-		if (
-			typeof node.id === "string" &&
-			SERVICE_ID.test(node.id) &&
-			typeof node.name === "string"
-		) {
-			services.push({
-				id: node.id,
-				name: node.name,
-				url: findServiceUrl(node),
-			});
-		}
-	});
-	return services;
-}
-
-export function findServiceUrl(payload: unknown): string | null {
-	const url = findString(payload, (value) => RENDER_URL.test(value));
-	return url ? url.replace(/\/$/, "") : null;
-}
-
-/** Deploys, most recent first, as Render's list endpoint returns them. */
-export function findDeploys(payload: unknown): DeployRecord[] {
-	const deploys: DeployRecord[] = [];
-	walk(payload, (node) => {
-		if (
-			typeof node.id === "string" &&
-			DEPLOY_ID.test(node.id) &&
-			typeof node.status === "string"
-		) {
-			deploys.push({ id: node.id, status: node.status });
-		}
-	});
-	return deploys;
-}
-
-/** Log lines, oldest first, from a list_logs payload. */
-export function findLogMessages(payload: unknown): string[] {
-	const lines: string[] = [];
-	walk(payload, (node) => {
-		const message = node.message ?? node.text;
-		if (typeof message === "string" && message.length > 0) lines.push(message);
-	});
-	return lines.reverse();
-}
-
-function findString(
-	payload: unknown,
-	matches: (value: string) => boolean,
-): string | null {
-	let found: string | null = null;
-	walk(payload, (node) => {
-		if (found) return;
-		for (const value of Object.values(node)) {
-			if (typeof value === "string" && matches(value)) {
-				found = value;
-				return;
-			}
-		}
-	});
-	return found;
-}
-
-function walk(
-	payload: unknown,
-	visit: (node: Record<string, unknown>) => void,
-): void {
-	if (Array.isArray(payload)) {
-		for (const item of payload) walk(item, visit);
-		return;
-	}
-	if (typeof payload !== "object" || payload === null) return;
-
-	const node = payload as Record<string, unknown>;
-	visit(node);
-	for (const value of Object.values(node)) {
-		if (typeof value === "object" && value !== null) walk(value, visit);
-	}
-}
-
-/** Pull JSON-RPC messages out of an SSE stream. */
-function parseSse(text: string): JsonRpcResponse[] {
-	const messages: JsonRpcResponse[] = [];
-	for (const line of text.split(/\r?\n/)) {
-		if (!line.startsWith("data:")) continue;
-		const payload = line.slice("data:".length).trim();
-		if (!payload || payload === "[DONE]") continue;
-		try {
-			messages.push(JSON.parse(payload) as JsonRpcResponse);
-		} catch {
-			// A keep-alive or comment frame; nothing to do.
-		}
-	}
-	return messages;
-}
-
-/**
- * Tool results carry text blocks and, on newer servers, structured content.
- * Prefer the structured form; otherwise parse the text as JSON and fall back
- * to the raw string so callers can still log something useful.
- */
-function toolPayload(tool: string, result: unknown): unknown {
-	if (typeof result !== "object" || result === null) return result;
-	const record = result as Record<string, unknown>;
-
-	if (record.isError === true) {
-		const text = textOf(record) || "tool reported an error";
-		throw new McpError(`${tool}: ${text}`, {
-			tool,
-			status: toolErrorStatus(text),
-		});
-	}
-	if (record.structuredContent !== undefined) return record.structuredContent;
-
-	const text = textOf(record);
-	if (!text) return null;
-	return parseToolText(text) ?? text;
-}
-
-/**
- * The status of the Render API request behind a failed tool call, if the
- * error text gives it. The Render MCP server sends the API key on to the
- * Render API, so a key that is not valid fails in the tool call, not in the
- * MCP request. The server puts "unauthorized" for a 401, and "forbidden" for
- * a 403, at the end of the text.
- */
-function toolErrorStatus(text: string): number | undefined {
-	if (/\bunauthorized\s*$/i.test(text)) return 401;
-	if (/\bforbidden\s*$/i.test(text)) return 403;
-	return undefined;
-}
-
-/**
- * Parse the JSON value a tool's text block leads with, or null.
- *
- * Paginated tools append their cursor after the JSON — `list_deploys` returns
- * `[{...}]\n\n cursor: <opaque>` — so a strict parse fails and every caller
- * silently sees a string instead of records. That cost a run a fifteen-minute
- * deploy timeout on a deploy that went live in thirteen seconds. Nothing here
- * paginates, so the cursor is dropped rather than returned.
- */
-export function parseToolText(text: string): unknown {
-	try {
-		return JSON.parse(text);
-	} catch {
-		// Fall through to the leading JSON value.
-	}
-
-	const start = text.search(/[[{]/);
-	if (start === -1) return null;
-
-	const end = text.lastIndexOf(text[start] === "[" ? "]" : "}");
-	if (end <= start) return null;
-
-	try {
-		return JSON.parse(text.slice(start, end + 1));
-	} catch {
-		return null;
-	}
-}
-
-function textOf(result: Record<string, unknown>): string {
-	if (!Array.isArray(result.content)) return "";
-	return result.content
-		.filter(
-			(block): block is { text: string } =>
-				typeof block === "object" &&
-				block !== null &&
-				typeof (block as { text?: unknown }).text === "string",
-		)
-		.map((block) => block.text)
-		.join("\n");
 }
 
 function sleep(ms: number): Promise<void> {

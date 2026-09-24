@@ -1,119 +1,23 @@
 /**
- * MCP results are shaped by the server, so the extraction has to survive both
- * the wrapped envelopes Render returns and a plain list.
+ * The Render reads of the workflow. No test calls the Render API: each test
+ * replaces fetch.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	type DeployRecord,
 	findBlueprint,
-	findDeploys,
-	findLogMessages,
-	findServiceUrl,
-	McpError,
 	pageContains,
 	pageScripts,
-	parseToolText,
-	RenderMcp,
-	serviceRecords,
 	waitForDeploy,
 	waitForServices,
 } from "../app/render.js";
 
-/**
- * Paginated tools append their cursor after the JSON. A strict parse fails, the
- * payload degrades to a string, and every finder silently returns nothing —
- * which once cost a run a 15-minute deploy timeout on a deploy that went live
- * in 13 seconds.
- */
-describe("parseToolText", () => {
-	const listDeploys =
-		'[{"id":"dep-dadelk1t0dsc7389veo0","status":"live","trigger":"blueprint_sync"}]\n\n cursor: Tfgyh_mGGfZsazF0MGRzYzczODl2ZW8w';
+const REST_API = "https://api.render.com/v1";
 
-	it("parses a payload with a cursor line appended", () => {
-		expect(parseToolText(listDeploys)).toEqual([
-			{
-				id: "dep-dadelk1t0dsc7389veo0",
-				status: "live",
-				trigger: "blueprint_sync",
-			},
-		]);
-	});
-
-	it("keeps the deploy visible to findDeploys", () => {
-		expect(findDeploys(parseToolText(listDeploys))).toEqual([
-			{ id: "dep-dadelk1t0dsc7389veo0", status: "live" },
-		]);
-	});
-
-	it("parses clean JSON unchanged", () => {
-		expect(parseToolText('{"ok":true}')).toEqual({ ok: true });
-	});
-
-	it("returns null for text carrying no JSON", () => {
-		expect(parseToolText("service srv-1: unauthorized")).toBeNull();
-		expect(parseToolText("")).toBeNull();
-	});
-
-	it("returns null rather than half a value when the JSON is truncated", () => {
-		expect(parseToolText('[{"id":"dep-1","status":"li')).toBeNull();
-	});
-});
-
-describe("serviceRecords", () => {
-	it("reads services out of a cursor-wrapped list", () => {
-		const payload = [
-			{
-				service: {
-					id: "srv-abc123",
-					name: "vibe-demo-shop-web",
-					serviceDetails: { url: "https://vibe-demo-shop-web.onrender.com" },
-				},
-				cursor: "c1",
-			},
-		];
-
-		expect(serviceRecords(payload)).toEqual([
-			{
-				id: "srv-abc123",
-				name: "vibe-demo-shop-web",
-				url: "https://vibe-demo-shop-web.onrender.com",
-			},
-		]);
-	});
-
-	it("reads a service returned bare, and tolerates a missing URL", () => {
-		expect(serviceRecords({ id: "srv-xyz", name: "vibe-demo-shop-api" })).toEqual(
-			[{ id: "srv-xyz", name: "vibe-demo-shop-api", url: null }],
-		);
-	});
-
-	it("ignores objects that are not services", () => {
-		expect(serviceRecords({ id: "dep-1", status: "live" })).toEqual([]);
-	});
-});
-
-describe("findServiceUrl", () => {
-	it("strips a trailing slash so smoke URLs concatenate cleanly", () => {
-		expect(findServiceUrl({ url: "https://x-web.onrender.com/" })).toBe(
-			"https://x-web.onrender.com",
-		);
-	});
-
-	it("ignores URLs that are not Render service URLs", () => {
-		expect(findServiceUrl({ url: "https://github.com/acme/apps" })).toBeNull();
-	});
-});
-
-describe("findDeploys", () => {
-	it("reads deploy status from a wrapped list", () => {
-		const payload = [
-			{ deploy: { id: "dep-1", status: "build_failed" }, cursor: "c" },
-		];
-		expect(findDeploys(payload)).toEqual([
-			{ id: "dep-1", status: "build_failed" },
-		]);
-	});
-});
+/** A deploy as the Render API lists it. */
+interface Deploy {
+	id: string;
+	status: string;
+}
 
 /**
  * Right after a push, the newest deploy is still the deploy from before the
@@ -121,10 +25,11 @@ describe("findDeploys", () => {
  * never saw the deploy of its repair.
  */
 describe("waitForDeploy", () => {
-	const FAILED: DeployRecord = { id: "dep-1", status: "pre_deploy_failed" };
+	const FAILED: Deploy = { id: "dep-1", status: "pre_deploy_failed" };
 
 	beforeEach(() => {
 		vi.useFakeTimers();
+		vi.stubEnv("RENDER_API_KEY", "rnd_test");
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 	});
 
@@ -132,67 +37,69 @@ describe("waitForDeploy", () => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
 	});
 
 	/**
-	 * Each list_deploys call returns the next deploy, or throws the next
-	 * error. After the last one, each call does the last one again.
+	 * Each request gets the next deploy, or the next error status, or throws
+	 * the next error. After the last one, each request gets the last one again.
 	 */
-	function renderReturns(...results: (DeployRecord | Error)[]) {
+	function renderReturns(...results: (Deploy | number | Error)[]) {
 		let calls = 0;
-		const callTool = vi.fn(async () => {
-			const result = results[Math.min(calls++, results.length - 1)];
-			if (result instanceof Error) throw result;
-			return [result];
-		});
-		return { mcp: { callTool } as unknown as RenderMcp, callTool };
+		const fetchMock = vi.fn(
+			async (_url: string | URL | Request, _init?: RequestInit) => {
+				const result = results[Math.min(calls++, results.length - 1)];
+				if (result instanceof Error) throw result;
+				if (typeof result === "number") {
+					return new Response("", { status: result });
+				}
+				return Response.json([{ deploy: result, cursor: "c" }]);
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		return fetchMock;
 	}
 
 	/** Wait 60 seconds for the API, and run the sleeps between polls at once. */
 	async function waitForApi(
-		mcp: RenderMcp,
 		opts: { after?: string; onPoll?: (detail: string) => void } = {},
 	) {
 		const [outcome] = await Promise.all([
-			waitForDeploy(mcp, "srv-api", {
-				workspaceId: "tea-test",
-				timeoutMs: 60_000,
-				...opts,
-			}),
+			waitForDeploy("srv-api", { timeoutMs: 60_000, ...opts }),
 			vi.runAllTimersAsync(),
 		]);
 		return outcome;
 	}
 
 	it("returns the newest deploy when it is terminal", async () => {
-		const { mcp, callTool } = renderReturns(FAILED);
+		const fetchMock = renderReturns(FAILED);
 
-		expect(await waitForApi(mcp)).toEqual({
+		expect(await waitForApi()).toEqual({
 			deployId: "dep-1",
 			status: "pre_deploy_failed",
 			result: "failed",
 		});
-		expect(callTool).toHaveBeenCalledTimes(1);
-		expect(callTool).toHaveBeenCalledWith("list_deploys", {
-			serviceId: "srv-api",
-			limit: 1,
-			workspaceId: "tea-test",
-		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const [url, init] = fetchMock.mock.calls[0];
+		expect(String(url)).toBe(`${REST_API}/services/srv-api/deploys?limit=1`);
+		expect(new Headers(init?.headers).get("authorization")).toBe(
+			"Bearer rnd_test",
+		);
 	});
 
 	it("polls past the deploy from before the push", async () => {
-		const { mcp, callTool } = renderReturns(
+		const fetchMock = renderReturns(
 			FAILED,
 			{ id: "dep-2", status: "build_in_progress" },
 			{ id: "dep-2", status: "live" },
 		);
 
-		expect(await waitForApi(mcp, { after: "dep-1" })).toEqual({
+		expect(await waitForApi({ after: "dep-1" })).toEqual({
 			deployId: "dep-2",
 			status: "live",
 			result: "live",
 		});
-		expect(callTool).toHaveBeenCalledTimes(3);
+		expect(fetchMock).toHaveBeenCalledTimes(3);
 	});
 
 	// A deploy from before the push is never a result of the push, not even a
@@ -201,15 +108,15 @@ describe("waitForDeploy", () => {
 		"reports not_started when the %s deploy from before the push stays the newest",
 		async (status) => {
 			const onPoll = vi.fn();
-			const { mcp, callTool } = renderReturns({ id: "dep-1", status });
+			const fetchMock = renderReturns({ id: "dep-1", status });
 
-			expect(await waitForApi(mcp, { after: "dep-1", onPoll })).toEqual({
+			expect(await waitForApi({ after: "dep-1", onPoll })).toEqual({
 				deployId: "dep-1",
 				status,
 				result: "not_started",
 			});
 			// One poll each 5 seconds until the deadline, and not more.
-			expect(callTool).toHaveBeenCalledTimes(12);
+			expect(fetchMock).toHaveBeenCalledTimes(12);
 			expect(onPoll).toHaveBeenLastCalledWith(
 				"Service srv-api: waiting for a deploy after dep-1",
 			);
@@ -217,12 +124,9 @@ describe("waitForDeploy", () => {
 	);
 
 	it("times out while the newer deploy is in progress", async () => {
-		const { mcp } = renderReturns(FAILED, {
-			id: "dep-2",
-			status: "build_in_progress",
-		});
+		renderReturns(FAILED, { id: "dep-2", status: "build_in_progress" });
 
-		expect(await waitForApi(mcp, { after: "dep-1" })).toEqual({
+		expect(await waitForApi({ after: "dep-1" })).toEqual({
 			deployId: "dep-2",
 			status: "timed out while build_in_progress",
 			result: "timed_out",
@@ -235,268 +139,152 @@ describe("waitForDeploy", () => {
 	 */
 	it("polls again after a poll fails", async () => {
 		const onPoll = vi.fn();
-		const { mcp, callTool } = renderReturns(
-			new McpError("Render MCP responded 502: Bad Gateway", { status: 502 }),
-			new DOMException(
-				"The operation was aborted due to timeout",
-				"TimeoutError",
-			),
+		const fetchMock = renderReturns(
+			502,
+			new DOMException("The operation was aborted due to timeout", "TimeoutError"),
 			{ id: "dep-2", status: "live" },
 		);
 
-		expect(await waitForApi(mcp, { onPoll })).toEqual({
+		expect(await waitForApi({ onPoll })).toEqual({
 			deployId: "dep-2",
 			status: "live",
 			result: "live",
 		});
-		expect(callTool).toHaveBeenCalledTimes(3);
+		expect(fetchMock).toHaveBeenCalledTimes(3);
 		expect(onPoll.mock.calls.map(([detail]) => detail)).toEqual([
-			"list_deploys for srv-api failed (attempt 1 of 5): Render MCP responded 502: Bad Gateway",
-			"list_deploys for srv-api failed (attempt 2 of 5): The operation was aborted due to timeout",
+			"The deploy lookup of srv-api failed (attempt 1 of 5): Listing the deploys of srv-api failed with 502.",
+			"The deploy lookup of srv-api failed (attempt 2 of 5): The operation was aborted due to timeout",
 		]);
 	});
 
 	it("counts only the failures in sequence", async () => {
-		const failure = new McpError("Render MCP responded 503: ", { status: 503 });
-		const failures = Array.from({ length: 4 }, () => failure);
-		const { mcp } = renderReturns(
+		const failures = [503, 503, 503, 503];
+		renderReturns(
 			...failures,
 			{ id: "dep-2", status: "build_in_progress" },
 			...failures,
 			{ id: "dep-2", status: "live" },
 		);
 
-		expect(await waitForApi(mcp)).toMatchObject({ result: "live" });
+		expect(await waitForApi()).toMatchObject({ result: "live" });
 	});
 
 	it("fails with the last error when 5 polls in sequence fail", async () => {
-		const { mcp, callTool } = renderReturns(
+		const fetchMock = renderReturns(
 			{ id: "dep-2", status: "build_in_progress" },
-			...Array.from(
-				{ length: 4 },
-				() => new McpError("Render MCP responded 503: ", { status: 503 }),
-			),
+			503,
+			503,
+			503,
+			503,
 			new TypeError("fetch failed", { cause: new Error("other side closed") }),
 		);
 
-		await expect(waitForApi(mcp)).rejects.toThrow(
-			"list_deploys for srv-api failed 5 times in sequence. " +
+		await expect(waitForApi()).rejects.toThrow(
+			"The deploy lookup of srv-api failed 5 times in sequence. " +
 				"The last error: fetch failed: other side closed",
 		);
-		expect(callTool).toHaveBeenCalledTimes(6);
+		expect(fetchMock).toHaveBeenCalledTimes(6);
 	});
 
 	// A new attempt cannot repair the API key, so the wait does not continue
 	// until its deadline.
 	it.each([401, 403])("fails at once on a %i", async (status) => {
-		const error = new McpError(`Render MCP responded ${status}: `, { status });
-		const { mcp, callTool } = renderReturns(error);
+		const fetchMock = renderReturns(status);
 
-		await expect(waitForApi(mcp)).rejects.toBe(error);
-		expect(callTool).toHaveBeenCalledTimes(1);
-	});
-
-	/**
-	 * These tests use the real MCP client. A fake Render MCP server gives a
-	 * new session to each initialize request, and `answer` can replace the
-	 * answer to a request. `answer` must answer each tools/call request.
-	 */
-	describe("through the MCP client", () => {
-		const LIVE: DeployRecord = { id: "dep-2", status: "live" };
-
-		interface McpRequest {
-			method: string;
-			id: number;
-			session: string | null;
-			/** The number of requests with this method, this one included. */
-			count: number;
-		}
-
-		function fakeMcpServer(answer: (request: McpRequest) => Response | null) {
-			const requests: McpRequest[] = [];
-			let sessions = 0;
-			vi.stubGlobal(
-				"fetch",
-				vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-					const { method, id } = JSON.parse(String(init?.body));
-					const request: McpRequest = {
-						method,
-						id,
-						session: new Headers(init?.headers).get("mcp-session-id"),
-						count: requests.filter((r) => r.method === method).length + 1,
-					};
-					requests.push(request);
-
-					const answered = answer(request);
-					if (answered) return answered;
-					if (method === "initialize") {
-						sessions++;
-						return Response.json(
-							{ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18" } },
-							{ headers: { "mcp-session-id": `session-${sessions}` } },
-						);
-					}
-					if (method === "notifications/initialized") {
-						return new Response(null, { status: 202 });
-					}
-					throw new Error(`No answer to ${method}`);
-				}),
-			);
-			return requests;
-		}
-
-		/** The answer to a tools/call request, as the Render MCP server gives it. */
-		function toolAnswer(id: number, result: object): Response {
-			return Response.json({ jsonrpc: "2.0", id, result });
-		}
-
-		function deploys(id: number, deploy: DeployRecord): Response {
-			return toolAnswer(id, {
-				content: [
-					{ type: "text", text: `${JSON.stringify([deploy])}\n\n cursor: ""` },
-				],
-			});
-		}
-
-		function newClient(): RenderMcp {
-			return new RenderMcp("https://mcp.render.test/mcp", "rnd_test");
-		}
-
-		/* The server ends a session that is idle for 30 minutes, and a restart
-		 * ends all sessions. A deploy repair can take longer than 30 minutes. */
-		it("continues in a new session when the server ends the session", async () => {
-			const requests = fakeMcpServer(({ method, id, session, count }) => {
-				if (method !== "tools/call") return null;
-				if (count === 1) {
-					return deploys(id, { id: "dep-2", status: "build_in_progress" });
-				}
-				if (session === "session-1") {
-					return new Response("Session terminated", { status: 404 });
-				}
-				return deploys(id, LIVE);
-			});
-			const onPoll = vi.fn();
-
-			expect(await waitForApi(newClient(), { onPoll })).toMatchObject({
-				result: "live",
-			});
-			expect(
-				requests.map(({ method, session }) => `${method} ${session ?? "-"}`),
-			).toEqual([
-				"initialize -",
-				"notifications/initialized session-1",
-				"tools/call session-1",
-				"tools/call session-1",
-				"initialize -",
-				"notifications/initialized session-2",
-				"tools/call session-2",
-			]);
-			expect(onPoll).toHaveBeenCalledWith(
-				"list_deploys for srv-api failed (attempt 1 of 5): Render MCP responded 404: Session terminated",
-			);
-		});
-
-		it("does the handshake again after it fails", async () => {
-			const requests = fakeMcpServer(({ method, id, count }) => {
-				if (method === "initialize" && count === 1) {
-					throw new TypeError("fetch failed", {
-						cause: new Error("getaddrinfo ENOTFOUND mcp.render.test"),
-					});
-				}
-				return method === "tools/call" ? deploys(id, LIVE) : null;
-			});
-			const onPoll = vi.fn();
-
-			expect(await waitForApi(newClient(), { onPoll })).toMatchObject({
-				result: "live",
-			});
-			expect(requests.map(({ method }) => method)).toEqual([
-				"initialize",
-				"initialize",
-				"notifications/initialized",
-				"tools/call",
-			]);
-			expect(onPoll).toHaveBeenCalledWith(
-				"list_deploys for srv-api failed (attempt 1 of 5): fetch failed: getaddrinfo ENOTFOUND mcp.render.test",
-			);
-		});
-
-		/* The server sends an API key on to the Render API. So a key that is not
-		 * valid fails in the tool call, and the MCP request gets a 200. */
-		it.each([
-			["service srv-api: unauthorized", 401],
-			["cannot access workspace tea-test: forbidden", 403],
-		])(
-			"fails at once when the tool call fails with %s",
-			async (text, status) => {
-				const requests = fakeMcpServer(({ method, id }) =>
-					method === "tools/call"
-						? toolAnswer(id, {
-								isError: true,
-								content: [{ type: "text", text }],
-							})
-						: null,
-				);
-
-				await expect(waitForApi(newClient())).rejects.toMatchObject({
-					name: "McpError",
-					message: `list_deploys: ${text}`,
-					status,
-				});
-				expect(
-					requests.filter(({ method }) => method === "tools/call"),
-				).toHaveLength(1);
-			},
+		await expect(waitForApi()).rejects.toThrow(
+			`Listing the deploys of srv-api failed with ${status}. The API key needs read access to the workspace.`,
 		);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 });
 
 describe("waitForServices", () => {
-	const web = { id: "srv-web", name: "acme-demo-shop-web" };
-	const api = { id: "srv-api", name: "acme-demo-shop-api" };
+	const web = {
+		id: "srv-web",
+		name: "acme-demo-shop-web",
+		serviceDetails: { url: "https://acme-demo-shop-web.onrender.com/" },
+	};
+	const api = {
+		id: "srv-api",
+		name: "acme-demo-shop-api",
+		serviceDetails: { url: "https://acme-demo-shop-api.onrender.com" },
+	};
+
+	/**
+	 * Each request gets the next list of services, or the next error status.
+	 * Returns the URL of each request.
+	 */
+	function serveServices(results: ((typeof web)[] | number)[]): URL[] {
+		const urls: URL[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request) => {
+				urls.push(new URL(String(url)));
+				const result = results[Math.min(urls.length, results.length) - 1];
+				return typeof result === "number"
+					? new Response("", { status: result })
+					: Response.json(result.map((service) => ({ service, cursor: "c" })));
+			}),
+		);
+		return urls;
+	}
+
+	/** Wait 60 seconds for the services, and run the sleeps at once. */
+	async function waitFor(names: string[], onPoll = vi.fn()) {
+		const [services] = await Promise.all([
+			waitForServices("tea-test", names, 60_000, onPoll),
+			vi.runAllTimersAsync(),
+		]);
+		return services;
+	}
 
 	beforeEach(() => {
 		vi.useFakeTimers();
+		vi.stubEnv("RENDER_API_KEY", "rnd_test");
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 	});
 
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
 	});
 
 	it("polls again after a poll fails, until each service is there", async () => {
-		const results = [
-			[web],
-			new McpError("list_services: received response code 503: ", {
-				tool: "list_services",
-			}),
-			[web, api],
-		];
-		let calls = 0;
-		const callTool = vi.fn(async () => {
-			const result = results[calls++];
-			if (result instanceof Error) throw result;
-			return result;
-		});
+		const urls = serveServices([[web], 503, [web, api]]);
 		const onPoll = vi.fn();
 
-		const [services] = await Promise.all([
-			waitForServices(
-				{ callTool } as unknown as RenderMcp,
-				"tea-test",
-				[web.name, api.name],
-				60_000,
-				onPoll,
-			),
-			vi.runAllTimersAsync(),
-		]);
+		const services = await waitFor([web.name, api.name], onPoll);
 
-		expect([...services.keys()]).toEqual([web.name, api.name]);
+		expect([...services.values()]).toEqual([
+			{
+				id: "srv-web",
+				name: web.name,
+				url: "https://acme-demo-shop-web.onrender.com",
+			},
+			{
+				id: "srv-api",
+				name: api.name,
+				url: "https://acme-demo-shop-api.onrender.com",
+			},
+		]);
 		expect(onPoll.mock.calls.map(([detail]) => detail)).toEqual([
 			"Found 1/2 services",
-			"list_services failed (attempt 1 of 5): list_services: received response code 503: ",
+			"The service lookup failed (attempt 1 of 5): Listing services failed with 503.",
 		]);
+		expect(urls[0].searchParams.get("ownerId")).toBe("tea-test");
+		expect(urls[0].searchParams.getAll("name")).toEqual([web.name, api.name]);
+	});
+
+	// The name filter of the API is not the check.
+	it("does not take a service whose name only starts with a wanted name", async () => {
+		const urls = serveServices([[{ ...web, name: `${web.name}-2` }], [web]]);
+
+		const services = await waitFor([web.name]);
+
+		expect([...services.keys()]).toEqual([web.name]);
+		expect(urls).toHaveLength(2);
 	});
 });
 
@@ -588,19 +376,6 @@ describe("pageContains", () => {
 		});
 		expect(await pageContains(PAGE, API_HOST)).toBe(false);
 		expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([PAGE]);
-	});
-});
-
-describe("findLogMessages", () => {
-	// Render returns logs newest first; a build log reads correctly oldest first.
-	it("reverses log order", () => {
-		const payload = {
-			logs: [{ message: "error: exit 1" }, { message: "running npm install" }],
-		};
-		expect(findLogMessages(payload)).toEqual([
-			"running npm install",
-			"error: exit 1",
-		]);
 	});
 });
 

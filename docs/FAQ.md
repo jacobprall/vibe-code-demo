@@ -50,7 +50,7 @@ Architecture overview and how Render products fit together: [README.md](README.m
 - "The builder is writing code in a sandbox — an isolated Linux environment that gets destroyed after this run"
 - "It's building, running migrations, booting the API, and querying it against a real Postgres — all inside the sandbox"
 - "Now it's committing the Blueprint. Render will sync it and create the services"
-- "It's watching the deploy via MCP and will smoke-test the live URLs"
+- "It's watching the deploy through the Render API and will smoke-test the live URLs"
 
 ### After the demo
 
@@ -140,7 +140,7 @@ A: Yes, up to 3 concurrent runs (configurable). Each run gets its own sandbox an
 A: No. It's a demonstration. Auth is HTTP Basic, there's no tenant isolation, no quotas, and no abuse controls. See [docs/README.md](docs/README.md#when-to-use-this-reference) and [Current limitations](docs/README.md#current-limitations).
 
 **Q: How is this different from just using Claude to write code?**
-A: Claude writes the code, but the factory is the system around it: isolated sandboxes, real database verification, declarative deployment, MCP-based monitoring, durable state, and a deploy-repair loop. The code gets *built, migrated, booted, queried, committed, deployed, and smoke-tested* before anyone sees a URL.
+A: Claude writes the code, but the factory is the system around it: isolated sandboxes, real database verification, declarative deployment, MCP-based failure diagnosis, durable state, and a deploy-repair loop. The code gets *built, migrated, booted, queried, committed, deployed, and smoke-tested* before anyone sees a URL.
 
 **Q: Why Blueprints instead of the Render API?**
 A: Three reasons: (1) env wiring is declarative — `fromDatabase` and `fromService` mean no connection strings in code, (2) every deploy is a Git diff, (3) agents physically cannot create infrastructure — the only path is a commit.

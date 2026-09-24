@@ -123,7 +123,7 @@ app/
   policy.ts      checkToolCall, path rules, MCP allowlist, secret redaction
   sandbox.ts     Render Sandboxes, shellEscape, Postgres in the sandbox
   blueprint.ts   render.yaml generation — the only path that creates resources
-  render.ts      MCP client, service and deploy reads, Blueprint lookup
+  render.ts      REST reads of services, deploys, and Blueprints; HTTP probes
   teardown.ts    Deletes of a deleted app — the only Render write API calls
   git.ts         Clone, .gitignore, the copy of an app between sandboxes,
                  commit, push, verify, GitHub credentials
@@ -280,9 +280,9 @@ delete, read Render through `retryRead()` in `app/render.ts`. It does a failed
 read again after the poll interval, and it fails after five failures in
 sequence, with the last error. It fails at once for a 401 or 403, because a
 new attempt cannot repair the API key. `findBlueprint` uses it too, so only a
-lookup that finds no Blueprint gives `awaiting_blueprint`. `RenderMcp` starts
-a new MCP session after a failed handshake, and after a 404 that tells it that
-the server ended the session.
+lookup that finds no Blueprint gives `awaiting_blueprint`. Workflow code reads
+Render over REST, which gives typed records. Only the agents use the Render
+MCP server.
 
 Postgres enforces two things through constraints rather than application code:
 `runs.idempotency_key` is unique, so a retried curl cannot start a second run,

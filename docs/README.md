@@ -185,8 +185,9 @@ useful consequences:
   because the only path to a new service is a commit, and agents do not run
   git.
 
-MCP is how the factory *reads* Render — service state, deploy status, build
-logs — and how the architect explores the workspace while it designs.
+The agents read Render through read-only MCP tools: the architect explores the
+workspace while it designs, and the deploy manager reads the logs of a failed
+deploy. Workflow code reads service and deploy state from the REST API.
 
 Deletion is the one exception to the rule. A Blueprint change never deletes a
 resource, so `app/teardown.ts` calls the Render API to delete the resources of
@@ -361,7 +362,7 @@ npm run check    # Biome, tsc, Vitest
 | `UI_PASSWORD` | Gateway | HTTP Basic Auth password; 16+ characters |
 | `RENDER_WORKFLOW_SLUG` | Gateway | Workflows service slug, without a task name |
 | `DATABASE_URL` | Both | Postgres connection string for the runs table |
-| `RENDER_API_KEY` | Both | Task dispatch; Sandboxes, MCP, and Blueprint reads; the deletes of a deleted app's resources |
+| `RENDER_API_KEY` | Both | Task dispatch; Sandboxes; the MCP tools of the agents; reads of services, deploys, and Blueprints; the deletes of a deleted app's resources |
 | `RENDER_WORKSPACE_ID` | Workflows | Workspace sandboxes and services live in |
 | `ANTHROPIC_API_KEY` | Workflows | Claude Agent SDK credential |
 | `GITHUB_APP_ID` | Workflows | GitHub App ID (preferred over a PAT) |

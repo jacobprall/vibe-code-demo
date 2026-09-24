@@ -65,7 +65,6 @@ import {
 	type DeployOutcome,
 	findBlueprint,
 	pageContains,
-	RenderMcp,
 	type ServiceRecord,
 	waitForDeploy,
 	waitForHttpOk,
@@ -172,7 +171,6 @@ async function run(
 ): Promise<WorkflowResult> {
 	const repo = appsRepo();
 	const workspaceId = renderWorkspaceId();
-	const mcp = RenderMcp.fromEnv();
 
 	// ── Design ──────────────────────────────────────────────────────────
 	await setRunStage(runId, "designing");
@@ -273,7 +271,6 @@ async function run(
 		await setRunStage(runId, "deploying");
 		return await awaitDeployment({
 			tasks,
-			mcp,
 			sandbox,
 			workspaceId,
 			repoUrl: repo.url,
@@ -990,7 +987,6 @@ async function commitAndPush(
 export interface DeployContext {
 	/** Runs the deploy manager, the builder, verify-app, and publish-app. */
 	tasks: TaskContext;
-	mcp: RenderMcp;
 	sandbox: Sandbox;
 	workspaceId: string;
 	repoUrl: string;
@@ -1015,7 +1011,7 @@ export interface DeployContext {
 export async function awaitDeployment(
 	ctx: DeployContext,
 ): Promise<WorkflowResult> {
-	const { mcp, workspaceId } = ctx;
+	const { workspaceId } = ctx;
 	// A repair replaces the manifest. Read the spec from here, not from ctx.
 	let spec = ctx.spec;
 	const names = resourceNames(spec);
@@ -1052,7 +1048,6 @@ export async function awaitDeployment(
 		`Waiting for ${wanted.length} Blueprint service(s)`,
 	);
 	const services = await waitForServices(
-		mcp,
 		workspaceId,
 		wanted,
 		SERVICE_TIMEOUT_MS,
@@ -1096,8 +1091,7 @@ export async function awaitDeployment(
 		const outcomes = await Promise.all(
 			waits.map(async ({ service, after }) => ({
 				service,
-				deploy: await waitForDeploy(mcp, service.id, {
-					workspaceId,
+				deploy: await waitForDeploy(service.id, {
 					timeoutMs: DEPLOY_TIMEOUT_MS,
 					after,
 					onPoll: (detail) => heartbeat(`${service.name}: ${detail}`),

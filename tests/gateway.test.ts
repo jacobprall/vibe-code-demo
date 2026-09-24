@@ -273,7 +273,7 @@ describe("status", () => {
 			stage: "done",
 			// Progress can hold the error of a failed Render read.
 			progress:
-				"list_deploys for srv-1 failed (attempt 1 of 5): postgres://user:pw@host/db",
+				"The deploy lookup of srv-1 failed (attempt 1 of 5): postgres://user:pw@host/db",
 			workflowRunId: "trn-1",
 			appName: "furniture-catalog",
 			webUrl: "https://vibe-demo-furniture-catalog-web.onrender.com",
@@ -299,7 +299,7 @@ describe("status", () => {
 		expect(body.summary).not.toContain("postgres://user:pw@host/db");
 		expect(body.summary).toContain("[REDACTED]");
 		expect(body.progress).toBe(
-			"list_deploys for srv-1 failed (attempt 1 of 5): [REDACTED]",
+			"The deploy lookup of srv-1 failed (attempt 1 of 5): [REDACTED]",
 		);
 	});
 
