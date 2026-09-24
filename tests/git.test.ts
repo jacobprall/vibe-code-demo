@@ -65,9 +65,7 @@ function fakeSandbox(handler: (command: string) => ExecResult | undefined) {
 }
 
 const isPush = (command: string) => / 'push' /.test(command);
-const isPull = (command: string) => / 'pull' /.test(command);
-const isConflictList = (command: string) =>
-	command.includes("--diff-filter=U");
+const isFetch = (command: string) => / 'fetch' /.test(command);
 const isChangedPaths = (command: string) => command.includes(" diff-tree ");
 
 /** The answer to the list of the paths that a commit changes. */
@@ -86,93 +84,108 @@ function verified(command: string): ExecResult | undefined {
 	return undefined;
 }
 
-const push = (sandbox: Sandbox, resolve?: () => Promise<readonly string[]>) =>
+const push = (
+	sandbox: Sandbox,
+	redo: () => Promise<string | null> = async () => HEAD,
+) =>
 	pushVerified(
 		sandbox,
 		"token",
 		"https://github.com/o/r.git",
 		"main",
 		PATHS,
-		resolve,
+		redo,
 	);
 
 /**
- * The root Blueprint holds every app the factory has built, so a concurrent
- * run's push makes it conflict every time. It is generated from each app's
- * factory.json, so it is recomputed rather than merged — without this, the run
- * that lost the race failed after building and verifying an app successfully.
+ * The root Blueprint holds every app the factory has built, so the push of a
+ * concurrent run changes it every time. Each change of the factory is derived
+ * from its inputs, so the run that pushes second makes its change again on
+ * the new tip, and no merge is necessary.
  */
-describe("pushVerified rebase conflicts", () => {
-	it("recomputes a generated file and continues the rebase", async () => {
-		let rebased = false;
-		const { sandbox, commands } = fakeSandbox((command) => {
-			if (isPull(command)) {
-				rebased = true;
-				return { output: "CONFLICT (content): render.yaml", exitCode: 1 };
-			}
-			// The retry lands once our commit sits on top of theirs.
-			if (isPush(command)) {
-				return rebased ? OK : { output: "non-fast-forward", exitCode: 1 };
-			}
-			if (isConflictList(command)) {
-				return { output: "render.yaml\n", exitCode: 0 };
-			}
-			return verified(command);
-		});
+describe("pushVerified when another run pushed first", () => {
+	/** The first push fails, and each later push succeeds. */
+	function secondPushWins(command: string): ExecResult | undefined {
+		if (isPush(command)) {
+			return secondPushWins.pushes++ === 0
+				? { output: "non-fast-forward", exitCode: 1 }
+				: OK;
+		}
+		return verified(command);
+	}
+	secondPushWins.pushes = 0;
 
-		const resolve = vi.fn(async () => ["render.yaml"]);
-		await expect(push(sandbox, resolve)).resolves.toBe(HEAD);
+	afterEach(() => {
+		secondPushWins.pushes = 0;
+	});
 
-		expect(resolve).toHaveBeenCalledOnce();
-		expect(commands.some((c) => c.includes("rebase --continue"))).toBe(true);
-		expect(commands.some((c) => c.includes("rebase --abort"))).toBe(false);
-		// The rebase already staged the rest of the commit.
-		expect(commands).toContain(
-			`git -c core.hooksPath=/dev/null -C ${shellEscape(REPO_DIR)} add -- 'render.yaml'`,
+	it("takes the new tip and makes the change again", async () => {
+		const { sandbox, commands } = fakeSandbox(secondPushWins);
+		const redo = vi.fn(async () => HEAD);
+
+		await expect(push(sandbox, redo)).resolves.toBe(HEAD);
+
+		expect(redo).toHaveBeenCalledOnce();
+		expect(commands.filter(isPush)).toHaveLength(2);
+		const fetch = commands.findIndex(isFetch);
+		const reset = commands.indexOf(
+			`git -c core.hooksPath=/dev/null -C ${shellEscape(REPO_DIR)} reset -q --hard FETCH_HEAD`,
 		);
-		expect(commands.some((c) => c.includes(" add -A"))).toBe(false);
-	});
-
-	it("names the file and aborts when a real conflict is mixed in", async () => {
-		const { sandbox, commands } = fakeSandbox((command) => {
-			if (isPush(command)) return { output: "non-fast-forward", exitCode: 1 };
-			if (isPull(command)) return { output: "CONFLICT", exitCode: 1 };
-			if (isConflictList(command)) {
-				return {
-					output: "render.yaml\napps/demo/shop/index.html\n",
-					exitCode: 0,
-				};
-			}
-			return verified(command);
-		});
-
-		await expect(push(sandbox, async () => ["render.yaml"])).rejects.toThrow(
-			/apps\/demo\/shop\/index\.html/,
+		const lastPush = commands.map(isPush).lastIndexOf(true);
+		expect(commands[fetch]).toContain(
+			"'fetch' '-q' '--depth=1' 'https://github.com/o/r.git' 'main'",
 		);
-		expect(commands.some((c) => c.includes("rebase --abort"))).toBe(true);
+		expect(fetch).toBeLessThan(reset);
+		expect(reset).toBeLessThan(lastPush);
+		expect(commands.some((c) => / 'pull' |rebase/.test(c))).toBe(false);
 	});
 
-	it("aborts rather than leaving a rebase in progress with no resolver", async () => {
-		const { sandbox, commands } = fakeSandbox((command) => {
-			if (isPush(command)) return { output: "non-fast-forward", exitCode: 1 };
-			if (isPull(command)) return { output: "CONFLICT", exitCode: 1 };
-			return verified(command);
-		});
+	// The first push reached GitHub, but git reported a failure.
+	it("gives the tip when the tip already holds the change", async () => {
+		const { sandbox, commands } = fakeSandbox((command) =>
+			isPush(command)
+				? { output: "the remote end hung up unexpectedly", exitCode: 1 }
+				: verified(command),
+		);
 
-		await expect(push(sandbox)).rejects.toThrow(/Rebase onto main failed/);
-		expect(commands.some((c) => c.includes("rebase --abort"))).toBe(true);
+		await expect(push(sandbox, async () => null)).resolves.toBe(HEAD);
+		expect(commands.filter(isPush)).toHaveLength(1);
 	});
 
-	it("does not touch the resolver when the first push succeeds", async () => {
+	it("does not make the change again when the first push succeeds", async () => {
 		const { sandbox, commands } = fakeSandbox(verified);
-		const resolve = vi.fn(async () => ["render.yaml"]);
+		const redo = vi.fn(async () => HEAD);
 
-		await expect(push(sandbox, resolve)).resolves.toBe(HEAD);
-		expect(resolve).not.toHaveBeenCalled();
-		expect(commands.some((c) => isPull(c))).toBe(false);
+		await expect(push(sandbox, redo)).resolves.toBe(HEAD);
+		expect(redo).not.toHaveBeenCalled();
+		expect(commands.some(isFetch)).toBe(false);
 	});
 
-	it("still refuses a remote SHA that does not match the local commit", async () => {
+	it("stops after three pushes fail", async () => {
+		const { sandbox, commands } = fakeSandbox((command) =>
+			isPush(command)
+				? { output: "non-fast-forward", exitCode: 1 }
+				: verified(command),
+		);
+
+		await expect(push(sandbox)).rejects.toThrow("Push failed: non-fast-forward");
+		expect(commands.filter(isPush)).toHaveLength(3);
+	});
+
+	it("stops when the fetch of the new tip fails", async () => {
+		const { sandbox } = fakeSandbox((command) => {
+			if (isFetch(command)) return { output: "not found", exitCode: 128 };
+			return secondPushWins(command);
+		});
+		const redo = vi.fn(async () => HEAD);
+
+		await expect(push(sandbox, redo)).rejects.toThrow(
+			"Fetch of main failed: not found",
+		);
+		expect(redo).not.toHaveBeenCalled();
+	});
+
+	it("refuses a remote SHA that does not match the local commit", async () => {
 		const { sandbox } = fakeSandbox((command) => {
 			if (command.includes("rev-parse HEAD")) {
 				return { output: `${HEAD}\n`, exitCode: 0 };
@@ -258,24 +271,24 @@ describe("pushVerified paths", () => {
 		);
 	});
 
-	// A rebase makes the commit again on the new tip.
-	it("checks the commit again after a rebase", async () => {
-		let rebased = false;
+	// A new attempt makes a new commit on the new tip.
+	it("checks the commit again after the change is made again", async () => {
+		let redone = false;
 		const { sandbox, commands } = fakeSandbox((command) => {
 			if (isChangedPaths(command)) {
-				return rebased
+				return redone
 					? changes("render.yaml", "apps/victim/site/index.html")
 					: changes("render.yaml");
-			}
-			if (isPull(command)) {
-				rebased = true;
-				return OK;
 			}
 			if (isPush(command)) return { output: "non-fast-forward", exitCode: 1 };
 			return verified(command);
 		});
+		const redo = async () => {
+			redone = true;
+			return HEAD;
+		};
 
-		await expect(push(sandbox)).rejects.toThrow(
+		await expect(push(sandbox, redo)).rejects.toThrow(
 			/so it was not pushed: apps\/victim\/site\/index\.html/,
 		);
 		expect(commands.filter(isPush)).toHaveLength(1);
@@ -458,8 +471,9 @@ describe("what a commit holds, under real git", () => {
 			// The tar of macOS adds a ._ file for the metadata of each file.
 			COPYFILE_DISABLE: "1",
 		};
+		// stderr too, so that a push that git refuses on purpose prints nothing.
 		const run = (command: string, cwd = root) =>
-			execSync(command, { cwd, env, encoding: "utf8" });
+			execSync(command, { cwd, env, encoding: "utf8", stdio: "pipe" });
 		run("git init -q");
 		run("git config user.name test && git config user.email test@example.com");
 		return { root, run, sandbox: localSandbox(root, run) };
@@ -807,6 +821,55 @@ describe("what a commit holds, under real git", () => {
 		expect(
 			readFileSync(join(target.root, "apps/demo/shop/assets/fog.jpg")),
 		).toEqual(PHOTO);
+	});
+
+	// Two runs publish at one time. The run that pushes second takes the new
+	// tip and makes its change again, so the root Blueprint gets both apps.
+	it("makes the change again on the tip of a push that came first", async () => {
+		const { root, run, sandbox } = repository();
+		const remote = tempDir();
+		run(`git init -q --bare ${shellEscape(remote)}`);
+		write(root, { "render.yaml": "apps: []\n" });
+		run("git add -A && git commit -qm seed");
+		run(`git push -q ${shellEscape(remote)} HEAD:refs/heads/main`);
+
+		// Another run pushes the cafe app first.
+		const other = tempDir();
+		run(`git clone -q -b main ${shellEscape(remote)} ${shellEscape(other)}`);
+		write(other, {
+			"apps/demo/cafe/index.html": "cafe",
+			"render.yaml": "apps: [cafe]\n",
+		});
+		run(
+			"git add -A && git -c user.name=t -c user.email=t@example.com commit -qm cafe && git push -q origin HEAD:main",
+			other,
+		);
+
+		// This run adds the shop app. Its root Blueprint lists the apps of the
+		// clone, as writeRootBlueprint() does.
+		const commit = async () => {
+			write(root, { "apps/demo/shop/index.html": "shop" });
+			const apps = readdirSync(join(root, "apps/demo")).sort();
+			write(root, { "render.yaml": `apps: [${apps.join(", ")}]\n` });
+			return commitPaths(sandbox, "demo/shop", PATHS);
+		};
+		await commit();
+		const pushed = await pushVerified(
+			sandbox,
+			"token",
+			remote,
+			"main",
+			PATHS,
+			commit,
+		);
+
+		const onRemote = (command: string) =>
+			run(`git --git-dir=${shellEscape(remote)} ${command}`);
+		expect(onRemote("rev-parse main").trim()).toBe(pushed);
+		expect(onRemote("show main:render.yaml")).toBe("apps: [cafe, shop]\n");
+		expect(
+			lines(onRemote("diff-tree -r --no-commit-id --name-only main")),
+		).toEqual(["apps/demo/shop/index.html", "render.yaml"]);
 	});
 });
 

@@ -134,7 +134,7 @@ A: The gateway reconciles stale runs by checking Workflows status. Heartbeats an
 A: Select one of its runs in the UI and click **Delete app**, or send `DELETE /v1/apps/:runId`. The delete removes the app with all of its runs. The workflow takes the app out of the root Blueprint, waits until no Blueprint sync can bring its resources back, deletes its services, database, and project, and then removes its files from the apps repo. It takes a few minutes. The files stay in the Git history. If it ends as `delete_failed`, the summary says why; fix that and delete again. In the Render Dashboard, each step is a run of its own under the `delete-app` run, with its own logs, so you can see which step failed.
 
 **Q: Can multiple people demo at once?**
-A: Yes, up to 3 concurrent runs (configurable). Each run gets its own sandbox and app namespace (`vibe-<user>-<app>-{web,api,db}`). Concurrent runs rebase onto the same branch.
+A: Yes, up to 3 concurrent runs (configurable). Each run gets its own sandbox and app namespace (`vibe-<user>-<app>-{web,api,db}`). Concurrent runs push to the same branch: a run whose push fails takes the new tip and makes its commit again.
 
 **Q: Is this safe for public/untrusted users?**
 A: No. It's a demonstration. Auth is HTTP Basic, there's no tenant isolation, no quotas, and no abuse controls. See [docs/README.md](docs/README.md#when-to-use-this-reference) and [Current limitations](docs/README.md#current-limitations).
