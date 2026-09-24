@@ -196,7 +196,6 @@ async function run(
 		}
 
 		// ── Deploy ──────────────────────────────────────────────────────
-		await setRunStage(runId, "deploying");
 		return await awaitDeployment({
 			tasks,
 			sandbox,
