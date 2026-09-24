@@ -101,15 +101,18 @@ and no SDK layer — imports are relative with `.js` extensions (NodeNext).
 The dependency direction is one-way:
 
 ```text
-sandbox → tools → claude → agents → workflow
+sandbox → tools → claude → agents → stages → workflow
 ```
 
-`policy` is imported by `claude` and defines the MCP allowlist. `render` is
-imported by `claude` (for the MCP URL), by `teardown`, and by `workflow`.
-`blueprint`, `git`, `images`, `teardown`, and `store` are used by `workflow`; `teardown`
-uses `render` and `blueprint`; `gateway` uses `store`, `policy`, and
-`contracts`. `config` and `contracts` are leaves. Adding an edge that points
-backwards is a design smell.
+The stages are `build`, `verify`, `publish`, `deploy`, and `delete`.
+`workflow` runs them, `deploy` uses `build`, `verify`, and `publish`, `build`
+uses `verify`, and `delete` uses `publish`. `policy` is imported by `claude`
+and defines the MCP allowlist. `render` is imported by `claude` (for the MCP
+URL), by `teardown`, and by `deploy` and `delete`. `blueprint`, `git`,
+`images`, `teardown`, and `store` are used by `workflow` and the stages;
+`teardown` uses `render` and `blueprint`; `gateway` uses `store`, `policy`,
+and `contracts`. `config` and `contracts` are leaves. Adding an edge that
+points backwards is a design smell.
 
 ```text
 factory.config.ts   Directories, branch, plans, asset hosts, model tiers
@@ -130,7 +133,12 @@ app/
   store.ts       Postgres: one runs table
   templates.ts   Read a template and materialize it into the sandbox
   images.ts      Photographs from Wikimedia Commons for an app
-  workflow.ts    The prompt-to-app and delete-app pipelines and their steps
+  workflow.ts    The prompt-to-app and delete-app pipelines
+  build.ts       The builder rounds with verify-app, and the builder message
+  verify.ts      verify-app: build, boot, and query the app in the sandbox
+  publish.ts     publish-app, and each clone, change, commit, and push
+  deploy.ts      The deploy wait, the deploy repair, and the smoke checks
+  delete.ts      The four steps of delete-app
   schema.sql     Schema, applied by scripts/migrate.ts
   server.ts      Gateway entrypoint
   host.ts        Workflows entrypoint
@@ -316,9 +324,10 @@ next step does not wait for the push event. A retry of
    `RENDER_READ_ONLY_TOOLS`.
 2. Wrap it with `agentTask()` at the bottom of `app/agents.ts`, beside the
    other registrations.
-3. Call it from the relevant stage in `app/workflow.ts` with
-   `tasks.run(<agent>Task, input)`. `tasks` is the `TaskContext` that
-   Render Workflows gives to `prompt-to-app`; pass it to the stage. A task
+3. Call it from the stage that needs it, in `app/workflow.ts` or a stage
+   module such as `app/build.ts`, with `tasks.run(<agent>Task, input)`.
+   `tasks` is the `TaskContext` that Render Workflows gives to
+   `prompt-to-app`; pass it to the stage. A task
    definition is not a function, so a direct call does not compile. Pass
    `sandboxId: sandbox.id` and `workDir: appDir` only when it declares tools.
    `runClaude()` refuses tools without both.
@@ -343,7 +352,7 @@ next step does not wait for the push event. A retry of
    `host`, `port`, or `hostport`.
 4. Extend `resourceNames()` so the new resource is namespaced by user and app
    and cannot collide with another resource in the same workspace.
-5. Give `verify()` in `app/workflow.ts` a way to exercise it before the push.
+5. Give `verify()` in `app/verify.ts` a way to exercise it before the push.
    A primitive nothing verifies is a primitive that fails in production.
 6. Add assertions to `tests/blueprint.test.ts`. That suite is the contract for
    what gets deployed.
@@ -365,7 +374,7 @@ code that deploys it, and so CI builds it. If you change it:
    template nobody builds is one that quietly stops building.
 2. Keep the seed non-empty and both SQL files idempotent. Verification fails a
    run whose data endpoint returns no rows.
-3. Update `templateLines()` in `app/workflow.ts` if the manifest it implies
+3. Update `templateLines()` in `app/build.ts` if the manifest it implies
    changes. `tests/templates.test.ts` pins the two together; that suite is what
    catches the template and the prompt drifting apart.
 4. Templates are text only. They are materialized as one self-extracting shell
@@ -373,12 +382,12 @@ code that deploys it, and so CI builds it. If you change it:
 
 ## Change the pipeline
 
-`app/workflow.ts` holds the linear narrative and its stages. Keep the narrative
-readable — a new stage should read as one call with its detail in a function
-below. Fetch large state inside the workflow rather than passing it through
-dispatch, and keep repeated execution safe: a rerun of the same prompt
-replaces the app directory with the files of the new build, on the newest tip
-of the branch.
+`app/workflow.ts` holds the two narratives: `prompt-to-app` and `delete-app`.
+Keep them readable — a stage reads as one call there, with its detail in the
+module of the stage. Fetch large state inside the workflow rather than passing
+it through dispatch, and keep repeated execution safe: a rerun of the same
+prompt replaces the app directory with the files of the new build, on the
+newest tip of the branch.
 
 Verification and the publish are subtasks of `prompt-to-app`, as the agents
 are. `verify-app` gives its failures as a result, not as an error, and
@@ -402,10 +411,10 @@ storefront, or a script that it loads, must contain the public hostname of the
 API. The API checks cannot see the hostname that a browser uses.
 
 A deploy repair ships through the same path as the first build. The repaired
-manifest must pass `verify-app`. Then `publish-app` rewrites `factory.json` and both Blueprints before the commit,
-because Render gets the manifest only through these files. A repair
-can change commands, paths, and env wiring, but not the list from
-`declaredResources()`. Render does not delete a resource that leaves the
+manifest must pass `verify-app`. Then `publish-app` rewrites `factory.json`
+and both Blueprints before the commit, because Render gets the manifest only
+through these files. A repair can change commands, paths, and env wiring, but
+not the list from `declaredResources()`. Render does not delete a resource that leaves the
 Blueprint, it cannot change the runtime of a service, and the loop watches only
 the services of the first push. For this reason, the workflow fails such a
 repair and pushes nothing.
@@ -432,7 +441,8 @@ in a subdirectory.
 
 A delete removes an app, not only a run: the runs of one app share its files
 and its resources. `removeApp()` in `app/workflow.ts` runs one subtask for each
-step, in this order, and `tests/workflow.test.ts` tests it:
+step, in this order. The steps are in `app/delete.ts`, and
+`tests/workflow.test.ts` tests them:
 
 1. `remove-app-from-blueprint`: write `deletedAt` into the app's
    `factory.json`, regenerate the root Blueprint, which leaves the app out,

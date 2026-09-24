@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import { builder } from "../app/agents.js";
 import { extractionScript, readTemplate } from "../app/templates.js";
-import { templateLines } from "../app/workflow.js";
+import { templateLines } from "../app/build.js";
 
 const files = await readTemplate("fullstack");
 const byPath = new Map(files.map((file) => [file.path, file.contents]));
