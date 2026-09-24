@@ -11,7 +11,6 @@ import {
 import {
 	architectTask,
 	buildTask,
-	curatorTask,
 	deployManagerTask,
 } from "./agents.js";
 import {
@@ -27,8 +26,6 @@ import {
 	type BuildOutput,
 	type Manifest,
 	appSpecSchema,
-	type AssetManifest,
-	assetManifestSchema,
 	buildOutputSchema,
 	type DeleteAppInput,
 	type DeleteResourcesInput,
@@ -59,6 +56,7 @@ import {
 	runVerification,
 	writeAppFiles,
 } from "./git.js";
+import { collectImages, type Image } from "./images.js";
 import {
 	type DeployOutcome,
 	findBlueprint,
@@ -220,7 +218,7 @@ async function run(
 
 		// ── Imagery ─────────────────────────────────────────────────────
 		await setRunStage(runId, "curating");
-		const assetManifest = await curate(tasks, sandbox, appDir, plan);
+		const images = await collectImages(sandbox, appDir, plan.assetQueries);
 
 		// ── Build and verify ────────────────────────────────────────────
 		await setRunStage(runId, "building");
@@ -232,7 +230,7 @@ async function run(
 			plan,
 			prompt,
 			runId,
-			assets: assetManifest,
+			images,
 			databaseUrl,
 			template,
 		});
@@ -281,44 +279,6 @@ async function run(
 	}
 }
 
-/* ── Imagery ──────────────────────────────────────────────────────────── */
-
-/**
- * Photographs are decoration: the builder falls back to inline SVG and CSS
- * without them. So a curator that runs out of turns, or a Commons outage,
- * degrades the storefront rather than failing a deploy.
- */
-async function curate(
-	tasks: TaskContext,
-	sandbox: Sandbox,
-	appDir: string,
-	plan: DeployPlan,
-): Promise<AssetManifest> {
-	if (plan.assetQueries.length === 0) return { assets: [] };
-
-	try {
-		return await agentJson(
-			(message) =>
-				tasks.run(curatorTask, {
-					message,
-					sandboxId: sandbox.id,
-					workDir: appDir,
-				}),
-			assetManifestSchema,
-			curatorMessage(plan, appDir),
-			"curator",
-		);
-	} catch (error) {
-		console.warn(
-			JSON.stringify({
-				event: "curator_skipped",
-				reason: error instanceof Error ? error.message : String(error),
-			}),
-		);
-		return { assets: [] };
-	}
-}
-
 /* ── Build ────────────────────────────────────────────────────────────── */
 
 interface BuildOutcome {
@@ -336,7 +296,7 @@ async function buildAndVerify(opts: {
 	plan: DeployPlan;
 	prompt: string;
 	runId: string;
-	assets: AssetManifest;
+	images: readonly Image[];
 	databaseUrl: string | null;
 	template: readonly string[];
 }): Promise<BuildOutcome> {
@@ -1640,29 +1600,11 @@ async function readSpec(
 
 /* ── Prompts ──────────────────────────────────────────────────────────── */
 
-function curatorMessage(plan: DeployPlan, appDir: string): string {
-	return [
-		`App: ${plan.appName}`,
-		`What it is: ${plan.summary}`,
-		"",
-		`Call asset__collect once with destDir: ${assetsDir(appDir)}`,
-		"and every subject below. Report paths as assets/<file>.",
-		"",
-		"Subjects to find:",
-		...plan.assetQueries.map((query) => `- ${query}`),
-	].join("\n");
-}
-
-/** Where the curator downloads to. The builder is told to use these. */
-function assetsDir(appDir: string): string {
-	return `${appDir}/assets`;
-}
-
 function builderMessage(opts: {
 	prompt: string;
 	plan: DeployPlan;
 	appDir: string;
-	assets: AssetManifest;
+	images: readonly Image[];
 	databaseUrl: string | null;
 	template: readonly string[];
 }): string {
@@ -1692,7 +1634,7 @@ function builderMessage(opts: {
 		"",
 		databaseLines(opts.databaseUrl),
 		"",
-		assetLines(opts.assets),
+		imageLines(opts.images),
 	].join("\n");
 }
 
@@ -1747,17 +1689,17 @@ function databaseLines(databaseUrl: string | null): string {
 }
 
 /**
- * One line per photograph rather than the pretty-printed manifest. This text
- * rides along on every builder turn, so keeping it tight is worth it.
+ * One line per photograph rather than a pretty-printed list. This text rides
+ * along on every builder turn, so keeping it tight is worth it.
  */
-function assetLines(assets: AssetManifest): string {
-	if (assets.assets.length === 0) {
+function imageLines(images: readonly Image[]): string {
+	if (images.length === 0) {
 		return "Photographs: none available. Use inline SVG and CSS for all imagery.";
 	}
 	return [
-		`Photographs already in ${"assets/"} (path | alt | credit to publish):`,
-		...assets.assets.map(
-			(asset) => `- ${asset.path} | ${asset.alt} | ${asset.credit}`,
+		"Photographs already in assets/ (path | subject | credit to publish):",
+		...images.map(
+			(image) => `- ${image.path} | ${image.subject} | ${image.credit}`,
 		),
 	].join("\n");
 }

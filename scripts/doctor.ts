@@ -390,7 +390,6 @@ async function checkTasks(): Promise<void> {
 		const registered = new Set(TaskRegistry.getInstance().getAllTaskNames());
 		const expected = [
 			"architect",
-			"curator",
 			"builder",
 			"deploy-manager",
 			"prompt-to-app",

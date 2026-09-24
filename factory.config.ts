@@ -1,6 +1,6 @@
 /** The knobs you change when pointing this factory at your own product. */
 
-export type ModelTier = "small" | "medium" | "large";
+export type ModelTier = "medium" | "large";
 
 export interface FactoryConfig {
 	/**
@@ -26,10 +26,9 @@ export interface FactoryConfig {
 		postgresMajorVersion: string;
 	};
 	assets: {
-		/** Hosts asset__fetch will download from. Nothing else is reachable. */
+		/** Hosts that the image download accepts. Nothing else is reachable. */
 		allowedHosts: string[];
 		maxBytes: number;
-		maxCount: number;
 		/** Width Commons renders thumbnails to. Caps bytes on a landing page. */
 		imageWidth: number;
 	};
@@ -60,12 +59,10 @@ export const factoryConfig: FactoryConfig = {
 		// A landing page photograph, not an archive master. Commons will happily
 		// serve a 1400px-wide portrait at 1.8 MB.
 		maxBytes: 2 * 1024 * 1024,
-		maxCount: 12,
 		imageWidth: 1200,
 	},
 	maxConcurrentRuns: 3,
 	models: {
-		small: "claude-haiku-4-5",
 		medium: "claude-sonnet-5",
 		large: "claude-opus-5",
 	},

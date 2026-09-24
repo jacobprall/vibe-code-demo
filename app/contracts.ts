@@ -73,9 +73,9 @@ export const deployPlanSchema = z.object({
 		.min(1)
 		.max(4),
 	/**
-	 * What the curator should go and find pictures of. Capped low on purpose —
-	 * each subject is a Commons round trip, and a landing page needs a few
-	 * good photographs, not a gallery.
+	 * The subjects that the workflow finds photographs of, one each. Capped
+	 * low on purpose — each subject is a Commons round trip, and a landing
+	 * page needs a few good photographs, not a gallery.
 	 */
 	assetQueries: z.array(z.string().min(3).max(120)).max(4).optional().default([]),
 	brief: z.object({
@@ -89,31 +89,6 @@ export const deployPlanSchema = z.object({
 });
 
 export type DeployPlan = z.infer<typeof deployPlanSchema>;
-
-/* ── Curator ──────────────────────────────────────────────────────────── */
-
-export const assetManifestSchema = z.object({
-	/**
-	 * May be empty. Commons sometimes has nothing usable for a subject, and a
-	 * photograph-free run should still ship — the builder falls back to inline
-	 * SVG and CSS.
-	 */
-	assets: z
-		.array(
-			z.object({
-				/** Relative to the app directory, e.g. assets/walnut-chair.jpg. */
-				path: z
-					.string()
-					.regex(/^assets\/[A-Za-z0-9._-]+\.(?:jpg|jpeg|png|webp)$/),
-				subject: z.string().min(1).max(120),
-				alt: z.string().min(1).max(300),
-				credit: z.string().min(1).max(300),
-			}),
-		)
-		.max(20),
-});
-
-export type AssetManifest = z.infer<typeof assetManifestSchema>;
 
 /* ── Service manifest ──────────────────────────────────────────────────── */
 

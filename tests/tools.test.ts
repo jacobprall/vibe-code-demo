@@ -1,11 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExecResult, Sandbox } from "../app/sandbox.js";
 import {
-	assetCollect,
-	assetFetch,
-	bestCandidate,
-	type CommonsCandidate,
-	commonsQueries,
 	sandboxApplyPatch,
 	sandboxExec,
 	sandboxListDir,
@@ -21,10 +16,7 @@ function context(sandbox: Partial<Sandbox>, workDir = APP_DIR): ToolContext {
 	return { sandbox: sandbox as Sandbox, workDir };
 }
 
-type RunFn = (
-	command: string,
-	opts?: { signal?: AbortSignal },
-) => Promise<ExecResult>;
+type RunFn = (command: string) => Promise<ExecResult>;
 
 /** Typed so assertions can read back the command that was run. */
 const runMock = (output: string, exitCode = 0) =>
@@ -221,164 +213,5 @@ describe("sandbox__apply_patch", () => {
 
 		expect(out.isError).toBe(true);
 		expect(out.content).toContain("does not apply");
-	});
-});
-
-/**
- * These two guard the write path from the internet into the checkout. A
- * mismatch here once made the whole curator stage a silent no-op: every
- * download was rejected and the run still reported success.
- */
-describe("asset__fetch destinations", () => {
-	const noWrite = () => context({ writeFile: vi.fn(async () => undefined) });
-
-	it.each([
-		"/home/user/repo/apps/demo/shop/assets/chair.jpg",
-		"/home/user/repo/apps/demo/shop/web/public/assets/chair.png",
-		"/home/user/repo/apps/demo/shop/static/assets/chair.webp",
-	])("accepts %s", async (path) => {
-		const out = await assetFetch.invoke(
-			{ url: "https://upload.wikimedia.org/a.jpg", path },
-			noWrite(),
-		);
-		// Rejected destinations fail before any network call; these get past it.
-		expect(out.content).not.toContain("Destination must be");
-	});
-
-	it("accepts a path relative to the app directory", async () => {
-		const out = await assetFetch.invoke(
-			{ url: "https://upload.wikimedia.org/a.jpg", path: "assets/chair.jpg" },
-			noWrite(),
-		);
-		expect(out.content).not.toContain("Destination must be");
-	});
-
-	it.each([
-		["/etc/cron.d/payload.jpg", "inside the app directory"],
-		["/home/user/repo/render.yaml", "inside the app directory"],
-		["/home/user/repo/apps/victim/site/assets/chair.jpg", "inside the app directory"],
-		["/tmp/assets/chair.jpg", "inside the app directory"],
-		["/home/user/repo/apps/demo/shop/assets/script.js", "assets/"],
-		["/home/user/repo/apps/demo/shop/images/chair.jpg", "assets/"],
-	])("rejects %s", async (path, because) => {
-		const out = await assetFetch.invoke(
-			{ url: "https://upload.wikimedia.org/a.jpg", path },
-			noWrite(),
-		);
-		expect(out.isError).toBe(true);
-		expect(out.content).toContain(because);
-	});
-});
-
-/**
- * Commons requires every term to match, so a five-word subject finds nothing
- * and the curator burns its turn budget re-searching by hand.
- */
-describe("commonsQueries", () => {
-	it("shortens a prose subject, longest first", () => {
-		expect(commonsQueries("Beneteau Oceanis sailboat sailing offshore")).toEqual(
-			[
-				"Beneteau Oceanis sailboat sailing offshore",
-				"beneteau oceanis sailboat sailing offshore",
-				"beneteau oceanis sailboat sailing",
-				"beneteau oceanis sailboat",
-				"beneteau oceanis",
-			],
-		);
-	});
-
-	it("drops words Commons gains nothing from matching", () => {
-		expect(commonsQueries("sailboat cockpit and wheel helm closeup")).toContain(
-			"sailboat cockpit wheel helm",
-		);
-	});
-
-	it("leaves an already short subject as a single search", () => {
-		expect(commonsQueries("walnut chair")).toEqual(["walnut chair"]);
-	});
-
-	it("survives punctuation and empty input", () => {
-		expect(commonsQueries("  ")).toEqual([]);
-		expect(commonsQueries("Hallberg-Rassy cruising sailboat!")).toContain(
-			"hallberg-rassy cruising sailboat",
-		);
-	});
-});
-
-/**
- * Real candidates for "pocket gopher". Every thumbnail comes back at the
- * requested box, so thumbnail size says nothing about quality — sorting by it
- * picked the tallest image, which was a 1.8 MB portrait, and shipped it into a
- * landing page.
- */
-describe("bestCandidate", () => {
-	const candidate = (
-		title: string,
-		sourceWidth: number,
-		sourceHeight: number,
-	): CommonsCandidate => ({
-		title,
-		url: `https://upload.wikimedia.org/${title}.jpg`,
-		width: 1200,
-		height: sourceWidth >= sourceHeight ? 900 : 1200,
-		sourceWidth,
-		sourceHeight,
-		credit: "someone / Wikimedia Commons (CC BY-SA 4.0)",
-	});
-
-	it("prefers a large landscape source over a taller one", () => {
-		const pick = bestCandidate([
-			candidate("portrait", 1151, 2048),
-			candidate("mounds", 4000, 3000),
-			candidate("closeup", 2048, 1536),
-		]);
-		expect(pick?.title).toBe("mounds");
-	});
-
-	it("skips a source too small to fill the thumbnail it would be upscaled to", () => {
-		const pick = bestCandidate([
-			candidate("tiny-but-wide", 450, 326),
-			candidate("real", 2048, 1536),
-		]);
-		expect(pick?.title).toBe("real");
-	});
-
-	it("takes a portrait when no landscape source qualifies", () => {
-		expect(bestCandidate([candidate("portrait", 1568, 1735)])?.title).toBe(
-			"portrait",
-		);
-	});
-
-	it("falls back to a small source rather than returning nothing", () => {
-		expect(bestCandidate([candidate("tiny", 450, 326)])?.title).toBe("tiny");
-	});
-
-	it("has nothing to pick from an empty list", () => {
-		expect(bestCandidate([])).toBeUndefined();
-	});
-});
-
-describe("asset__collect", () => {
-	const ctx = () => context({ writeFile: vi.fn(async () => undefined) });
-
-	it.each(["/tmp/assets", "/home/user/repo/apps/victim/site/assets"])(
-		"rejects the destDir %s, outside the app directory",
-		async (destDir) => {
-			const out = await assetCollect.invoke(
-				{ subjects: ["walnut chair"], destDir },
-				ctx(),
-			);
-			expect(out.isError).toBe(true);
-			expect(out.content).toContain("inside the app directory");
-		},
-	);
-
-	it("rejects a destDir that is not an assets directory", async () => {
-		const out = await assetCollect.invoke(
-			{ subjects: ["walnut chair"], destDir: "/home/user/repo/apps/demo/shop" },
-			ctx(),
-		);
-		expect(out.isError).toBe(true);
-		expect(out.content).toContain("/assets");
 	});
 });

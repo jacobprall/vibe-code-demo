@@ -1,31 +1,26 @@
 /**
  * Tool access is the security boundary between an agent and the machine.
- * These assertions are what stop the curator from gaining shell access and
- * the architect from provisioning infrastructure.
+ * These assertions are what keep the sandbox tools with the builder, and the
+ * architect from provisioning infrastructure.
  */
 import { describe, expect, it } from "vitest";
 import * as agents from "../app/agents.js";
 import type { Agent } from "../app/claude.js";
 import { isRenderReadOnlyTool } from "../app/policy.js";
 
-const all: Agent[] = [
-	agents.architect,
-	agents.curator,
-	agents.builder,
-	agents.deployManager,
-];
+const all: Agent[] = [agents.architect, agents.builder, agents.deployManager];
 
 const toolNames = (agent: Agent) => (agent.tools ?? []).map((tool) => tool.name);
 
 describe("agent definitions", () => {
-	it("registers four agents with unique ids", () => {
-		expect(new Set(all.map((agent) => agent.id)).size).toBe(4);
+	it("registers three agents with unique ids", () => {
+		expect(new Set(all.map((agent) => agent.id)).size).toBe(3);
 	});
 
 	it("gives every agent a prompt and a known model tier", () => {
 		for (const agent of all) {
 			expect(agent.prompt.length).toBeGreaterThan(0);
-			expect(["small", "medium", "large"]).toContain(agent.model);
+			expect(["medium", "large"]).toContain(agent.model);
 		}
 	});
 
@@ -75,14 +70,6 @@ describe("tool access", () => {
 		}
 	});
 
-	it("gives the curator downloads and reads, but no shell or file writes", () => {
-		expect(toolNames(agents.curator)).toContain("asset__search");
-		expect(toolNames(agents.curator)).toContain("asset__fetch");
-		expect(toolNames(agents.curator)).not.toContain("sandbox__exec");
-		expect(toolNames(agents.curator)).not.toContain("sandbox__write_file");
-		expect(toolNames(agents.curator)).not.toContain("sandbox__apply_patch");
-	});
-
 	it("gives the deploy-manager no sandbox tools, only read-only Render tools", () => {
 		expect(toolNames(agents.deployManager)).toEqual([]);
 		const granted = agents.deployManager.renderTools ?? [];
@@ -98,11 +85,9 @@ describe("tool access", () => {
 		expect(toolNames(agents.builder)).toContain("sandbox__read_file");
 	});
 
-	it("gives no agent but the builder write or exec tools", () => {
+	it("gives no agent but the builder a sandbox tool", () => {
 		for (const agent of all.filter((candidate) => candidate.id !== "builder")) {
-			expect(toolNames(agent)).not.toContain("sandbox__exec");
-			expect(toolNames(agent)).not.toContain("sandbox__write_file");
-			expect(toolNames(agent)).not.toContain("sandbox__apply_patch");
+			expect(toolNames(agent)).toEqual([]);
 		}
 	});
 
@@ -120,7 +105,7 @@ describe("tool access", () => {
 		for (const agent of all) {
 			for (const name of toolNames(agent)) {
 				expect(builtIns).not.toContain(name);
-				expect(/^(sandbox|asset)__/.test(name)).toBe(true);
+				expect(name.startsWith("sandbox__")).toBe(true);
 			}
 		}
 	});
