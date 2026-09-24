@@ -224,6 +224,24 @@ describe("browser UI", () => {
 		expect(await response.text()).toContain("<title>Vibe Code Demo</title>");
 	});
 
+	it("lists each run stage in order, with a tooltip that says where it runs", async () => {
+		const { RUN_STAGES } =
+			await vi.importActual<typeof import("../app/store.js")>("../app/store.js");
+		const response = await createGateway().request("/", {
+			headers: { authorization },
+		});
+		const items = [
+			...(await response.text()).matchAll(/<li data-stage="([a-z_]+)">[\s\S]*?<\/li>/g),
+		];
+
+		expect(items.map(([, stage]) => stage)).toEqual(RUN_STAGES);
+		for (const [item, stage] of items) {
+			expect(item).toContain(`aria-describedby="stage-tip-${stage}"`);
+			expect(item).toContain(`id="stage-tip-${stage}" class="stage-tip" role="tooltip"`);
+			expect(item).toContain('<span class="eyebrow">Runs in</span>');
+		}
+	});
+
 	it("allows the explicit auth bypass only outside production", async () => {
 		process.env.UI_AUTH_DISABLED = "true";
 		expect((await createGateway().request("/")).status).toBe(200);

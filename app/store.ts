@@ -21,21 +21,26 @@ export type FinishedStatus = Exclude<
 >;
 
 /**
- * Coarse progress for GET /v1/apps/:runId. Cosmetic; never gates a run.
- * stageOrder in public/app.js must list these stages in this order. If the
- * stage of a run is not in that list, the UI shows no progress for the run.
+ * Coarse progress for GET /v1/apps/:runId, in pipeline order. Cosmetic;
+ * never gates a run. The stage list in public/index.html must list these
+ * stages in this order, each with a tooltip, and tests/gateway.test.ts checks
+ * it. If the stage of a run is not in that list, the UI shows no progress for
+ * the run.
  */
-export type RunStage =
-	| "designing"
-	| "provisioning"
-	| "curating"
-	| "building"
-	| "verifying"
-	| "publishing"
-	| "waiting_for_services"
-	| "waiting_for_deploys"
-	| "smoke_testing"
-	| "done";
+export const RUN_STAGES = [
+	"designing",
+	"provisioning",
+	"curating",
+	"building",
+	"verifying",
+	"publishing",
+	"waiting_for_services",
+	"waiting_for_deploys",
+	"smoke_testing",
+	"done",
+] as const;
+
+export type RunStage = (typeof RUN_STAGES)[number];
 
 export interface RunRecord {
 	id: string;

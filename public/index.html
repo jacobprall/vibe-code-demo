@@ -73,7 +73,82 @@
 						</div>
 						<button id="delete-run" class="danger-button" type="button" hidden>Delete app</button>
 					</div>
-					<ol id="stages" class="stages"></ol>
+					<!--
+						RUN_STAGES in app/store.ts lists the same stages in the same order.
+						Each tooltip tells what its stage does and where it runs.
+					-->
+					<ol id="stages" class="stages">
+						<li data-stage="designing">
+							<button type="button" class="stage-label" aria-describedby="stage-tip-designing">Designing</button>
+							<span id="stage-tip-designing" class="stage-tip" role="tooltip" aria-hidden="true">
+								<span>The architect agent reads the prompt and plans the app: its pages, its content, and the Render resources that it needs.</span>
+								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The architect task on Render Workflows</span>
+							</span>
+						</li>
+						<li data-stage="provisioning">
+							<button type="button" class="stage-label" aria-describedby="stage-tip-provisioning">Provisioning</button>
+							<span id="stage-tip-provisioning" class="stage-tip" role="tooltip" aria-hidden="true">
+								<span>Starts a real Postgres in the sandbox, so that the builder can test its schema and seed data. An app without a database skips this stage.</span>
+								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The Render Sandbox of this run</span>
+							</span>
+						</li>
+						<li data-stage="curating">
+							<button type="button" class="stage-label" aria-describedby="stage-tip-curating">Curating</button>
+							<span id="stage-tip-curating" class="stage-tip" role="tooltip" aria-hidden="true">
+								<span>Finds openly licensed photographs on Wikimedia Commons and downloads them into the app. No model chooses a URL or a file name.</span>
+								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The prompt-to-app task on Render Workflows</span>
+							</span>
+						</li>
+						<li data-stage="building">
+							<button type="button" class="stage-label" aria-describedby="stage-tip-building">Building</button>
+							<span id="stage-tip-building" class="stage-tip" role="tooltip" aria-hidden="true">
+								<span>The builder agent writes the app: it selects the stack, writes the files, and runs commands. It also fixes each failure that verification finds.</span>
+								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The builder task on Render Workflows. Its tools run in the Render Sandbox, which holds no credentials.</span>
+							</span>
+						</li>
+						<li data-stage="verifying">
+							<button type="button" class="stage-label" aria-describedby="stage-tip-verifying">Verifying</button>
+							<span id="stage-tip-verifying" class="stage-tip" role="tooltip" aria-hidden="true">
+								<span>Builds the app from only the files that a commit holds, as Render will. Then it boots the app and checks its endpoints.</span>
+								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The verify-app task on Render Workflows. The builds run in the Render Sandbox.</span>
+							</span>
+						</li>
+						<li data-stage="publishing">
+							<button type="button" class="stage-label" aria-describedby="stage-tip-publishing">Publishing</button>
+							<span id="stage-tip-publishing" class="stage-tip" role="tooltip" aria-hidden="true">
+								<span>Copies the app into a clean clone of the apps repository, writes its Blueprint, and pushes one commit to GitHub.</span>
+								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The publish-app task on Render Workflows, in a second Render Sandbox that no agent uses</span>
+							</span>
+						</li>
+						<li data-stage="waiting_for_services">
+							<button type="button" class="stage-label" aria-describedby="stage-tip-waiting_for_services">Waiting For Services</button>
+							<span id="stage-tip-waiting_for_services" class="stage-tip" role="tooltip" aria-hidden="true">
+								<span>The push starts a Blueprint sync. Render creates the project and the services of the app from render.yaml.</span>
+								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> Render. The prompt-to-app task waits on the Render API.</span>
+							</span>
+						</li>
+						<li data-stage="waiting_for_deploys">
+							<button type="button" class="stage-label" aria-describedby="stage-tip-waiting_for_deploys">Waiting For Deploys</button>
+							<span id="stage-tip-waiting_for_deploys" class="stage-tip" role="tooltip" aria-hidden="true">
+								<span>Render builds and deploys each service. If a deploy fails, the deploy manager agent finds the cause in its logs, and the builder fixes it.</span>
+								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> Render. The prompt-to-app task waits on the Render API. A repair runs in the deploy-manager and builder tasks.</span>
+							</span>
+						</li>
+						<li data-stage="smoke_testing">
+							<button type="button" class="stage-label" aria-describedby="stage-tip-smoke_testing">Smoke Testing</button>
+							<span id="stage-tip-smoke_testing" class="stage-tip" role="tooltip" aria-hidden="true">
+								<span>Render says that the app is live. Now the workflow requests its public URLs and checks the storefront, the data, and CORS.</span>
+								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The prompt-to-app task on Render Workflows</span>
+							</span>
+						</li>
+						<li data-stage="done">
+							<button type="button" class="stage-label" aria-describedby="stage-tip-done">Done</button>
+							<span id="stage-tip-done" class="stage-tip" role="tooltip" aria-hidden="true">
+								<span>The app passed every check and is live on Render.</span>
+								<span class="stage-tip-where"><span class="eyebrow">Runs in</span> The app's own project on Render</span>
+							</span>
+						</li>
+					</ol>
 					<p id="progress" class="progress"></p>
 					<div id="result" class="result" hidden>
 						<p class="eyebrow">Here’s what was built</p>
