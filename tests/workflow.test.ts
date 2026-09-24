@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
 	writeAppFiles: vi.fn(),
 	createSandbox: vi.fn(),
 	connectSandbox: vi.fn(),
+	fetchDeployLogs: vi.fn(),
 	findBlueprint: vi.fn(),
 	pageContains: vi.fn(),
 	waitForServices: vi.fn(),
@@ -121,6 +122,7 @@ vi.mock("../app/teardown.js", () => ({
 
 vi.mock("../app/render.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../app/render.js")>()),
+	fetchDeployLogs: mocks.fetchDeployLogs,
 	findBlueprint: mocks.findBlueprint,
 	pageContains: mocks.pageContains,
 	waitForServices: mocks.waitForServices,
@@ -484,6 +486,7 @@ describe("awaitDeployment repairs", () => {
 					? (apiDeploys.shift() ?? LIVE)
 					: LIVE,
 		);
+		mocks.fetchDeployLogs.mockResolvedValue("");
 		mocks.deployManagerTask.mockResolvedValue({
 			allHealthy: false,
 			failures: [
@@ -539,6 +542,32 @@ describe("awaitDeployment repairs", () => {
 				commit: "b".repeat(40),
 			},
 		]);
+	});
+
+	// The Render Dashboard shows each task input, and logs can hold secrets. A
+	// cut before the redaction would keep the end of the connection string.
+	it("gives the deploy manager the last lines of the logs, without secrets", async () => {
+		builderReturns(repair);
+		mocks.fetchDeployLogs.mockResolvedValue(
+			[
+				...Array.from(
+					{ length: 1_000 },
+					() => "npm warn deprecated glob@7.2.3",
+				),
+				`DATABASE_URL=postgres://shop:${"x".repeat(50_000)}@dpg-shop-a/shop`,
+				'npm error Missing script: "migrate"',
+			].join("\n"),
+		);
+		const { context, runs } = recordSubtasks();
+
+		await deploy(context);
+
+		const { message } = runs[0].input as { message: string };
+		expect(message).toContain(
+			'DATABASE_URL=[REDACTED]\nnpm error Missing script: "migrate"',
+		);
+		expect(message).not.toContain("dpg-shop-a");
+		expect(message.length).toBeLessThan(10_000);
 	});
 
 	it("pushes nothing when the repair fails verification", async () => {
@@ -820,6 +849,12 @@ describe("awaitDeployment repairs", () => {
 				"pre_deploy_failed",
 				"build_failed",
 			]);
+			// Each round reads the logs of the deploy that failed in that round.
+			expect(
+				mocks.fetchDeployLogs.mock.calls.map(
+					([serviceId, deployId]) => `${serviceId} ${deployId}`,
+				),
+			).toEqual([`${API_ID} dep-api1`, `${API_ID} dep-api2`]);
 		});
 
 		it("reports a repair push that started no new deploy", async () => {

@@ -197,6 +197,60 @@ async function latestDeploy(
 	return deploy ? { id: deploy.id, status: deploy.status ?? "unknown" } : null;
 }
 
+/**
+ * The newest log lines of one deploy, oldest first. Logs can hold secrets, so
+ * the caller must redact them before they go into a task input.
+ *
+ * The read has no type filter, so it gets the build, the pre-deploy command,
+ * and the new instance. The time range of the deploy keeps out the lines of
+ * an earlier deploy. It starts at createdAt: the API does not document
+ * startedAt. The logs are only diagnostic, so a read that cannot finish gives
+ * no logs and does not fail the run.
+ */
+export async function fetchDeployLogs(
+	serviceId: string,
+	deployId: string,
+	workspaceId: string,
+): Promise<string> {
+	try {
+		const deploy = await retryRead(`The lookup of deploy ${deployId}`, () =>
+			readApi<{ createdAt: string; finishedAt?: string }>(
+				`/services/${encodeURIComponent(serviceId)}/deploys/${encodeURIComponent(deployId)}`,
+				`Reading deploy ${deployId}`,
+			),
+		);
+		const query = new URLSearchParams({
+			ownerId: workspaceId,
+			resource: serviceId,
+			startTime: deploy.createdAt,
+			direction: "backward",
+			limit: String(PAGE_SIZE),
+		});
+		// A deploy in progress has no end yet, so the range ends now.
+		if (deploy.finishedAt) query.set("endTime", deploy.finishedAt);
+		const page = await retryRead(`The log lookup of ${serviceId}`, () =>
+			readApi<{ logs: { message: string }[] }>(
+				`/logs?${query}`,
+				`Listing the logs of ${serviceId}`,
+			),
+		);
+		return page.logs
+			.map((log) => log.message)
+			.reverse()
+			.join("\n");
+	} catch (error) {
+		console.warn(
+			JSON.stringify({
+				event: "deploy_logs_unavailable",
+				serviceId,
+				deployId,
+				reason: errorText(error),
+			}),
+		);
+		return "";
+	}
+}
+
 export interface HttpProbe {
 	ok: boolean;
 	status: number;

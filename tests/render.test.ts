@@ -4,6 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	fetchDeployLogs,
 	findBlueprint,
 	pageContains,
 	pageScripts,
@@ -376,6 +377,83 @@ describe("pageContains", () => {
 		});
 		expect(await pageContains(PAGE, API_HOST)).toBe(false);
 		expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([PAGE]);
+	});
+});
+
+/**
+ * No agent can read logs, so this read is how the deploy manager gets them.
+ * It must get the logs of the failed deploy, and no line of an earlier one.
+ */
+describe("fetchDeployLogs", () => {
+	beforeEach(() => {
+		vi.stubEnv("RENDER_API_KEY", "rnd_test");
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+	});
+
+	/** Serve the deploy, and the logs or an error status. Returns each URL. */
+	function serve(logs: object | number): URL[] {
+		const urls: URL[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request) => {
+				const parsed = new URL(String(url));
+				urls.push(parsed);
+				if (parsed.pathname !== "/v1/logs") {
+					return Response.json({
+						id: "dep-api2",
+						// The commit can be days older than its deploy.
+						commit: { id: "c0ffee", createdAt: "2026-09-23T09:00:00Z" },
+						createdAt: "2026-09-23T10:00:00Z",
+						startedAt: "2026-09-23T10:00:05Z",
+						finishedAt: "2026-09-23T10:03:00Z",
+					});
+				}
+				return typeof logs === "number"
+					? new Response("", { status: logs })
+					: Response.json(logs);
+			}),
+		);
+		return urls;
+	}
+
+	it("reads the logs of each type in the time range of the deploy, oldest first", async () => {
+		const urls = serve({
+			logs: [
+				{ message: 'npm error Missing script: "migrate"' },
+				{ message: "==> Running pre-deploy command 'npm run migrate'" },
+			],
+		});
+
+		expect(await fetchDeployLogs("srv-api", "dep-api2", "tea-test")).toBe(
+			"==> Running pre-deploy command 'npm run migrate'\n" +
+				'npm error Missing script: "migrate"',
+		);
+		expect(urls[0].pathname).toBe("/v1/services/srv-api/deploys/dep-api2");
+		expect(Object.fromEntries(urls[1].searchParams)).toEqual({
+			ownerId: "tea-test",
+			resource: "srv-api",
+			startTime: "2026-09-23T10:00:00Z",
+			endTime: "2026-09-23T10:03:00Z",
+			direction: "backward",
+			limit: "100",
+		});
+	});
+
+	// The logs are only diagnostic. A read that cannot finish must not end a
+	// run that a repair can still fix.
+	it("gives no logs, and no error, when a read cannot finish", async () => {
+		serve(401);
+
+		expect(await fetchDeployLogs("srv-api", "dep-api2", "tea-test")).toBe("");
+		expect(console.warn).toHaveBeenCalledWith(
+			expect.stringContaining('"event":"deploy_logs_unavailable"'),
+		);
 	});
 });
 

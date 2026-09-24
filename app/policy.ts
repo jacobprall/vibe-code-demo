@@ -26,6 +26,9 @@ const SCRATCH_DIR = "/tmp";
  * exists in the workspace to reason about primitives; it has no business
  * changing anything. Enforced twice — as Claude's `allowedTools`, and again
  * here, which denies every Render tool not on this list.
+ *
+ * The list has no log tool: logs can hold secrets, and no code can redact
+ * what an agent reads. Workflow code gives the deploy manager redacted logs.
  */
 export const RENDER_READ_ONLY_TOOLS = [
 	"list_workspaces",
@@ -153,7 +156,7 @@ const SECRET_PATTERNS = [
 	/\bpostgres(?:ql)?:\/\/\S+/g,
 ];
 
-/** Strip secret-shaped strings. Applied once when text leaves the factory. */
+/** Strip secret-shaped strings from API responses and from logs in task inputs. */
 export function redactSecrets(text: string): string {
 	let out = text;
 	for (const pattern of SECRET_PATTERNS) {

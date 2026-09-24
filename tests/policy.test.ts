@@ -158,6 +158,8 @@ describe("Render MCP allowlist", () => {
 		"mcp__render__create_postgres",
 		"mcp__render__update_environment_variables",
 		"mcp__render__trigger_deploy",
+		// A read, but logs can hold secrets. Workflow code redacts them.
+		"mcp__render__list_logs",
 	])("blocks %s", (name) => {
 		expect(checkToolCall(name, {})).toContain("read-only allowlist");
 	});
