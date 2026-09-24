@@ -424,8 +424,9 @@ When a deploy fails, the deploy manager diagnoses it from the logs of that
 deploy, which workflow code gives it. `fetchDeployLogs()` reads them in the
 time range of the deploy, with no type filter. Thus it gets the build logs,
 the output of the pre-deploy command, and the logs of the new instance, and
-no line of an earlier deploy. A type filter can lose the pre-deploy output,
-because the Render documentation does not give its type. Each round reads
+no line of an earlier deploy. Do not add a type filter. The logs API gives
+the output of the pre-deploy command as `app` logs, not `build` logs, so a
+`build` filter loses it. With no filter, the API gives both. Each round reads
 the deploy that failed in that round. Do not give an agent `list_logs` in
 place of this read: an agent can read the logs of each service in the
 workspace, and the factory cannot redact them first.
