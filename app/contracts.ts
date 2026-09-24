@@ -55,16 +55,10 @@ export type WaitForSyncsInput = z.infer<typeof waitForSyncsInputSchema>;
 /* ── Architect ────────────────────────────────────────────────────────── */
 
 /**
- * The Render primitives the architect may ask for. `static_site`,
- * `web_service`, and `postgres` are wired into app/blueprint.ts; `key_value`
- * is the worked example of where the next primitive plugs in.
+ * The Render primitives the architect may ask for. app/blueprint.ts emits
+ * each one from the manifest. AGENTS.md tells how to add a primitive.
  */
-export const TIER_KINDS = [
-	"static_site",
-	"web_service",
-	"postgres",
-	"key_value",
-] as const;
+export const TIER_KINDS = ["static_site", "web_service", "postgres"] as const;
 
 export const deployPlanSchema = z.object({
 	appName: slug,
@@ -95,7 +89,6 @@ export const deployPlanSchema = z.object({
 });
 
 export type DeployPlan = z.infer<typeof deployPlanSchema>;
-export type TierKind = (typeof TIER_KINDS)[number];
 
 /* ── Curator ──────────────────────────────────────────────────────────── */
 
@@ -233,10 +226,8 @@ export const appSpecSchema = z.object({
 	summary: z.string().min(1),
 	createdAt: z.string().min(1),
 	/** Persisted so changing the default never renames an existing app's resources. */
-	resourcePrefix: slug.optional(),
-	tiers: z.array(z.enum(TIER_KINDS)).min(1),
+	resourcePrefix: slug,
 	manifest: manifestSchema,
-	notes: z.array(z.string()).max(20),
 	/**
 	 * Set when a delete of the app starts. The root Blueprint leaves the app
 	 * out, and this file stays until the app's Render resources are gone,

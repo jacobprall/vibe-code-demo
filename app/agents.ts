@@ -14,7 +14,6 @@ import { allTools, assetTools, readTools } from "./tools.js";
 
 export const architect: Agent = {
 	id: "architect",
-	description: "Turns a product prompt into a Render deployment plan",
 	model: "medium",
 	effort: "low",
 	// No sandbox tools: the architect designs, it does not build. Its only
@@ -40,7 +39,6 @@ export const architect: Agent = {
 		  search endpoint, anything reading a database.
 		- postgres — needed when data must outlive a request: a catalog,
 		  inventory, orders, accounts.
-		- key_value — a cache, a queue, or a session store.
 
 		Default to only a static_site for websites, landing pages, portfolios,
 		menus, directories, and read-only catalogs. Put their content in the
@@ -91,7 +89,6 @@ export const architect: Agent = {
 
 export const curator: Agent = {
 	id: "curator",
-	description: "Collects openly licensed placeholder imagery for the app",
 	model: "small",
 	// Search and download, plus read access to see where things landed. No
 	// exec, no write_file: the only bytes this agent can create are images
@@ -142,7 +139,6 @@ export const curator: Agent = {
 
 export const builder: Agent = {
 	id: "builder",
-	description: "Builds the full application in an isolated sandbox",
 	model: "medium",
 	effort: "low",
 	tools: allTools,
@@ -251,7 +247,6 @@ export const builder: Agent = {
 
 export const deployManager: Agent = {
 	id: "deploy-manager",
-	description: "Watches Render deploys via MCP, diagnoses failures",
 	model: "medium",
 	effort: "low",
 	renderTools: RENDER_READ_ONLY_TOOLS,

@@ -326,8 +326,8 @@ next step does not wait for the push event. A retry of
 
 ## Add a Render primitive
 
-1. Add the kind to `TIER_KINDS` in `app/contracts.ts` if it is not there, and
-   describe when to choose it in the architect's prompt.
+1. Add the kind to `TIER_KINDS` in `app/contracts.ts`, and describe when to
+   choose it in the architect's prompt.
 2. Give the builder a way to declare it in `manifestSchema`, since the
    Blueprint is generated from the manifest rather than from the plan.
 3. Emit its resource block from `serviceBlocks()` or `databaseBlocks()` in
@@ -346,10 +346,6 @@ next step does not wait for the push event. A retry of
 7. Make `deleteAppResources()` in `app/teardown.ts` list and delete it. A
    resource that the teardown does not know stays in the app's project, and
    Render then refuses to delete the project.
-
-`key_value` is in `TIER_KINDS` and goes no further: the manifest cannot
-declare one and `blueprint.ts` cannot emit one, so an architect that asks for
-it gets nothing. It is the worked example of where the next primitive plugs in.
 
 ## Change a template
 
@@ -421,10 +417,10 @@ Render keeps the last live deploy of a failed service, so those checks can
 pass on old code. Do not call `trigger_deploy` to start the deploy either;
 only a commit deploys. `tests/workflow.test.ts` tests this loop.
 
-New generated apps write `factory.json` with `resourcePrefix`. Root Blueprint
-regeneration also reads the legacy filename and treats a missing prefix as the
-legacy value. Do not remove that compatibility path until all existing app
-specs have been migrated, or their Render resources will be renamed.
+Each `factory.json` records its `resourcePrefix`, which is in the name of each
+Render resource of the app. Read the prefix from the spec, not from
+`factoryConfig`, so that a new default does not rename the resources of an
+existing app.
 
 Helpers that outgrow the workflow file belong in a new `app/<concern>.ts`, not
 in a subdirectory.

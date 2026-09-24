@@ -63,9 +63,7 @@ function checkConfiguration(): void {
 		});
 	}
 
-	const currentKey = process.env.FACTORY_API_KEY?.trim() ?? "";
-	const legacyKey = process.env.AIRO_API_KEY?.trim() ?? "";
-	const key = currentKey || legacyKey;
+	const key = process.env.FACTORY_API_KEY?.trim() ?? "";
 	if (!key) {
 		record({
 			level: "fail",
@@ -80,13 +78,6 @@ function checkConfiguration(): void {
 		});
 	} else {
 		record({ level: "ok", message: "FACTORY_API_KEY looks strong" });
-	}
-	if (!currentKey && legacyKey) {
-		record({
-			level: "warn",
-			message: "The deprecated API key variable is still in use",
-			fix: "Copy its value to FACTORY_API_KEY on the gateway, then remove the old variable.",
-		});
 	}
 
 	const uiUsername = process.env.UI_USERNAME?.trim() ?? "";

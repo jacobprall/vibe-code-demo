@@ -102,9 +102,7 @@ function spec(overrides: Partial<AppSpec> = {}): AppSpec {
 		summary: "A storefront, an API, and Postgres behind it.",
 		createdAt: "2026-01-01T00:00:00.000Z",
 		resourcePrefix: "vibe",
-		tiers: ["static_site", "web_service", "postgres"],
 		manifest: fullManifest,
-		notes: [],
 		...overrides,
 	};
 }
@@ -132,9 +130,10 @@ function parsedServices(yaml: string) {
 }
 
 describe("resourceNames", () => {
-	it("preserves the prefix used by specs created before the rename", () => {
-		const names = resourceNames(spec({ resourcePrefix: undefined }));
-		expect(names.web).toBe("airo-demo-furniture-catalog-web");
+	// A new default prefix must not rename the resources of an existing app.
+	it("takes the prefix from the spec, not from the factory configuration", () => {
+		const names = resourceNames(spec({ resourcePrefix: "acme" }));
+		expect(names.web).toBe("acme-demo-furniture-catalog-web");
 	});
 
 	it("namespaces every resource by user and app", () => {
@@ -145,9 +144,7 @@ describe("resourceNames", () => {
 	});
 
 	it("omits resources the app does not have", () => {
-		const names = resourceNames(
-			spec({ tiers: ["static_site"], manifest: staticOnlyManifest }),
-		);
+		const names = resourceNames(spec({ manifest: staticOnlyManifest }));
 		expect(names.api).toBeNull();
 		expect(names.db).toBeNull();
 	});
@@ -334,9 +331,7 @@ describe("appBlueprint", () => {
 	});
 
 	it("emits only a static site when that is all the app needs", () => {
-		const simple = appBlueprint(
-			spec({ tiers: ["static_site"], manifest: staticOnlyManifest }),
-		);
+		const simple = appBlueprint(spec({ manifest: staticOnlyManifest }));
 		expect(simple).not.toContain("databases:");
 		expect(simple).not.toContain("runtime: node");
 		expect(simple).toContain("runtime: static");
@@ -362,7 +357,6 @@ describe("rootBlueprint", () => {
 		spec({
 			user: "demo",
 			appName: "gopher-dates",
-			tiers: ["static_site"],
 			manifest: staticOnlyManifest,
 		}),
 	]);
@@ -396,7 +390,6 @@ describe("rootBlueprint", () => {
 			spec(),
 			spec({
 				appName: "gopher-dates",
-				tiers: ["static_site"],
 				manifest: staticOnlyManifest,
 				deletedAt: "2026-02-01T00:00:00.000Z",
 			}),

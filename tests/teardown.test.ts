@@ -344,25 +344,6 @@ describe("deleteAppResources", () => {
 		]);
 	});
 
-	// The spec of an app made before the prefix was stored has no
-	// resourcePrefix, and the task input then has no such field.
-	it("finds the resources of an app that has only the legacy prefix", async () => {
-		workspace.projects = [
-			{ id: "prj-old", name: "airo-demo-shop", environmentIds: ["evm-old"] },
-		];
-		workspace.services = {
-			"evm-old": [{ id: "srv-old", name: "airo-demo-shop-web" }],
-		};
-
-		await expect(
-			settle(deleteAppResources({ user: "demo", appName: "shop" }, OPTIONS)),
-		).resolves.toEqual(["airo-demo-shop-web"]);
-		expect(deletes()).toEqual([
-			"DELETE /services/srv-old",
-			"DELETE /projects/prj-old",
-		]);
-	});
-
 	// The name filter of the API is not the check. App "shop-v2" has a project
 	// name that starts with the project name of app "shop".
 	it("does not touch a project whose name only starts with the app's name", async () => {
