@@ -10,6 +10,7 @@ import {
 	pageScripts,
 	waitForDeploy,
 	waitForServices,
+	workflowIdOfTaskRun,
 } from "../app/render.js";
 
 const REST_API = "https://api.render.com/v1";
@@ -579,5 +580,43 @@ describe("findBlueprint", () => {
 			`Listing Blueprints failed with ${status}. The API key needs read access to the workspace.`,
 		);
 		expect(urls).toHaveLength(1);
+	});
+});
+
+/** The gateway links each run to its task run in the Render Dashboard. */
+describe("workflowIdOfTaskRun", () => {
+	beforeEach(() => vi.stubEnv("RENDER_API_KEY", "rnd_test"));
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+	});
+
+	function renderHas(task: Record<string, unknown>) {
+		const fetchMock = vi.fn(async (url: string | URL | Request) =>
+			String(url).includes("/task-runs/")
+				? Response.json({ id: "trn-1", taskId: "tsk-1" })
+				: Response.json(task),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		return fetchMock;
+	}
+
+	it("reads the task of the task run, and gives its workflow", async () => {
+		const fetchMock = renderHas({ id: "tsk-1", workflowId: "wfl-1" });
+
+		expect(await workflowIdOfTaskRun("trn-1")).toBe("wfl-1");
+		expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+			`${REST_API}/task-runs/trn-1`,
+			`${REST_API}/tasks/tsk-1`,
+		]);
+	});
+
+	it("fails when the task names no workflow", async () => {
+		renderHas({ id: "tsk-1" });
+
+		await expect(workflowIdOfTaskRun("trn-1")).rejects.toThrow(
+			"Task tsk-1 names no workflow",
+		);
 	});
 });

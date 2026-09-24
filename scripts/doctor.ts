@@ -340,6 +340,9 @@ async function checkPostgres(): Promise<void> {
 			"workflow_run_id",
 			"web_url",
 			"blueprint_path",
+			"sandbox_id",
+			"sandbox_group_id",
+			"finished_at",
 		].filter((name) => !columns.has(name));
 		record(
 			missing.length === 0

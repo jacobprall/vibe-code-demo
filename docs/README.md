@@ -299,6 +299,11 @@ real, billable resources. Local development changes where orchestration runs;
 it does not emulate the Render data plane.
 
 Open `http://localhost:3000` and sign in with `UI_USERNAME` and `UI_PASSWORD`.
+The **Table view** button opens `/table`, which shows the same runs as tables:
+the sites with their URLs, the time that each run took, and a delete button,
+and the stages with what each one does, where it runs, and links to the
+workflow run and the sandbox in the Render Dashboard. Local task runs are not
+in the Dashboard, so local development shows no workflow links.
 The UI calls same-origin `/ui` endpoints; `FACTORY_API_KEY` stays on the
 gateway and is never delivered to browser JavaScript. `UI_USERNAME` is also
 the generated-app namespace: a user named `jacob` creates apps under

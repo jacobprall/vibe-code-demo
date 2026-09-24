@@ -56,8 +56,13 @@ export interface RunRecord {
 	apiUrl: string | null;
 	blueprintPath: string | null;
 	summary: string | null;
+	/** The sandbox of the run and its sandbox group, for a dashboard link. */
+	sandboxId: string | null;
+	sandboxGroupId: string | null;
 	createdAt: string;
 	updatedAt: string;
+	/** When the run stopped, or null while it runs. */
+	finishedAt: string | null;
 }
 
 export type ClaimResult =
@@ -76,7 +81,8 @@ export type DeleteClaim =
 const COLUMNS = `id, idempotency_key, prompt, user_name, status, stage, progress,
 	                workflow_run_id,
 	                app_name, web_url, api_url, blueprint_path, summary,
-	                created_at, updated_at`;
+	                sandbox_id, sandbox_group_id,
+	                created_at, updated_at, finished_at`;
 
 let pool: pg.Pool | undefined;
 
@@ -329,6 +335,17 @@ export async function deleteRuns(user: string, appName: string): Promise<void> {
 	);
 }
 
+/** Cosmetic, as the stage is: the UI links to the sandbox in the Dashboard. */
+export async function setRunSandbox(
+	id: string,
+	sandbox: { id: string; groupId: string | null },
+): Promise<void> {
+	await db().query(
+		"update runs set sandbox_id = $2, sandbox_group_id = $3 where id = $1",
+		[id, sandbox.id, sandbox.groupId],
+	);
+}
+
 export async function setRunUrls(
 	id: string,
 	urls: { webUrl: string | null; apiUrl: string | null },
@@ -351,7 +368,7 @@ export async function finishRun(
 		 set status = $2,
 		     stage = case when $2 in ('deployed', 'awaiting_blueprint') then 'done' else stage end,
 		     progress = null,
-		     summary = $3, updated_at = now()
+		     summary = $3, updated_at = now(), finished_at = now()
 		 where id = $1`,
 		[id, status, details.summary ?? null],
 	);
@@ -395,7 +412,10 @@ function rowToRun(row: Record<string, unknown>): RunRecord {
 		apiUrl: (row.api_url as string | null) ?? null,
 		blueprintPath: (row.blueprint_path as string | null) ?? null,
 		summary: (row.summary as string | null) ?? null,
+		sandboxId: (row.sandbox_id as string | null) ?? null,
+		sandboxGroupId: (row.sandbox_group_id as string | null) ?? null,
 		createdAt: (row.created_at as Date).toISOString(),
 		updatedAt: (row.updated_at as Date).toISOString(),
+		finishedAt: row.finished_at ? (row.finished_at as Date).toISOString() : null,
 	};
 }

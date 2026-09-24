@@ -93,6 +93,18 @@ and is injected as the app namespace; never accept a browser-supplied `user`.
 deletes only a run in that namespace, and the UI restores selection from local
 storage while treating Postgres as the source of truth.
 
+The UI has two views of the same runs, and each has a button that opens the
+other. The classic view at `/` explains each stage in a tooltip. The table
+view at `/table` shows the sites in a table, with each URL, the time that each
+run took, and a delete button. It shows the stages in a table that tells what
+each stage does and where it runs, with links to the workflow run and the
+sandbox in the Render Dashboard. `public/runs.js` has what the views share;
+`app.js` and `table.js` render only what differs. The gateway builds the links
+from IDs in Postgres and gives null for a link that it cannot make: the SDK
+does not give the ID of a subtask run, so each stage links to the run of
+`prompt-to-app`, and a workspace with more than one sandbox group gets no
+sandbox link.
+
 ## Repository map
 
 Each concern is one file under `app/`. There are no barrels, no path aliases,
@@ -112,7 +124,7 @@ logs of a failed deploy. `render` is imported by `claude` (for the MCP
 URL), by `teardown`, and by `deploy` and `delete`. `blueprint`, `git`,
 `images`, `teardown`, and `store` are used by `workflow` and the stages;
 `teardown` uses `render` and `blueprint`; `gateway` uses `store`, `policy`,
-and `contracts`. `contracts` is a leaf, and `config` uses only its `slug`
+`contracts`, and `render`, for the workflow ID of the Dashboard links. `contracts` is a leaf, and `config` uses only its `slug`
 schema. Adding an edge that points backwards is a design smell.
 
 ```text
@@ -143,7 +155,9 @@ app/
   schema.sql     Schema, applied by scripts/migrate.ts
   server.ts      Gateway entrypoint
   host.ts        Workflows entrypoint
-public/          Basic-Auth-protected prompt and deployment-status UI
+public/          Basic-Auth-protected prompt and deployment-status UI:
+                 runs.js (shared), index.html + app.js (classic view),
+                 table.html + table.js (table view)
 templates/
   fullstack/     web/ (Vite + React + Tailwind + shadcn/ui), api/ (Hono + pg)
 scripts/         migrate, doctor, demo, support
@@ -422,8 +436,10 @@ API. The API checks cannot see the hostname that a browser uses.
 
 Each stage in `RUN_STAGES` has an item in the stage list of
 `public/index.html`, in the same order, with a tooltip that tells what the
-stage does and where it runs. `tests/gateway.test.ts` checks this, so a new
-stage needs an item and a tooltip.
+stage does and where it runs. It also has a row in the stage table of
+`public/table.html`, which tells the same and names the Dashboard links of
+the stage. `tests/gateway.test.ts` checks both, so a new stage needs an item
+and a row.
 
 When a deploy fails, the deploy manager diagnoses it from the logs of that
 deploy, which workflow code gives it. `fetchDeployLogs()` reads them in the
