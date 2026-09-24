@@ -221,7 +221,7 @@ describe("browser UI", () => {
 			headers: { authorization },
 		});
 		expect(response.status).toBe(200);
-		expect(await response.text()).toContain("Describe it. Ship it.");
+		expect(await response.text()).toContain("<title>Vibe Code Demo</title>");
 	});
 
 	it("allows the explicit auth bypass only outside production", async () => {

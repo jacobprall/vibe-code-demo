@@ -5,20 +5,35 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<meta name="description" content="Turn a prompt into a deployed application on Render." />
 		<title>Vibe Code Demo</title>
+		<!--
+			Manrope and Roboto Mono are the open fallbacks of Render's brand faces.
+			A machine that has Roobert and PP Neue Montreal uses those first.
+		-->
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			rel="stylesheet"
+			href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500&family=Roboto+Mono:wght@400;500&display=swap"
+		/>
 		<link rel="stylesheet" href="/style.css" />
 	</head>
 	<body>
+		<header class="topbar">
+			<span class="wordmark" role="img" aria-label="Render"><svg aria-hidden="true" focusable="false" viewBox="0 0 633 120" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M118.268 28.0601C118.25 27.6558 118.215 27.2603 118.18 26.8561C118.171 26.7594 118.171 26.654 118.154 26.5573C118.127 26.3112 118.092 26.074 118.057 25.8279C118.022 25.5731 117.995 25.327 117.96 25.0809C117.934 24.9052 117.899 24.7294 117.863 24.5624C117.811 24.2549 117.758 23.9385 117.696 23.6309C117.644 23.3848 117.582 23.1476 117.529 22.9015C117.477 22.6642 117.424 22.4357 117.371 22.1985C117.31 21.9524 117.23 21.7151 117.16 21.4691C117.099 21.2406 117.037 21.0209 116.967 20.7924C116.888 20.5463 116.8 20.3003 116.712 20.0542C116.641 19.8433 116.571 19.6324 116.501 19.4215C116.386 19.1139 116.263 18.8151 116.149 18.5163C116.087 18.3669 116.035 18.2263 115.973 18.0769C115.833 17.7517 115.692 17.4354 115.542 17.119C115.49 17.0048 115.437 16.8817 115.384 16.7675C115.243 16.4687 115.085 16.1787 114.936 15.8887C114.865 15.7569 114.804 15.625 114.734 15.4932C114.558 15.1681 114.364 14.8429 114.18 14.5265C114.127 14.4387 114.083 14.3508 114.03 14.2629C113.828 13.929 113.617 13.6038 113.397 13.2787C113.353 13.2083 113.309 13.138 113.265 13.0677C113.002 12.6811 112.729 12.2944 112.448 11.9165C112.184 11.565 111.911 11.2135 111.63 10.8707C111.612 10.8444 111.595 10.818 111.568 10.7917C106.135 4.20945 97.9323 0.026364 88.7449 0.017576V0L88.7185 0.017576H88.7273C86.1777 0.017576 83.6983 0.342732 81.3333 0.949103C79.9179 1.30941 78.5375 1.78396 77.21 2.33761C76.7704 2.52215 76.3308 2.72428 75.9 2.9264C67.1697 7.12706 60.8396 15.4932 59.4417 25.4412H59.4241C58.8086 29.7034 57.4987 33.7371 55.6348 37.4456H55.6963C49.2079 50.3112 35.8795 59.1432 20.4762 59.1432C13.601 59.1432 7.14777 57.3856 1.52099 54.301C0.861601 53.9407 0.0615429 54.4152 0.0615429 55.1622V59.1432H0V118.26H59.1515V88.6972H59.2131V73.9158C59.2131 65.7517 65.8333 59.1344 74.0009 59.1344H88.7888C91.3209 59.1344 93.7738 58.8092 96.1212 58.2029C97.5367 57.8338 98.917 57.368 100.245 56.8144C100.684 56.6298 101.124 56.4277 101.555 56.2256C110.601 51.8667 117.09 43.0348 118.154 32.6034C118.25 31.6104 118.303 30.5998 118.303 29.5804C118.303 29.0707 118.294 28.561 118.268 28.0601Z" fill="currentColor"/><path d="M219.99 20.1157C240.307 20.1157 253.522 31.5753 253.522 50.0037C253.522 63.4932 245.758 73.5028 233.564 77.7825L257.443 118.55H239.736L217.457 79.8828H192.858V118.55H177.622V20.1157H220.007H219.99ZM192.849 33.825V66.323H219.269C231.393 66.323 237.626 59.5738 237.626 50.0037C237.626 40.4335 231.384 33.825 219.269 33.825H192.849Z" fill="currentColor"/><path d="M296.241 47.4639C316.559 47.4639 329.773 62.5529 329.773 81.1922C329.773 83.3717 329.624 85.6214 329.193 87.8623H275.123C275.774 98.3112 284.706 106.502 296.751 106.502C305.464 106.502 312.427 102.802 317.649 94.6027L328.243 102.292C321.781 113.901 309.086 119.991 296.751 119.991C275.703 119.991 260.247 104.472 260.247 83.7935C260.247 63.1153 275.123 47.4551 296.241 47.4551M315.179 77.1234C314.308 67.3336 306.106 60.435 296.092 60.435C285.427 60.435 277.295 67.3248 275.484 77.1234H315.179Z" fill="currentColor"/><path d="M343.11 118.55V48.914H357.555V57.6932C359.877 54.1428 366.479 47.4639 378.964 47.4639C398.121 47.4639 408.214 59.3629 408.214 76.2622V118.55H393.848V79.3028C393.848 67.773 387.536 61.0941 376.722 61.0941C365.908 61.0941 357.494 67.7642 357.494 79.3028V118.55H343.11Z" fill="currentColor"/><path d="M455.031 47.4639C466.856 47.4639 474.698 51.814 479.85 58.4138V16.416H494.216V118.55H479.85V109.05C474.698 115.65 466.856 120 455.031 120C435.223 120 420.048 104.77 420.048 83.3717C420.048 61.9729 435.214 47.4639 455.031 47.4639ZM434.423 83.3717C434.423 96.2109 443.346 107.09 456.771 107.09C470.197 107.09 479.78 96.2109 479.78 83.3717C479.78 70.5324 470.126 60.3735 456.771 60.3735C443.417 60.3735 434.423 70.5324 434.423 83.3717Z" fill="currentColor"/><path d="M542.395 47.4639C562.713 47.4639 575.927 62.5529 575.927 81.1922C575.927 83.3717 575.778 85.6214 575.347 87.8623H521.277C521.928 98.3112 530.86 106.502 542.905 106.502C551.618 106.502 558.581 102.802 563.803 94.6027L574.398 102.292C567.935 113.901 555.24 119.991 542.905 119.991C521.857 119.991 506.401 104.472 506.401 83.7935C506.401 63.045 521.277 47.4551 542.395 47.4551M561.333 77.1234C560.462 67.3336 552.26 60.435 542.246 60.435C531.581 60.435 523.449 67.3248 521.638 77.1234H561.333Z" fill="currentColor"/><path d="M589.81 118.55V48.914H604.255V58.4138C608.176 50.7946 614.778 47.4639 622.401 47.4639C627.843 47.4639 631.984 49.204 631.984 49.204L630.463 62.4035C629.663 62.1135 626.542 60.8041 621.97 60.8041C614.277 60.8041 604.263 64.8642 604.263 80.6122V118.55H589.81Z" fill="currentColor"/></svg></span>
+			<span class="topbar-label">Vibe Code Demo</span>
+		</header>
+
 		<main>
-			<header>
+			<header class="intro">
 				<p class="eyebrow">Render Workflows demo</p>
-				<h1>Describe it. Ship it.</h1>
+				<h1>Describe it. <span class="accent">Ship it.</span></h1>
 				<p class="lede">
 					Submit an app idea and follow it from design through a live Render deployment.
 				</p>
 			</header>
 
 			<section class="panel">
-				<form id="prompt-form">
+				<form id="prompt-form" class="prompt-form">
 					<label for="prompt">What should we build?</label>
 					<textarea
 						id="prompt"
@@ -29,15 +44,15 @@
 						placeholder="Create a neighborhood plant exchange with listings, pickup details, and a friendly visual style."
 					></textarea>
 					<div class="form-actions">
-						<button type="submit">Build and deploy</button>
+						<button class="primary-button" type="submit">Build and deploy</button>
 					</div>
 				</form>
 			</section>
 
 			<div class="workspace">
 				<aside class="panel history-panel">
-					<div class="history-heading">
-						<div>
+					<div class="panel-heading">
+						<div class="heading-text">
 							<p class="eyebrow">History</p>
 							<h2>Your runs</h2>
 						</div>
@@ -48,12 +63,14 @@
 				</aside>
 
 				<section id="run-panel" class="panel run-panel" hidden aria-live="polite">
-					<div class="status-heading">
-						<div>
+					<div class="panel-heading">
+						<div class="heading-text">
 							<p class="eyebrow">Selected run</p>
-							<h2 id="status">Starting</h2>
+							<div class="status-line">
+								<h2 id="status">Starting</h2>
+								<span id="activity" class="activity" aria-hidden="true"></span>
+							</div>
 						</div>
-						<span id="activity" class="activity" aria-hidden="true"></span>
 						<button id="delete-run" class="danger-button" type="button" hidden>Delete app</button>
 					</div>
 					<ol id="stages" class="stages"></ol>
@@ -64,7 +81,7 @@
 						<p id="summary" class="result-summary"></p>
 						<a id="web-url" class="primary-link" href="/" target="_blank" rel="noreferrer">Visit live website</a>
 					</div>
-					<pre id="run-details" hidden></pre>
+					<pre id="run-details" class="run-details" hidden></pre>
 				</section>
 			</div>
 
@@ -74,11 +91,13 @@
 				aria-labelledby="delete-title"
 				aria-describedby="delete-description"
 			>
-				<form id="delete-form">
-					<p class="eyebrow">Delete</p>
-					<h2 id="delete-title">Delete this app?</h2>
+				<form id="delete-form" class="delete-form">
+					<div class="heading-text">
+						<p class="eyebrow">Delete</p>
+						<h2 id="delete-title">Delete this app?</h2>
+					</div>
 					<p id="delete-description" class="progress"></p>
-					<div id="delete-confirm-field">
+					<div id="delete-confirm-field" class="confirm-field">
 						<label for="delete-confirm">Type <code id="delete-app-name"></code> to confirm</label>
 						<input id="delete-confirm" name="confirm" autocomplete="off" spellcheck="false" />
 					</div>
