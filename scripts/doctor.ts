@@ -4,10 +4,13 @@
  * Every check reports what is wrong and how to fix it. Read-only by design:
  * it never creates or edits a resource.
  */
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { factoryConfig } from "../factory.config.js";
 import { appsRepo, renderWorkspaceId } from "../app/config.js";
 import { githubToken, usingGitHubApp } from "../app/git.js";
-import { findBlueprint, listServices, RenderMcp } from "../app/render.js";
+import { RENDER_READ_ONLY_TOOLS } from "../app/policy.js";
+import { findBlueprint, renderMcpUrl } from "../app/render.js";
 import { db } from "../app/store.js";
 import { exitWith, type Finding, heading, print } from "./support.js";
 
@@ -264,43 +267,56 @@ async function checkBlueprint(): Promise<void> {
 	}
 }
 
+/**
+ * The architect and the deploy manager read Render through the MCP server.
+ * If it does not have a tool on the allowlist, those agents lose it and no
+ * error shows it.
+ */
 async function checkRenderMcp(): Promise<void> {
 	heading("Render MCP");
 
-	if (
-		!process.env.RENDER_API_KEY?.trim() ||
-		!process.env.RENDER_WORKSPACE_ID?.trim()
-	) {
-		record({
-			level: "warn",
-			message: "Skipped — RENDER_API_KEY or RENDER_WORKSPACE_ID is not set",
-		});
+	const apiKey = process.env.RENDER_API_KEY?.trim();
+	if (!apiKey) {
+		record({ level: "warn", message: "Skipped — RENDER_API_KEY is not set" });
 		return;
 	}
 
+	const client = new Client({ name: "vibe-factory-doctor", version: "0.1.0" });
 	try {
-		const services = await listServices(
-			RenderMcp.fromEnv(),
-			renderWorkspaceId(),
+		await client.connect(
+			new StreamableHTTPClientTransport(new URL(renderMcpUrl()), {
+				requestInit: { headers: { authorization: `Bearer ${apiKey}` } },
+			}),
 		);
-		record({
-			level: "ok",
-			message: `MCP reachable; workspace has ${services.length} service(s)`,
-		});
+		const tools = new Set<string>();
+		let cursor: string | undefined;
+		do {
+			const page = await client.listTools({ cursor });
+			for (const tool of page.tools) tools.add(tool.name);
+			cursor = page.nextCursor;
+		} while (cursor);
 
-		const ours = services.filter((service) =>
-			service.name.startsWith(`${factoryConfig.resourcePrefix}-`),
+		const missing = RENDER_READ_ONLY_TOOLS.filter((name) => !tools.has(name));
+		record(
+			missing.length === 0
+				? {
+						level: "ok",
+						message: `MCP reachable, with the ${RENDER_READ_ONLY_TOOLS.length} read-only tools that the agents use`,
+					}
+				: {
+						level: "fail",
+						message: `The Render MCP server has no tool named ${missing.join(", ")}`,
+						fix: "Change RENDER_READ_ONLY_TOOLS in app/policy.ts to the names that the server uses.",
+					},
 		);
-		record({
-			level: "ok",
-			message: `${ours.length} generated service(s) currently deployed`,
-		});
 	} catch (error) {
 		record({
 			level: "fail",
 			message: "Cannot reach the Render MCP server",
 			fix: error instanceof Error ? error.message : undefined,
 		});
+	} finally {
+		await client.close().catch(() => {});
 	}
 }
 
