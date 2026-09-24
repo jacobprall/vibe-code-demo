@@ -5,15 +5,14 @@
  * no repository credential. It authenticates the caller, claims the run in
  * Postgres, and dispatches a prompt, or the delete of the run's app.
  */
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { basicAuth } from "hono/basic-auth";
+import { bearerAuth } from "hono/bearer-auth";
+import { bodyLimit } from "hono/body-limit";
 import { apiKey, uiCredentials } from "./config.js";
-import {
-	createAppRequestSchema,
-	type WorkflowResult,
-} from "./contracts.js";
+import { createAppRequestSchema } from "./contracts.js";
 import { redactSecrets } from "./policy.js";
 import {
 	claimDelete,
@@ -25,11 +24,8 @@ import {
 	getRun,
 	listRunsByUser,
 	ping,
-	reopenPausedRun,
 	type RunRecord,
 	setDeleteWorkflowRunId,
-	setRunApp,
-	setRunUrls,
 	setWorkflowRunId,
 } from "./store.js";
 
@@ -37,6 +33,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 const RUN_ID = /^[0-9a-f-]{36}$/;
 const TASK_NAME = "prompt-to-app";
 const DELETE_TASK_NAME = "delete-app";
+const UNAUTHORIZED = { error: "unauthorized" };
 
 export function createGateway(): Hono {
 	const app = new Hono();
@@ -46,6 +43,20 @@ export function createGateway(): Hono {
 		process.env.UI_AUTH_DISABLED === "true"
 			? async (_c, next) => next()
 			: basicAuth(credentials);
+	// bearerAuth hashes both tokens and compares them in constant time.
+	const apiAuth = bearerAuth({
+		token: apiKey(),
+		noAuthenticationHeaderMessage: UNAUTHORIZED,
+		invalidAuthenticationHeaderMessage: {
+			error: "invalid authorization header",
+		},
+		invalidTokenMessage: UNAUTHORIZED,
+	});
+	// It runs before the handler parses the body.
+	const capBody = bodyLimit({
+		maxSize: MAX_BODY_BYTES,
+		onError: (c) => c.json({ error: "payload too large" }, 413),
+	});
 
 	app.get("/health", (c) => c.json({ status: "ok" }));
 
@@ -58,16 +69,19 @@ export function createGateway(): Hono {
 		}
 	});
 
-	app.post("/v1/apps", (c) => createRun(c, true));
-	app.get("/v1/apps/:runId", (c) => readRun(c, true));
-	app.delete("/v1/apps/:runId", (c) => deleteRun(c, true));
+	app.use("/v1/*", apiAuth);
+	app.post("/v1/apps", capBody, (c) => createRun(c, "/v1/apps"));
+	app.get("/v1/apps/:runId", readRun);
+	app.delete("/v1/apps/:runId", (c) => deleteRun(c, "/v1/apps"));
 
 	app.use("/ui/*", uiAuth);
 	app.get("/ui/apps", (c) => listRuns(c, credentials.username));
-	app.post("/ui/apps", (c) => createRun(c, false, credentials.username));
-	app.get("/ui/apps/:runId", (c) => readRun(c, false));
+	app.post("/ui/apps", capBody, (c) =>
+		createRun(c, "/ui/apps", credentials.username),
+	);
+	app.get("/ui/apps/:runId", readRun);
 	app.delete("/ui/apps/:runId", (c) =>
-		deleteRun(c, false, credentials.username),
+		deleteRun(c, "/ui/apps", credentials.username),
 	);
 	app.get("/", uiAuth, serveStatic({ path: "./public/index.html" }));
 	app.get("/app.js", uiAuth, serveStatic({ path: "./public/app.js" }));
@@ -86,21 +100,19 @@ async function listRuns(c: Context, user: string): Promise<Response> {
 	}
 }
 
+/**
+ * Claim a run and dispatch prompt-to-app. `statusBase` is the route prefix of
+ * the caller. The UI gives `userOverride`, the namespace of its Basic Auth
+ * user, because a browser must not choose one.
+ */
 async function createRun(
 	c: Context,
-	requireBearer: boolean,
+	statusBase: string,
 	userOverride?: string,
 ): Promise<Response> {
-	if (requireBearer && !authorized(c.req.raw.headers)) {
-		return c.json({ error: "unauthorized" }, 401);
-	}
-
-	const body = await readBody(c.req.raw);
-	if (body === null) return c.json({ error: "payload too large" }, 413);
-
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(body);
+		parsed = await c.req.json();
 	} catch {
 		return c.json({ error: "invalid json" }, 400);
 	}
@@ -149,31 +161,19 @@ async function createRun(
 		console.error("Failed to save workflow run id:", error),
 	);
 
-	const statusBase = requireBearer ? "/v1/apps" : "/ui/apps";
 	return c.json(
 		{ runId, user, status: "running", statusUrl: `${statusBase}/${runId}` },
 		202,
 	);
 }
 
-async function readRun(c: Context, requireBearer: boolean): Promise<Response> {
-	if (requireBearer && !authorized(c.req.raw.headers)) {
-		return c.json({ error: "unauthorized" }, 401);
-	}
-
+async function readRun(c: Context): Promise<Response> {
 	const runId = c.req.param("runId");
 	if (!runId || !RUN_ID.test(runId)) return c.json({ error: "not found" }, 404);
 
 	try {
 		let run = await getRun(runId);
 		if (!run) return c.json({ error: "not found" }, 404);
-		if (
-			run.status === "failed" &&
-			run.summary?.startsWith("Workflow paused:")
-		) {
-			await reopenPausedRun(run.id);
-			run = (await getRun(runId)) ?? run;
-		}
 		if (
 			(run.status === "running" || run.status === "deleting") &&
 			run.workflowRunId
@@ -198,13 +198,9 @@ async function readRun(c: Context, requireBearer: boolean): Promise<Response> {
  */
 async function deleteRun(
 	c: Context,
-	requireBearer: boolean,
+	statusBase: string,
 	namespace?: string,
 ): Promise<Response> {
-	if (requireBearer && !authorized(c.req.raw.headers)) {
-		return c.json({ error: "unauthorized" }, 401);
-	}
-
 	const runId = c.req.param("runId");
 	if (!runId || !RUN_ID.test(runId)) return c.json({ error: "not found" }, 404);
 
@@ -223,7 +219,6 @@ async function deleteRun(
 		}
 
 		const appName = run.appName;
-		const statusBase = requireBearer ? "/v1/apps" : "/ui/apps";
 		const accepted = (runIds: string[]) =>
 			c.json(
 				{
@@ -307,150 +302,40 @@ export function runResponse(run: RunRecord): RunResponse {
 	};
 }
 
+/**
+ * A timeout, a crash, or a cancel stops a task before its own catch block,
+ * so its row stays running or deleting. Mark that row failed. A task that
+ * succeeds writes its result before it returns, so it needs nothing here.
+ */
 async function reconcileWorkflowRun(run: RunRecord): Promise<void> {
 	if (!run.workflowRunId || !(await claimWorkflowCheck(run.id))) return;
 
 	try {
 		const { Render } = await import("@renderinc/sdk");
 		const taskRun = await new Render().workflows.getTaskRun(run.workflowRunId);
+		if (taskRun.status !== "failed" && taskRun.status !== "canceled") return;
+
+		const error = taskRun.error ?? "no error was reported";
 		if (run.status === "deleting") {
 			// A delete that succeeded removed the rows. Only a failure is left.
-			if (
-				run.appName &&
-				(taskRun.status === "failed" || taskRun.status === "canceled")
-			) {
+			if (run.appName) {
 				await failDelete(
 					run.user,
 					run.appName,
-					`Delete ${taskRun.status}: ${taskRun.error ?? "no error was reported"}`,
+					`Delete ${taskRun.status}: ${error}`,
 					run.workflowRunId,
 				);
 			}
 			return;
 		}
-
-		if (taskRun.status === "succeeded" || taskRun.status === "completed") {
-			const result = workflowResult(taskRun.results?.[0]);
-			if (result) {
-				await recoverWorkflowResult(run, result);
-				return;
-			}
-			await finishRun(run.id, "failed", {
-				summary: "Workflow completed without a valid terminal result.",
-			});
-			return;
-		}
-
-		if (taskRun.status === "failed" || taskRun.status === "canceled") {
-			await finishRun(run.id, "failed", {
-				summary: `Workflow ${taskRun.status}: ${taskRun.error ?? "no error was reported"}`,
-			});
-		}
+		await finishRun(run.id, "failed", {
+			summary: `Workflow ${taskRun.status}: ${error}`,
+		});
 	} catch (error) {
 		// Reconciliation is a safety net. A transient SDK failure must not hide
 		// the latest durable status already stored in Postgres.
 		console.error("Failed to reconcile workflow run:", error);
 	}
-}
-
-async function recoverWorkflowResult(
-	run: RunRecord,
-	result: WorkflowResult,
-): Promise<void> {
-	if (result.status === "deployed") {
-		if (run.blueprintPath) {
-			await setRunApp(run.id, {
-				appName: result.appName,
-				blueprintPath: run.blueprintPath,
-			});
-		}
-		await setRunUrls(run.id, {
-			webUrl: result.webUrl,
-			apiUrl: result.apiUrl,
-		});
-	}
-	await finishRun(run.id, result.status, { summary: result.summary });
-}
-
-function workflowResult(value: unknown): WorkflowResult | null {
-	if (!value || typeof value !== "object") return null;
-	const candidate = value as Record<string, unknown>;
-	if (typeof candidate.status !== "string" || typeof candidate.summary !== "string") {
-		return null;
-	}
-	if (
-		candidate.status === "build_failed" ||
-		candidate.status === "deploy_failed" ||
-		candidate.status === "failed"
-	) {
-		return { status: candidate.status, summary: candidate.summary };
-	}
-	if (
-		candidate.status === "awaiting_blueprint" &&
-		typeof candidate.user === "string" &&
-		typeof candidate.appName === "string"
-	) {
-		return {
-			status: candidate.status,
-			user: candidate.user,
-			appName: candidate.appName,
-			summary: candidate.summary,
-		};
-	}
-	if (
-		candidate.status === "deployed" &&
-		typeof candidate.user === "string" &&
-		typeof candidate.appName === "string" &&
-		typeof candidate.webUrl === "string" &&
-		(candidate.apiUrl === null || typeof candidate.apiUrl === "string")
-	) {
-		return {
-			status: candidate.status,
-			user: candidate.user,
-			appName: candidate.appName,
-			webUrl: candidate.webUrl,
-			apiUrl: candidate.apiUrl,
-			summary: candidate.summary,
-		};
-	}
-	return null;
-}
-
-/**
- * Bearer check. Both sides are digested first so the comparison is
- * constant-time regardless of the token lengths involved.
- */
-export function authorized(headers: Headers): boolean {
-	const header = headers.get("authorization");
-	if (!header?.startsWith("Bearer ")) return false;
-
-	const presented = digest(header.slice("Bearer ".length).trim());
-	const expected = digest(apiKey());
-	return timingSafeEqual(presented, expected);
-}
-
-/** Read the body with a hard cap. Returns null when exceeded. */
-export async function readBody(request: Request): Promise<string | null> {
-	const declared = Number(request.headers.get("content-length"));
-	if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return null;
-	if (!request.body) return "";
-
-	const reader = request.body.getReader();
-	const chunks: Buffer[] = [];
-	let total = 0;
-
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		total += value.byteLength;
-		if (total > MAX_BODY_BYTES) {
-			await reader.cancel();
-			return null;
-		}
-		chunks.push(Buffer.from(value));
-	}
-
-	return Buffer.concat(chunks, total).toString("utf8");
 }
 
 /** Start a Render Workflows task by name. */
@@ -475,8 +360,4 @@ export async function dispatchWorkflow(
 		console.error(`Failed to dispatch ${taskName}:`, error);
 		return null;
 	}
-}
-
-function digest(value: string): Buffer {
-	return createHash("sha256").update(value).digest();
 }

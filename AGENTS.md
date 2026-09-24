@@ -251,9 +251,11 @@ Do not weaken these without an explicit security-model change:
 ## Durability
 
 There is no step memoization. A failed run is not resumed; the caller retries
-by posting the prompt again. The gateway persists the Render task-run ID and
-reconciles terminal Workflows state while polling, so an interrupted task
-cannot leave a database row `running` forever. Long service, deploy, and HTTP
+by posting the prompt again. The gateway persists the Render task-run ID.
+While a caller polls, it marks a run failed when its task run failed or was
+canceled, so an interrupted task cannot leave a database row `running`
+forever. A task that succeeds writes its result before it returns, so the
+gateway does not read the result. Long service, deploy, and HTTP
 waits heartbeat `progress`; keep those waits bounded.
 
 Render Workflows does not retry a failed run either: `prompt-to-app` sets

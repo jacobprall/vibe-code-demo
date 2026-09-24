@@ -93,7 +93,6 @@ vi.mock("../app/store.js", () => ({
 	failDelete: mocks.failDelete,
 	finishRun: mocks.finishRun,
 	setDeleteProgress: vi.fn(async () => {}),
-	setRunApp: vi.fn(async () => {}),
 	setRunStage: vi.fn(async () => {}),
 	setRunUrls: vi.fn(async () => {}),
 	touchRun: vi.fn(async () => {}),
