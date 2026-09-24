@@ -305,8 +305,8 @@ const OUTPUT_SCHEMAS: Record<string, Record<string, unknown>> = {
 
 /**
  * Turn an Agent into a Render Workflows task. The workflow runs it with
- * `tasks.run(<agent>Task, input)`. An agent starts no subtasks, so it does
- * not use its TaskContext.
+ * `tasks.run(<agent>Task, input)`, and checks the result with agentJson().
+ * An agent starts no subtasks, so it does not use its TaskContext.
  */
 export function agentTask(agent: Agent) {
 	return task(
@@ -314,7 +314,7 @@ export function agentTask(agent: Agent) {
 		async function runAgent(
 			_tasks: TaskContext,
 			input: AgentTaskInput,
-		): Promise<string> {
+		): Promise<unknown> {
 			const run = await runClaude({
 				agentId: agent.id,
 				systemPrompt: agent.prompt,
@@ -339,11 +339,9 @@ export function agentTask(agent: Agent) {
 				}),
 			);
 
-			// Prefer structured_output when the SDK enforced the schema.
-			if (run.structuredOutput !== undefined) {
-				return JSON.stringify(run.structuredOutput);
-			}
-			return run.result;
+			// The output that the SDK checked against the schema of the agent, or
+			// the text of an agent that has no schema.
+			return run.structuredOutput ?? run.result;
 		},
 	);
 }

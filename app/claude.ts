@@ -4,7 +4,7 @@ import {
 	query,
 	tool as sdkTool,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { ModelUsage, Options } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { ModelTier } from "../factory.config.js";
 import { requireEnv } from "./config.js";
@@ -72,7 +72,6 @@ export interface RunClaudeOptions {
 	 * must land in it or in /tmp. Required with tools.
 	 */
 	workDir?: string;
-	signal?: AbortSignal;
 	/** When set, the SDK enforces structured JSON output matching this schema. */
 	outputSchema?: Record<string, unknown>;
 }
@@ -132,33 +131,28 @@ export async function runClaude(opts: RunClaudeOptions): Promise<ClaudeRun> {
 			alwaysLoad: true,
 			tools: tools.map((tool) =>
 				sdkTool(tool.name, tool.description, tool.inputSchema, async (args) =>
-					toContentBlocks(
-						await tool.invoke(args, {
-							sandbox,
-							workDir,
-							signal: opts.signal,
-						}),
-					),
+					toContentBlocks(await tool.invoke(args, { sandbox, workDir })),
 				),
 			),
 		});
 	}
 
 	if (Object.keys(servers).length > 0) options.mcpServers = servers;
-	if (opts.signal) options.abortController = abortControllerFor(opts.signal);
 
 	for await (const message of query({ prompt: opts.prompt, options })) {
 		if (message.type !== "result") continue;
-		if (message.subtype !== "success" || message.is_error) {
+		if (message.subtype !== "success") {
 			throw new Error(
-				`Agent "${opts.agentId}" failed: ${failureReason(message)}`,
+				`Agent "${opts.agentId}" failed: ${message.errors.join("; ") || message.subtype}`,
 			);
 		}
-		const raw = message as unknown as Record<string, unknown>;
+		if (message.is_error) {
+			throw new Error(`Agent "${opts.agentId}" failed: ${message.result}`);
+		}
 		return {
 			result: message.result,
-			structuredOutput: raw.structured_output,
-			...usageTotals(message),
+			structuredOutput: message.structured_output,
+			...usageTotals(message.modelUsage),
 		};
 	}
 
@@ -184,76 +178,34 @@ export function md(
 		: lines.join("\n");
 }
 
-export type AgentCall = (message: string) => string | Promise<string>;
-
 /**
- * Call an agent that must return structured JSON. Uses the SDK's native
- * structured output via outputFormat when available, with parseModelJson
- * as a fallback for text-mode agents.
+ * Call an agent that must return structured output, and check the output
+ * with its Zod schema. The SDK checks it against the JSON Schema of the
+ * agent, but a JSON Schema cannot hold each Zod rule, such as a refinement.
+ * So a failure goes back to the agent one time, with the Zod error, and a
+ * second failure stops the stage.
  */
 export async function agentJson<T>(
-	call: AgentCall,
+	call: (message: string) => Promise<unknown>,
 	schema: z.ZodType<T>,
 	message: string,
 	stage: string,
 ): Promise<T> {
-	const raw = await call(message);
+	const first = schema.safeParse(await call(message));
+	if (first.success) return first.data;
 
-	// The agent may have returned structured_output via the SDK, in which
-	// case the raw string is JSON that parses directly.
-	const direct = tryParse(schema, raw);
-	if (direct) return direct;
-
-	// Fallback: extract JSON from prose/fences.
-	const extracted = parseModelJson(schema, raw);
-	if (extracted) return extracted;
-
-	// One repair attempt.
-	console.warn(JSON.stringify({ event: "model_json_repair", stage }));
-	const raw2 = await call(
-		`${message}\n\nYour previous response was not valid JSON matching the required schema. Return ONLY the JSON object, no prose.`,
+	const problem = z.prettifyError(first.error);
+	console.warn(JSON.stringify({ event: "model_json_repair", stage, problem }));
+	const second = schema.safeParse(
+		await call(
+			`${message}\n\nYour previous response did not match the required schema:\n${problem}\nReturn a response that matches it.`,
+		),
 	);
-	const repaired = tryParse(schema, raw2) ?? parseModelJson(schema, raw2);
-	if (repaired) return repaired;
+	if (second.success) return second.data;
 
-	throw new Error(`${stage} returned invalid structured output twice`);
-}
-
-function tryParse<T>(schema: z.ZodType<T>, raw: string): T | null {
-	try {
-		return schema.parse(JSON.parse(raw));
-	} catch {
-		return null;
-	}
-}
-
-/**
- * Parse JSON from model output. Models wrap JSON in prose, code fences, or
- * both — try every reasonable extraction before giving up.
- */
-export function parseModelJson<T>(schema: z.ZodType<T>, raw: string): T | null {
-	for (const candidate of jsonCandidates(raw)) {
-		try {
-			return schema.parse(JSON.parse(candidate));
-		} catch {
-			// Try next candidate.
-		}
-	}
-	return null;
-}
-
-function* jsonCandidates(raw: string): Generator<string> {
-	// Fenced code blocks (largest first).
-	const fences = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
-	for (const match of fences.sort((a, b) => b[1].length - a[1].length)) {
-		yield match[1].trim();
-	}
-	// First { to last }.
-	const first = raw.indexOf("{");
-	const last = raw.lastIndexOf("}");
-	if (first !== -1 && last > first) {
-		yield raw.slice(first, last + 1);
-	}
+	throw new Error(
+		`${stage} returned invalid structured output twice: ${z.prettifyError(second.error)}`,
+	);
 }
 
 /**
@@ -308,62 +260,20 @@ function toContentBlocks(result: ToolResult) {
 	};
 }
 
-function abortControllerFor(signal: AbortSignal): AbortController {
-	const controller = new AbortController();
-	if (signal.aborted) {
-		controller.abort(signal.reason);
-	} else {
-		signal.addEventListener("abort", () => controller.abort(signal.reason), {
-			once: true,
-		});
-	}
-	return controller;
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function tokenCount(
-	source: Record<string, unknown>,
-	...keys: string[]
-): number {
-	for (const key of keys) {
-		if (typeof source[key] === "number") return source[key];
-	}
-	return 0;
-}
-
-function usageTotals(message: SDKMessage): {
+/** Each model of the run, the subagents and compaction included. */
+function usageTotals(modelUsage: Record<string, ModelUsage>): {
 	inputTokens: number;
 	outputTokens: number;
 } {
-	const raw = message as unknown as Record<string, unknown>;
 	let inputTokens = 0;
 	let outputTokens = 0;
-
-	if (isRecord(raw.modelUsage)) {
-		for (const entry of Object.values(raw.modelUsage)) {
-			if (!isRecord(entry)) continue;
-			inputTokens += tokenCount(entry, "inputTokens", "input_tokens");
-			outputTokens += tokenCount(entry, "outputTokens", "output_tokens");
-		}
+	for (const usage of Object.values(modelUsage)) {
+		inputTokens += usage.inputTokens;
+		outputTokens += usage.outputTokens;
 	}
-	if (inputTokens > 0 || outputTokens > 0) return { inputTokens, outputTokens };
-
-	const usage = isRecord(raw.usage) ? raw.usage : undefined;
-	if (!usage) return { inputTokens: 0, outputTokens: 0 };
-	return {
-		inputTokens: tokenCount(usage, "inputTokens", "input_tokens"),
-		outputTokens: tokenCount(usage, "outputTokens", "output_tokens"),
-	};
-}
-
-function failureReason(message: SDKMessage): string {
-	const raw = message as unknown as Record<string, unknown>;
-	if (Array.isArray(raw.errors) && raw.errors.length > 0) {
-		return raw.errors.join("; ");
-	}
-	if (typeof raw.result === "string") return raw.result;
-	return String(raw.stop_reason ?? raw.subtype ?? "unknown error");
+	return { inputTokens, outputTokens };
 }

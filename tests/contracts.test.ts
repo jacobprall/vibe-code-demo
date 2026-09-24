@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { parseModelJson } from "../app/claude.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { agentJson } from "../app/claude.js";
 import {
 	appSpecSchema,
 	assetManifestSchema,
@@ -25,31 +25,50 @@ const plan = {
 	},
 };
 
-describe("parseModelJson", () => {
-	it("parses a bare JSON object", () => {
-		expect(parseModelJson(deployPlanSchema, JSON.stringify(plan))?.appName).toBe(
-			"furniture-catalog",
-		);
+/**
+ * The SDK checks the output of an agent against its JSON Schema. Zod checks
+ * it again, because a JSON Schema cannot hold each Zod rule.
+ */
+describe("agentJson", () => {
+	beforeEach(() => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
 	});
 
-	it("parses JSON inside a fenced code block", () => {
-		const raw = `Here you go:\n\`\`\`json\n${JSON.stringify(plan)}\n\`\`\``;
-		expect(parseModelJson(deployPlanSchema, raw)?.tiers).toHaveLength(1);
+	afterEach(() => {
+		vi.restoreAllMocks();
 	});
 
-	it("parses JSON surrounded by prose", () => {
-		const raw = `Sure. ${JSON.stringify(plan)} Hope that helps.`;
-		expect(parseModelJson(deployPlanSchema, raw)?.summary).toContain("Postgres");
+	it("returns the output when it matches the schema", async () => {
+		const call = vi.fn(async () => plan);
+
+		const result = await agentJson(call, deployPlanSchema, "Design it.", "architect");
+
+		expect(result.appName).toBe("furniture-catalog");
+		expect(call).toHaveBeenCalledTimes(1);
 	});
 
-	it("returns null rather than throwing on unparseable output", () => {
-		expect(parseModelJson(deployPlanSchema, "I could not decide.")).toBeNull();
+	it("gives the Zod error back to the agent one time", async () => {
+		const call = vi
+			.fn()
+			.mockResolvedValueOnce({ ...plan, tiers: [] })
+			.mockResolvedValueOnce(plan);
+
+		await expect(
+			agentJson(call, deployPlanSchema, "Design it.", "architect"),
+		).resolves.toMatchObject({ appName: "furniture-catalog" });
+		expect(call).toHaveBeenCalledTimes(2);
+		expect(call.mock.calls[1][0]).toMatch(/^Design it\.\n/);
+		expect(call.mock.calls[1][0]).toContain("at tiers");
 	});
 
-	it("returns null when JSON is valid but violates the schema", () => {
-		expect(
-			parseModelJson(deployPlanSchema, JSON.stringify({ ...plan, tiers: [] })),
-		).toBeNull();
+	// The text of an agent without a schema is not an object, so it cannot match.
+	it("stops after a second output that does not match", async () => {
+		const call = vi.fn(async () => "I could not decide.");
+
+		await expect(
+			agentJson(call, deployPlanSchema, "Design it.", "architect"),
+		).rejects.toThrow("architect returned invalid structured output twice");
+		expect(call).toHaveBeenCalledTimes(2);
 	});
 });
 
