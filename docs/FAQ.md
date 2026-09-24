@@ -72,6 +72,8 @@ Architecture overview and how Render products fit together:
 - The UI shows these stages: Designing, Provisioning (only for an app with a
   database), Curating, Building, Verifying, Publishing, Waiting For Services,
   Waiting For Deploys, Smoke Testing, and Done.
+- Each stage has a tooltip that tells what the stage does and where it runs.
+  Hover over the stage, or go to it with the Tab key.
 - A typical run takes **5–10 minutes**. The builder takes the largest part.
 - The CLI `npm run demo` follows the status endpoint and prints final URLs.
 - If a run looks stuck, `GET /v1/apps/:runId` shows the current `stage` and `progress`.

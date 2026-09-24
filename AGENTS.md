@@ -420,6 +420,11 @@ run becomes `deployed`. The storefront check must also pass: the HTML of the
 storefront, or a script that it loads, must contain the public hostname of the
 API. The API checks cannot see the hostname that a browser uses.
 
+Each stage in `RUN_STAGES` has an item in the stage list of
+`public/index.html`, in the same order, with a tooltip that tells what the
+stage does and where it runs. `tests/gateway.test.ts` checks this, so a new
+stage needs an item and a tooltip.
+
 When a deploy fails, the deploy manager diagnoses it from the logs of that
 deploy, which workflow code gives it. `fetchDeployLogs()` reads them in the
 time range of the deploy, with no type filter. Thus it gets the build logs,

@@ -452,6 +452,7 @@ input {
 }
 
 .stages li {
+	position: relative;
 	display: flex;
 	align-items: center;
 	gap: 10px;
@@ -462,6 +463,23 @@ input {
 	font-size: 13px;
 	line-height: 20px;
 	letter-spacing: 0;
+	cursor: help;
+}
+
+.stages li:hover {
+	background: var(--hover-tint);
+}
+
+/* The name of a stage is a button only so that the keyboard can open its tooltip. */
+.stage-label {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	letter-spacing: inherit;
+	text-align: left;
+	cursor: inherit;
 }
 
 .stages li::before {
@@ -499,6 +517,47 @@ input {
 .stages li.failed-stage::before {
 	border-color: var(--danger);
 	background: var(--danger);
+}
+
+/*
+ * The tooltip of a stage opens above it on hover or keyboard focus, so a
+ * pointer that moves down the list does not go into an open tooltip. It
+ * touches its stage, so the pointer can move onto it and it stays open.
+ * Escape closes it (app.js). It is as wide as the column of its stage.
+ */
+.stage-tip {
+	position: absolute;
+	right: 0;
+	bottom: 100%;
+	left: 0;
+	z-index: 1;
+	display: none;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px;
+	border: 1px solid var(--border-strong);
+	background: var(--surface-muted);
+	color: var(--text-secondary);
+	font-family: var(--font-default);
+	font-size: 14px;
+	font-weight: 400;
+	line-height: 20px;
+	letter-spacing: 0.01em;
+	cursor: auto;
+}
+
+.stages:not(.tips-closed) li:hover .stage-tip,
+.stages:not(.tips-closed) .stage-label:focus-visible + .stage-tip {
+	display: flex;
+}
+
+.stage-tip-where {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding-top: 8px;
+	border-top: 1px solid var(--border);
+	color: var(--text);
 }
 
 .progress {
@@ -599,6 +658,7 @@ input {
 .secondary-button:focus-visible,
 .danger-button:focus-visible,
 .run-item:focus-visible,
+.stage-label:focus-visible,
 .primary-link:focus-visible {
 	outline: 2px solid var(--accent);
 	outline-offset: 2px;

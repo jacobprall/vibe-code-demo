@@ -28,18 +28,13 @@ const deleteCancel = document.querySelector("#delete-cancel");
 const activeStatuses = ["running", "deleting"];
 const healthyStatuses = [...activeStatuses, "deployed", "awaiting_blueprint"];
 
-const stageOrder = [
-	"designing",
-	"provisioning",
-	"curating",
-	"building",
-	"verifying",
-	"publishing",
-	"waiting_for_services",
-	"waiting_for_deploys",
-	"smoke_testing",
-	"done",
-];
+/**
+ * The stage list is static HTML, with the tooltip of each stage. A poll
+ * changes only the class of each stage. It does not replace the stages, so an
+ * open tooltip stays open and a focused stage keeps the focus.
+ */
+const stageItems = [...stages.querySelectorAll("li")];
+const stageOrder = stageItems.map((item) => item.dataset.stage);
 
 let runs = [];
 let selectedRunId = null;
@@ -83,6 +78,18 @@ deleteConfirm.addEventListener("input", () => {
 });
 
 deleteCancel.addEventListener("click", () => deleteDialog.close());
+
+/**
+ * Escape closes an open stage tooltip, and the pointer and the focus stay
+ * where they are (WCAG 1.4.13). The next stage that the pointer or the focus
+ * goes to opens its tooltip again.
+ */
+document.addEventListener("keydown", (event) => {
+	if (event.key === "Escape") stages.classList.add("tips-closed");
+});
+for (const type of ["pointerover", "focusin"]) {
+	stages.addEventListener(type, () => stages.classList.remove("tips-closed"));
+}
 
 deleteForm.addEventListener("submit", async (event) => {
 	event.preventDefault();
@@ -236,21 +243,18 @@ function renderRun(run) {
 	stages.hidden = ["deleting", "delete_failed"].includes(run.status);
 
 	const current = stageOrder.indexOf(run.stage);
-	stages.replaceChildren(
-		...stageOrder.map((stage, index) => {
-			const item = document.createElement("li");
-			item.textContent = label(stage);
-			if (index < current || run.status === "deployed") item.className = "complete";
-			if (index === current && run.status === "running") item.className = "active";
-			if (
-				index === current &&
-				!["running", "deployed", "awaiting_blueprint"].includes(run.status)
-			) {
-				item.className = "failed-stage";
-			}
-			return item;
-		}),
-	);
+	stageItems.forEach((item, index) => {
+		let state = "";
+		if (index < current || run.status === "deployed") state = "complete";
+		if (index === current && run.status === "running") state = "active";
+		if (
+			index === current &&
+			!["running", "deployed", "awaiting_blueprint"].includes(run.status)
+		) {
+			state = "failed-stage";
+		}
+		item.className = state;
+	});
 
 	const deployed = run.status === "deployed" && Boolean(run.urls?.web);
 	result.hidden = !deployed;
