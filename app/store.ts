@@ -20,7 +20,11 @@ export type FinishedStatus = Exclude<
 	"running" | "deleting" | "delete_failed"
 >;
 
-/** Coarse progress for GET /v1/apps/:runId. Cosmetic; never gates a run. */
+/**
+ * Coarse progress for GET /v1/apps/:runId. Cosmetic; never gates a run.
+ * stageOrder in public/app.js must list these stages in this order. If the
+ * stage of a run is not in that list, the UI shows no progress for the run.
+ */
 export type RunStage =
 	| "designing"
 	| "provisioning"
@@ -28,7 +32,6 @@ export type RunStage =
 	| "building"
 	| "verifying"
 	| "publishing"
-	| "deploying"
 	| "waiting_for_services"
 	| "waiting_for_deploys"
 	| "smoke_testing"
