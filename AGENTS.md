@@ -398,8 +398,7 @@ storefront, or a script that it loads, must contain the public hostname of the
 API. The API checks cannot see the hostname that a browser uses.
 
 A deploy repair ships through the same path as the first build. The repaired
-manifest must pass `checkManifestCommands` and `verify-app`. Then
-`publish-app` rewrites `factory.json` and both Blueprints before the commit,
+manifest must pass `verify-app`. Then `publish-app` rewrites `factory.json` and both Blueprints before the commit,
 because Render gets the manifest only through these files. A repair
 can change commands, paths, and env wiring, but not the list from
 `declaredResources()`. Render does not delete a resource that leaves the

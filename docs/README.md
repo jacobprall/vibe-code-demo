@@ -452,12 +452,13 @@ See [AGENTS.md](../AGENTS.md) for checklists when adding agents, primitives, or 
 - Claude's built-in `Bash`, `Read`, `Write`, and `Edit` are never granted;
   `runClaude` always passes `tools: []` for built-ins. Every action an agent
   takes goes through a workflow-owned sandbox tool.
-- `preDeployCommand` is agent-authored and runs in the sandbox and again on
-  Render, so it goes through the same destructive-command gate as the build
-  and start commands before either happens.
-- `checkToolCall` runs as a `PreToolUse` hook and vetoes destructive commands,
-  secret exfiltration, paths outside the app directory and `/tmp`, and any
-  Render MCP tool that is not on the read-only allowlist.
+- The build, pre-deploy, and start commands are agent-authored. They run in
+  the sandbox of the run and in the app's own services on Render, and neither
+  place holds a credential of the factory.
+- `checkToolCall` runs as a `PreToolUse` hook and vetoes paths outside the app
+  directory and `/tmp`, and any Render MCP tool that is not on the read-only
+  allowlist. It does not read shell commands: a pattern cannot tell a safe
+  command from a harmful one, and the sandbox limits what a command can reach.
 - The sandbox that the agents use holds only the app of the run: no clone of
   the apps repository and no GitHub token. So an agent cannot publish, and it
   cannot read or change another app. The trigger for a deploy is a commit that

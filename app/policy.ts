@@ -1,4 +1,9 @@
-/** The one gate between a model and the machine. */
+/**
+ * The rules for the tool calls of an agent: each path must stay in the app
+ * directory or /tmp, and each Render tool must be read-only. No rule reads a
+ * shell command. The sandbox limits what a command can reach: it holds only
+ * the app of the run, and no credential.
+ */
 
 /**
  * The input fields of each tool that hold a path. Other fields, such as the
@@ -40,60 +45,6 @@ export const RENDER_READ_ONLY_TOOLS = [
 export const RENDER_MCP_SERVER = "render";
 const RENDER_PREFIX = `mcp__${RENDER_MCP_SERVER}__`;
 
-export interface Rule {
-	pattern: RegExp;
-	label: string;
-}
-
-/** Matched against serialized tool input, so quoting tricks still trip them. */
-export const RULES: Rule[] = [
-	{
-		pattern:
-			/\brm\b[^|;]*(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r|-r\b[^|;]*-f\b|-f\b[^|;]*-r\b|--recursive\b[^|;]*--force\b|--force\b[^|;]*--recursive\b)[^|;]*(?:\/(?:[\s";)|&]|$)|~)/,
-		label: "recursive forced deletion of root or home",
-	},
-	{
-		pattern: /\bgit\s+push\b/,
-		label: "git push from an agent — the workflow owns publishing",
-	},
-	{
-		pattern: /\b(?:DROP\s+(?:TABLE|DATABASE)|TRUNCATE\s+TABLE)\b/i,
-		label: "destructive SQL statement",
-	},
-	{ pattern: /\bmkfs\b/, label: "filesystem format" },
-	{ pattern: /\bdd\b.*\bif=/, label: "raw disk write (dd)" },
-	{
-		pattern: />\s*\/dev\/(?:sd|nvme|vd|xvd)/,
-		label: "redirect to block device",
-	},
-	{
-		pattern: /\bchmod\b.*(?:777|a\+rwx)\s+\//,
-		label: "chmod world-writable on root path",
-	},
-	{
-		pattern:
-			/\bcurl\b.*(?:--data\b|-[^\s]*d\b|-X\s*(?:POST|PUT)\b).*(?:GITHUB_TOKEN|ANTHROPIC_API_KEY|RENDER_API_KEY|DATABASE_URL)/i,
-		label: "potential secret exfiltration via curl",
-	},
-	{
-		pattern: /\bwget\b.*--post/i,
-		label: "potential exfiltration via wget POST",
-	},
-	{
-		pattern: /\bbase64\b.*(?:-d|--decode)\b.*\|\s*(?:sh\b|bash\b|zsh\b)/,
-		label: "base64-decoded shell execution",
-	},
-	{ pattern: /\beval\b.*\$\(/, label: "eval with command substitution" },
-	{
-		pattern: /\bcurl\b.*\|\s*(?:sh\b|bash\b|zsh\b|source\b)/,
-		label: "piped remote shell execution",
-	},
-	{
-		pattern: /\bwget\b.*-O\s*-.*\|\s*(?:sh\b|bash\b|zsh\b)/,
-		label: "piped remote shell execution via wget",
-	},
-];
-
 /**
  * Returns a rejection reason, or null to allow. `workDir` is the app
  * directory of the agent, and each path in a tool call must resolve inside
@@ -119,13 +70,6 @@ export function checkToolCall(
 		const resolved = resolveSandboxPath(workDir, value);
 		if ("error" in resolved) {
 			return `Blocked path escape in ${name}: ${resolved.error}`;
-		}
-	}
-
-	const serialized = JSON.stringify(input);
-	for (const rule of RULES) {
-		if (rule.pattern.test(serialized)) {
-			return `Blocked destructive operation: ${rule.label}`;
 		}
 	}
 	return null;
@@ -210,38 +154,6 @@ const SECRET_PATTERNS = [
 	// Generated apps get a real DATABASE_URL, so redact anything shaped like one.
 	/\bpostgres(?:ql)?:\/\/\S+/g,
 ];
-
-/**
- * Validate that every command in an agent-declared manifest clears the
- * existing destructive-operation rules. Called by the workflow before the
- * manifest's commands reach the sandbox or the Blueprint.
- */
-export function checkManifestCommands(
-	manifest: {
-		services: {
-			buildCommand?: string;
-			startCommand?: string;
-			preDeployCommand?: string;
-		}[];
-	},
-): string | null {
-	for (const service of manifest.services) {
-		for (const field of [
-			"buildCommand",
-			"startCommand",
-			"preDeployCommand",
-		] as const) {
-			const command = service[field];
-			if (!command) continue;
-			for (const rule of RULES) {
-				if (rule.pattern.test(command)) {
-					return `Blocked manifest ${field}: ${rule.label}`;
-				}
-			}
-		}
-	}
-	return null;
-}
 
 /** Strip secret-shaped strings. Applied once when text leaves the factory. */
 export function redactSecrets(text: string): string {

