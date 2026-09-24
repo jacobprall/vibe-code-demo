@@ -164,7 +164,7 @@ A: Yes, `npm run dev:gateway` and `npm run dev:workflows` in separate terminals.
 | File | What's in it |
 |---|---|
 | `factory.config.ts` | All the knobs: plans, region, models, asset policy, concurrency cap |
-| `app/workflow.ts` | The main pipeline — start here |
+| `app/workflow.ts` | The two pipelines — start here. Each stage is a module: `build`, `verify`, `publish`, `deploy`, `delete` |
 | `app/agents.ts` | Agent definitions, prompts, tool grants, model assignments |
 | `app/blueprint.ts` | How manifests become `render.yaml` files |
 | `app/policy.ts` | Tool-call gating rules, path restrictions, MCP allowlist |

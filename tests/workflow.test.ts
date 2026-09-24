@@ -13,18 +13,15 @@ import type { AppFile } from "../app/git.js";
 import type { DeployOutcome } from "../app/render.js";
 import type { ExecResult, Sandbox } from "../app/sandbox.js";
 import {
-	awaitDeployment,
-	checkStaticSiteEnvVars,
-	deleteApp,
 	deleteResourcesTask,
-	promptToApp,
-	publishAppTask,
-	removeApp,
 	removeFilesTask,
 	removeFromBlueprintTask,
-	verifyAppTask,
 	waitForSyncsTask,
-} from "../app/workflow.js";
+} from "../app/delete.js";
+import { awaitDeployment } from "../app/deploy.js";
+import { publishAppTask } from "../app/publish.js";
+import { checkStaticSiteEnvVars, verifyAppTask } from "../app/verify.js";
+import { deleteApp, promptToApp, removeApp } from "../app/workflow.js";
 
 const mocks = vi.hoisted(() => ({
 	architectTask: vi.fn(),

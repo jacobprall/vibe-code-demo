@@ -234,7 +234,8 @@ Blueprint once so pushes deploy automatically.
 
 ## Where to look in the code
 
-- Start with `app/workflow.ts` for the control flow and `factory.config.ts` for
+- Start with `app/workflow.ts` for the control flow, then the stage modules
+  (`build`, `verify`, `publish`, `deploy`, `delete`), and `factory.config.ts` for
   configurable plans, limits, models, and asset policy.
 - Read `app/blueprint.ts`, `app/contracts.ts`, and `app/templates.ts` together
   to see how model output becomes constrained deployable infrastructure.
@@ -242,8 +243,8 @@ Blueprint once so pushes deploy automatically.
   the model-to-machine and model-to-Render trust boundaries.
 - Read `app/gateway.ts` and `app/store.ts` for authentication, idempotency,
   progress, concurrency, and reconciliation.
-- Read `removeApp()` in `app/workflow.ts` and then `app/teardown.ts` for the
-  order of a delete and what it can delete.
+- Read `removeApp()` in `app/workflow.ts`, then `app/delete.ts` and
+  `app/teardown.ts`, for the order of a delete and what it can delete.
 
 For a presentation-sized system diagram, see
 [Architecture at a glance](../README.md#architecture-at-a-glance). Field-demo
