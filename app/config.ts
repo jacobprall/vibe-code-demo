@@ -1,8 +1,8 @@
 /** Environment parsing and per-process validation. */
+import { slug } from "./contracts.js";
 
 const REPO_PATTERN =
 	/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/[A-Za-z0-9._-]+$/;
-const USER_SLUG_PATTERN = /^[a-z][a-z0-9-]{2,30}$/;
 
 export interface Repository {
 	owner: string;
@@ -52,7 +52,8 @@ export function apiKey(): string {
 export function uiCredentials(): { username: string; password: string } {
 	const username = requireEnv("UI_USERNAME");
 	const password = requireEnv("UI_PASSWORD");
-	if (!USER_SLUG_PATTERN.test(username)) {
+	// The gateway gives it to every run of the UI as the namespace `user`.
+	if (!slug.safeParse(username).success) {
 		throw new Error("UI_USERNAME must be a lowercase slug");
 	}
 	if (password.length < 16) {

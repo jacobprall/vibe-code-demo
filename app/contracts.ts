@@ -1,7 +1,8 @@
 /** Zod schemas for external input, agent output, and the stored spec. */
 import { z } from "zod";
 
-const slug = z
+/** A user namespace or an app name. It goes into paths and resource names. */
+export const slug = z
 	.string()
 	.regex(/^[a-z][a-z0-9-]{2,30}$/, "must be a lowercase slug");
 

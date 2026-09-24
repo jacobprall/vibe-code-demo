@@ -365,15 +365,17 @@ function databaseBlocks(manifest: Manifest, names: ResourceNames): string[] {
 }
 
 /**
- * Join a manifest-declared rootDir onto the app's repo-relative path. The
- * manifest is agent-authored, so tolerate "." meaning the app directory
- * itself and a rootDir that already repeats the app path.
+ * Join a directory of the manifest onto a base directory: a rootDir onto the
+ * app, or a staticPublishPath onto its service. The manifest is
+ * agent-authored, so tolerate the two things models get wrong: "." or "./"
+ * for the base itself, and a path that repeats the base or its end. The
+ * Blueprint and verify-app both use this, so they agree on each directory.
  */
-function joinServiceDir(root: string, rootDir: string): string {
-	const cleaned = rootDir.replace(/^\.\/+/, "").replace(/\/+$/, "");
-	if (!cleaned || cleaned === ".") return root;
-	if (root.endsWith(`/${cleaned}`) || root === cleaned) return root;
-	return `${root}/${cleaned}`;
+export function joinServiceDir(base: string, dir: string): string {
+	const cleaned = dir.replace(/^\.\/+/, "").replace(/\/+$/, "");
+	if (!cleaned || cleaned === "." || cleaned === base) return base;
+	if (base.endsWith(`/${cleaned}`)) return base;
+	return `${base}/${cleaned}`;
 }
 
 /**
