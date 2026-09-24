@@ -266,6 +266,16 @@ describe("browser UI", () => {
 		},
 	);
 
+	it.each(["/", "/table", "/table.js", "/runs.js", "/app.js", "/style.css"])(
+		"makes the browser revalidate %s after each deploy",
+		async (path) => {
+			const response = await createGateway().request(path, {
+				headers: { authorization },
+			});
+			expect(response.headers.get("cache-control")).toBe("no-cache");
+		},
+	);
+
 	it("explains each run stage in the table view, with its time and its dashboard links", async () => {
 		const { RUN_STAGES } =
 			await vi.importActual<typeof import("../app/store.js")>("../app/store.js");

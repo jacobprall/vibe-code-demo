@@ -41,6 +41,12 @@ const DASHBOARD = "https://dashboard.render.com";
 /** A failed read of the workflow ID is tried again after this, not on each poll. */
 const WORKFLOW_ID_RETRY_MS = 60_000;
 
+/** The browser revalidates each UI file, so it never mixes two deploys. */
+const noCache: MiddlewareHandler = async (c, next) => {
+	await next();
+	c.header("Cache-Control", "no-cache");
+};
+
 /** The ID of the workflow for links to the Render Dashboard, if it is known. */
 type WorkflowIdReader = (taskRunId: string | null) => string | null;
 
@@ -93,13 +99,17 @@ export function createGateway(): Hono {
 	app.delete("/ui/apps/:runId", (c) =>
 		deleteRun(c, "/ui/apps", credentials.username),
 	);
+	// Each page and script expects the others from the same deploy. A cached
+	// script from an earlier deploy looks up elements the new page lacks.
+	const uiFile = (path: string) =>
+		[uiAuth, noCache, serveStatic({ path: `./public/${path}` })] as const;
 	// Two views of the same UI. Each one has a button that opens the other.
-	app.get("/", uiAuth, serveStatic({ path: "./public/index.html" }));
-	app.get("/table", uiAuth, serveStatic({ path: "./public/table.html" }));
-	app.get("/app.js", uiAuth, serveStatic({ path: "./public/app.js" }));
-	app.get("/table.js", uiAuth, serveStatic({ path: "./public/table.js" }));
-	app.get("/runs.js", uiAuth, serveStatic({ path: "./public/runs.js" }));
-	app.get("/style.css", uiAuth, serveStatic({ path: "./public/style.css" }));
+	app.get("/", ...uiFile("index.html"));
+	app.get("/table", ...uiFile("table.html"));
+	app.get("/app.js", ...uiFile("app.js"));
+	app.get("/table.js", ...uiFile("table.js"));
+	app.get("/runs.js", ...uiFile("runs.js"));
+	app.get("/style.css", ...uiFile("style.css"));
 
 	return app;
 }
