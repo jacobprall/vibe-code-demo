@@ -248,7 +248,7 @@ Blueprint once so pushes deploy automatically.
 
 For a presentation-sized system diagram, see
 [Architecture at a glance](../README.md#architecture-at-a-glance). Field-demo
-talking points live in [FAQ for field engineering](../FAQ.md).
+talking points live in [FAQ for field engineering](FAQ.md).
 
 Agent conventions and invariants are documented in [AGENTS.md](../AGENTS.md).
 
@@ -529,4 +529,4 @@ Implementation details and invariants for contributors are in [AGENTS.md](../AGE
 
 ## Related
 
-- [FAQ for field engineering](../FAQ.md) — live-demo talking points and quick answers
+- [FAQ for field engineering](FAQ.md) — live-demo talking points and quick answers
