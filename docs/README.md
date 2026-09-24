@@ -303,9 +303,10 @@ You can submit a prompt while other runs build, up to the cap of three runs.
 The history shows the stage of each run.
 The **Table view** button opens `/table`, which shows the same runs as tables:
 the sites with their URLs, the time that each run took, and a delete button,
-and the stages with what each one does, where it runs, and links to the
-workflow run and the sandbox in the Render Dashboard. Local task runs are not
-in the Dashboard, so local development shows no workflow links.
+and the stages with what each one does, where it runs, how long it took, and
+links to the workflow run and the sandbox in the Render Dashboard. A timer
+counts the seconds of the stage that runs now. Local task runs are not in the
+Dashboard, so local development shows no workflow links.
 The UI calls same-origin `/ui` endpoints; `FACTORY_API_KEY` stays on the
 gateway and is never delivered to browser JavaScript. `UI_USERNAME` is also
 the generated-app namespace: a user named `jacob` creates apps under

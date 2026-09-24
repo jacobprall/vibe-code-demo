@@ -4,11 +4,23 @@ const sites = document.querySelector("#sites");
 const siteRows = document.querySelector("#site-rows");
 const linkCells = [...document.querySelectorAll("#stages [data-links]")];
 const linkLabels = { workflowRun: "Workflow run", sandbox: "Sandbox" };
+/** The time cell of each stage, by the name of the stage. */
+const timeCells = new Map(
+	[...document.querySelectorAll("#stages tr[data-stage]")].map((row) => [
+		row.dataset.stage,
+		row.querySelector(".stage-time"),
+	]),
+);
 
 /** The links in the stage table, so that a poll changes them only when they change. */
 let shownLinks = null;
+/** The time of each stage of the shown run, from the last poll. */
+let stageTimes = new Map();
 
 startRunsPage({ renderHistory, renderRun });
+// Four times each second, so that the timer shows each second. A timer that
+// runs once each second can skip a second when it runs late.
+setInterval(renderTimes, 250);
 
 function renderHistory(runs, selectedRunId, { select, openDeleteDialog }) {
 	sites.hidden = runs.length === 0;
@@ -60,12 +72,50 @@ function renderHistory(runs, selectedRunId, { select, openDeleteDialog }) {
 	);
 }
 
+function renderRun(run) {
+	stageTimes = timesOfStages(run.stageHistory ?? []);
+	renderTimes();
+	renderLinks(run);
+}
+
+/**
+ * How long the run was in each stage. A stage that the run went into more
+ * than once adds up its times. `runningSince` is when the stage that runs now
+ * started, or null for a stage that stopped.
+ */
+function timesOfStages(history) {
+	const times = new Map();
+	for (const { stage, startedAt, finishedAt } of history) {
+		const time = times.get(stage) ?? { elapsed: 0, runningSince: null };
+		if (finishedAt) time.elapsed += Date.parse(finishedAt) - Date.parse(startedAt);
+		else time.runningSince = Date.parse(startedAt);
+		times.set(stage, time);
+	}
+	return times;
+}
+
+/**
+ * A poll gives the times of the stages. Between polls, the timer adds the
+ * time since the stage that runs now started. A stage that did not start has
+ * no time.
+ */
+function renderTimes() {
+	const now = Date.now();
+	for (const [stage, timeCell] of timeCells) {
+		const time = stageTimes.get(stage);
+		const running = time && time.runningSince !== null ? now - time.runningSince : 0;
+		const text = time ? formatDuration(time.elapsed + running) : "";
+		// The timer runs four times each second, so write only a time that changed.
+		if (timeCell.textContent !== text) timeCell.textContent = text;
+	}
+}
+
 /**
  * Each stage links to the pages in the Render Dashboard where it runs: the
  * workflow run, which lists its subtasks, and the sandbox of the run. The
  * gateway gives null for a link that it cannot make.
  */
-function renderRun(run) {
+function renderLinks(run) {
 	const links = JSON.stringify(run.links ?? {});
 	if (links === shownLinks) return;
 	shownLinks = links;
@@ -118,11 +168,12 @@ function generationTime(run) {
 	return end === null ? "—" : formatDuration(end - Date.parse(run.createdAt));
 }
 
+/** Always with the seconds, so that the timer of a stage shows each second. */
 function formatDuration(milliseconds) {
 	const seconds = Math.max(0, Math.round(milliseconds / 1000));
 	const hours = Math.floor(seconds / 3600);
 	const minutes = Math.floor((seconds % 3600) / 60);
-	if (hours > 0) return `${hours}h ${minutes}m`;
+	if (hours > 0) return `${hours}h ${minutes}m ${seconds % 60}s`;
 	if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
 	return `${seconds}s`;
 }

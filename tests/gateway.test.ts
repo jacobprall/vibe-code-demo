@@ -266,7 +266,7 @@ describe("browser UI", () => {
 		},
 	);
 
-	it("explains each run stage in the table view, with its dashboard links", async () => {
+	it("explains each run stage in the table view, with its time and its dashboard links", async () => {
 		const { RUN_STAGES } =
 			await vi.importActual<typeof import("../app/store.js")>("../app/store.js");
 		const response = await createGateway().request("/table", {
@@ -276,13 +276,17 @@ describe("browser UI", () => {
 		const rows = [...html.matchAll(/<tr data-stage="([a-z_]+)">([\s\S]*?)<\/tr>/g)];
 
 		expect(html).toContain('<a class="secondary-button view-switch" href="/">');
+		expect(html).toContain('<th scope="col">Time</th>');
 		expect(rows.map(([, stage]) => stage)).toEqual(RUN_STAGES);
 		for (const [, , cells] of rows) {
-			// The name, what the stage does, where it runs, and its links.
+			// The name, the time, what the stage does, where it runs, and its
+			// links. table.js fills the time and the links.
 			const text = [...cells.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/g)].map(
 				([, content]) => content.replace(/<[^>]+>/g, "").trim(),
 			);
-			expect(text.slice(0, 3).every(Boolean)).toBe(true);
+			expect(text).toHaveLength(5);
+			expect([text[0], text[2], text[3]].every(Boolean)).toBe(true);
+			expect(cells).toContain('<td class="stage-time"></td>');
 			expect(cells).toMatch(/<td class="stage-links" data-links="workflowRun( sandbox)?">/);
 		}
 	});
@@ -401,6 +405,7 @@ describe("status", () => {
 			// Progress can hold the error of a failed Render read.
 			progress:
 				"The deploy lookup of srv-1 failed (attempt 1 of 5): postgres://user:pw@host/db",
+			stageHistory: [],
 			workflowRunId: "trn-1",
 			appName: "furniture-catalog",
 			webUrl: "https://vibe-demo-furniture-catalog-web.onrender.com",
@@ -470,6 +475,75 @@ describe("status", () => {
 			});
 		},
 	);
+
+	// A stage that the run went into again has one more item.
+	it("gives the time that each stage of a run started and stopped", async () => {
+		mocks.getRun.mockResolvedValue(
+			storedRun({
+				stageHistory: [
+					{ stage: "building", startedAt: "2026-01-01T00:02:00.000Z" },
+					{ stage: "verifying", startedAt: "2026-01-01T00:05:00.000Z" },
+					{ stage: "building", startedAt: "2026-01-01T00:06:00.000Z" },
+					{ stage: "smoke_testing", startedAt: "2026-01-01T00:08:00.000Z" },
+				],
+			}),
+		);
+
+		const body = await (await readV1Run()).json();
+
+		// A stage stops when the next one starts, and the last one when the run stops.
+		expect(body.stageHistory).toEqual([
+			{
+				stage: "building",
+				startedAt: "2026-01-01T00:02:00.000Z",
+				finishedAt: "2026-01-01T00:05:00.000Z",
+			},
+			{
+				stage: "verifying",
+				startedAt: "2026-01-01T00:05:00.000Z",
+				finishedAt: "2026-01-01T00:06:00.000Z",
+			},
+			{
+				stage: "building",
+				startedAt: "2026-01-01T00:06:00.000Z",
+				finishedAt: "2026-01-01T00:08:00.000Z",
+			},
+			{
+				stage: "smoke_testing",
+				startedAt: "2026-01-01T00:08:00.000Z",
+				finishedAt: "2026-01-01T00:09:00.000Z",
+			},
+		]);
+	});
+
+	it("gives no stop time to the stage that runs now", async () => {
+		mocks.getRun.mockResolvedValue(
+			storedRun({
+				status: "running",
+				stage: "verifying",
+				finishedAt: null,
+				stageHistory: [
+					{ stage: "designing", startedAt: "2026-01-01T00:00:05.000Z" },
+					{ stage: "verifying", startedAt: "2026-01-01T00:04:00.000Z" },
+				],
+			}),
+		);
+
+		const body = await (await readV1Run()).json();
+
+		expect(body.stageHistory).toEqual([
+			{
+				stage: "designing",
+				startedAt: "2026-01-01T00:00:05.000Z",
+				finishedAt: "2026-01-01T00:04:00.000Z",
+			},
+			{
+				stage: "verifying",
+				startedAt: "2026-01-01T00:04:00.000Z",
+				finishedAt: null,
+			},
+		]);
+	});
 
 	/** Two reads of the run from one gateway, as the polls of the UI do. */
 	async function readTwice() {
@@ -544,6 +618,7 @@ function storedRun(overrides: Record<string, unknown> = {}) {
 		status: "deployed",
 		stage: "done",
 		progress: null,
+		stageHistory: [],
 		workflowRunId: "trn-1",
 		appName: "furniture-catalog",
 		webUrl: "https://vibe-demo-furniture-catalog-web.onrender.com",

@@ -75,12 +75,14 @@ Architecture overview and how Render products fit together:
 - Each stage has a tooltip that tells what the stage does and where it runs.
   Hover over the stage, or go to it with the Tab key.
 - For a talk track, click **Table view**. It shows the stages as a table: what
-  each stage does, where it runs, and links to the workflow run and the sandbox
-  in the Render Dashboard. The row of the stage that runs now has a tint. The
-  sites table shows each URL and how long each run took.
+  each stage does, where it runs, how long it took, and links to the workflow
+  run and the sandbox in the Render Dashboard. The row of the stage that runs
+  now has a tint and a timer that counts its seconds. The sites table shows
+  each URL and how long each run took.
 - A typical run takes **5–10 minutes**. The builder takes the largest part.
 - The CLI `npm run demo` follows the status endpoint and prints final URLs.
-- If a run looks stuck, `GET /v1/apps/:runId` shows the current `stage` and `progress`.
+- If a run looks stuck, `GET /v1/apps/:runId` shows the current `stage` and `progress`,
+  and `stageHistory` shows when each stage started and stopped.
 - If your network stops, the run continues on Render. Reload the page, and
   the UI shows the same run again.
 

@@ -50,6 +50,11 @@ export interface RunRecord {
 	status: RunStatus;
 	stage: RunStage | null;
 	progress: string | null;
+	/**
+	 * When the run went into each stage, in order. A stage that the run went
+	 * into again has one more item.
+	 */
+	stageHistory: { stage: RunStage; startedAt: string }[];
 	workflowRunId: string | null;
 	appName: string | null;
 	webUrl: string | null;
@@ -86,7 +91,7 @@ export type DeleteClaim =
 	| { claimed: false; reason: "missing" };
 
 const COLUMNS = `id, idempotency_key, prompt, user_name, status, stage, progress,
-	                workflow_run_id,
+	                stage_history, workflow_run_id,
 	                app_name, web_url, api_url, blueprint_path, summary,
 	                sandbox_id, sandbox_group_id,
 	                created_at, updated_at, finished_at`;
@@ -181,13 +186,22 @@ export async function claimRun(input: {
 		: { claimed: false, reason: "at_capacity" };
 }
 
+/**
+ * Each change of stage adds the stage and the time to stage_history, so that
+ * the UI can show how long each stage took.
+ */
 export async function setRunStage(
 	id: string,
 	stage: RunStage,
 	progress: string | null = null,
 ): Promise<void> {
 	await db().query(
-		"update runs set stage = $2, progress = $3, updated_at = now() where id = $1",
+		`update runs
+		 set stage = $2, progress = $3,
+		     stage_history = stage_history ||
+		       jsonb_build_array(jsonb_build_object('stage', $2::text, 'started_at', now())),
+		     updated_at = now()
+		 where id = $1`,
 		[id, stage, progress],
 	);
 }
@@ -423,6 +437,14 @@ function rowToRun(row: Record<string, unknown>): RunRecord {
 		status: row.status as RunStatus,
 		stage: (row.stage as RunStage | null) ?? null,
 		progress: (row.progress as string | null) ?? null,
+		// Postgres writes each time in the JSON with the offset of its session.
+		// Give it in UTC, as the other times of the run are.
+		stageHistory: (
+			row.stage_history as { stage: RunStage; started_at: string }[]
+		).map((item) => ({
+			stage: item.stage,
+			startedAt: new Date(item.started_at).toISOString(),
+		})),
 		workflowRunId: (row.workflow_run_id as string | null) ?? null,
 		appName: (row.app_name as string | null) ?? null,
 		webUrl: (row.web_url as string | null) ?? null,

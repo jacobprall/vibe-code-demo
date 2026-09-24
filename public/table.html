@@ -101,13 +101,15 @@
 				<pre id="run-details" class="run-details" hidden></pre>
 				<!--
 					RUN_STAGES in app/store.ts lists the same stages in the same order.
-					The table is static, so aria-live="off" keeps the live region of the
-					run panel from reading it. table.js fills the Dashboard cells.
+					table.js fills the Time and Dashboard cells, and a timer changes the
+					time of the stage that runs now each second. So aria-live="off" keeps
+					the live region of the run panel from reading the table.
 				-->
 				<table id="stages" class="stage-table" aria-live="off">
 					<thead>
 						<tr>
 							<th scope="col">Stage</th>
+							<th scope="col">Time</th>
 							<th scope="col">What it does</th>
 							<th scope="col">Where it runs</th>
 							<th scope="col">Dashboard</th>
@@ -116,60 +118,70 @@
 					<tbody>
 							<tr data-stage="designing">
 								<th scope="row">Designing</th>
+								<td class="stage-time"></td>
 								<td>The architect agent plans the app and its Render resources. It cannot create anything.</td>
 								<td class="stage-where">Render Workflows <span>architect task</span></td>
 								<td class="stage-links" data-links="workflowRun"></td>
 							</tr>
 							<tr data-stage="provisioning">
 								<th scope="row">Provisioning</th>
+								<td class="stage-time"></td>
 								<td>Starts a real Postgres for the builder and the checks. An app without a database skips this stage.</td>
 								<td class="stage-where">Render Sandbox <span>started by the prompt-to-app task</span></td>
 								<td class="stage-links" data-links="workflowRun sandbox"></td>
 							</tr>
 							<tr data-stage="curating">
 								<th scope="row">Curating</th>
+								<td class="stage-time"></td>
 								<td>Downloads openly licensed photographs from Wikimedia Commons into the app. No model picks a URL.</td>
 								<td class="stage-where">Render Workflows <span>prompt-to-app task</span></td>
 								<td class="stage-links" data-links="workflowRun"></td>
 							</tr>
 							<tr data-stage="building">
 								<th scope="row">Building</th>
+								<td class="stage-time"></td>
 								<td>The builder agent writes the app and runs commands. It also fixes what verification finds.</td>
 								<td class="stage-where">Render Workflows + Sandbox <span>builder task; its tools act in the sandbox</span></td>
 								<td class="stage-links" data-links="workflowRun sandbox"></td>
 							</tr>
 							<tr data-stage="verifying">
 								<th scope="row">Verifying</th>
+								<td class="stage-time"></td>
 								<td>Builds, boots, and queries the app as Render will, from only the files that a commit holds.</td>
 								<td class="stage-where">Render Workflows + Sandbox <span>verify-app task; the builds run in the sandbox</span></td>
 								<td class="stage-links" data-links="workflowRun sandbox"></td>
 							</tr>
 							<tr data-stage="publishing">
 								<th scope="row">Publishing</th>
+								<td class="stage-time"></td>
 								<td>Copies the app into a clean clone of the apps repository, commits it with its Blueprint, and pushes to GitHub.</td>
 								<td class="stage-where">Render Workflows + Sandbox <span>publish-app task, in a second sandbox</span></td>
 								<td class="stage-links" data-links="workflowRun"></td>
 							</tr>
 							<tr data-stage="waiting_for_services">
 								<th scope="row">Waiting For Services</th>
+								<td class="stage-time"></td>
 								<td>The push starts a Blueprint sync. Render creates the app&rsquo;s project and services from render.yaml.</td>
 								<td class="stage-where">Render Blueprints <span>the prompt-to-app task waits on the API</span></td>
 								<td class="stage-links" data-links="workflowRun"></td>
 							</tr>
 							<tr data-stage="waiting_for_deploys">
 								<th scope="row">Waiting For Deploys</th>
+								<td class="stage-time"></td>
 								<td>Render builds and deploys each service. If a deploy fails, the deploy manager diagnoses it and the builder fixes it.</td>
 								<td class="stage-where">Render <span>repairs run in the deploy-manager and builder tasks</span></td>
 								<td class="stage-links" data-links="workflowRun"></td>
 							</tr>
 							<tr data-stage="smoke_testing">
 								<th scope="row">Smoke Testing</th>
+								<td class="stage-time"></td>
 								<td>Render says that the app is live. Now the workflow checks its public URLs, its data, and CORS.</td>
 								<td class="stage-where">Render Workflows <span>prompt-to-app task</span></td>
 								<td class="stage-links" data-links="workflowRun"></td>
 							</tr>
 							<tr data-stage="done">
 								<th scope="row">Done</th>
+								<td class="stage-time"></td>
 								<td>The app passed every check and is live.</td>
 								<td class="stage-where">Render <span>the app&rsquo;s own project</span></td>
 								<td class="stage-links" data-links="workflowRun"></td>

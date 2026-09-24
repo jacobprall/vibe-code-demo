@@ -10,6 +10,12 @@ create table if not exists runs (
     -- Where the run is right now, for GET /v1/apps/:runId.
     stage            text,
     progress         text,
+    -- When the run went into each stage, in order, for the time of each stage
+    -- in the UI: [{"stage": "designing", "started_at": "..."}]. A stage that
+    -- the run goes into again, as building after a failed verification, gets
+    -- one more item. A stage stops when the next one starts, and the last one
+    -- stops at finished_at.
+    stage_history    jsonb       not null default '[]',
     -- The Workflows task run that owns the status: prompt-to-app while the
     -- run is running, and delete-app while its app is deleting.
     workflow_run_id  text,
@@ -38,6 +44,7 @@ alter table runs add column if not exists workflow_checked_at timestamptz;
 alter table runs add column if not exists sandbox_id text;
 alter table runs add column if not exists sandbox_group_id text;
 alter table runs add column if not exists finished_at timestamptz;
+alter table runs add column if not exists stage_history jsonb not null default '[]';
 
 -- A run that stopped before finished_at existed stopped when it was last
 -- updated. A run that a delete changed after that gets no time.

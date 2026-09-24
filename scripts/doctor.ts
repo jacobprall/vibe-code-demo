@@ -343,6 +343,7 @@ async function checkPostgres(): Promise<void> {
 			"sandbox_id",
 			"sandbox_group_id",
 			"finished_at",
+			"stage_history",
 		].filter((name) => !columns.has(name));
 		record(
 			missing.length === 0

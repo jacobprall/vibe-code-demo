@@ -105,8 +105,13 @@ The UI has two views of the same runs, and each has a button that opens the
 other. The classic view at `/` explains each stage in a tooltip. The table
 view at `/table` shows the sites in a table, with each URL, the time that each
 run took, and a delete button. It shows the stages in a table that tells what
-each stage does and where it runs, with links to the workflow run and the
-sandbox in the Render Dashboard. `public/runs.js` has what the views share;
+each stage does, where it runs, and how long it took, with links to the
+workflow run and the sandbox in the Render Dashboard. A timer counts the
+seconds of the stage that runs now. `setRunStage()` adds each stage that a run
+goes into, with the time, to `stage_history`. The gateway gives each item the
+time that it stopped: when the next item started, or when the run stopped. A
+stage that the run goes into again, as building after a failed verification,
+shows the sum of its times. `public/runs.js` has what the views share;
 `app.js` and `table.js` render only what differs. The gateway builds the links
 from IDs in Postgres and gives null for a link that it cannot make: the SDK
 does not give the ID of a subtask run, so each stage links to the run of
@@ -445,9 +450,9 @@ API. The API checks cannot see the hostname that a browser uses.
 Each stage in `RUN_STAGES` has an item in the stage list of
 `public/index.html`, in the same order, with a tooltip that tells what the
 stage does and where it runs. It also has a row in the stage table of
-`public/table.html`, which tells the same and names the Dashboard links of
-the stage. `tests/gateway.test.ts` checks both, so a new stage needs an item
-and a row.
+`public/table.html`, which tells the same, has a cell for the time of the
+stage, and names the Dashboard links of the stage. `tests/gateway.test.ts`
+checks both, so a new stage needs an item and a row.
 
 When a deploy fails, the deploy manager diagnoses it from the logs of that
 deploy, which workflow code gives it. `fetchDeployLogs()` reads them in the

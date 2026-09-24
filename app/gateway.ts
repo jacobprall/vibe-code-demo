@@ -307,6 +307,16 @@ export interface RunResponse {
 	status: string;
 	stage: string | null;
 	progress: string | null;
+	/**
+	 * Each time that the run went into a stage, in order. A stage that the run
+	 * went into again, as building after a failed verification, has one more
+	 * item. `finishedAt` is null for the stage that runs now.
+	 */
+	stageHistory: {
+		stage: string;
+		startedAt: string;
+		finishedAt: string | null;
+	}[];
 	prompt: string;
 	user: string;
 	appName: string | null;
@@ -334,6 +344,12 @@ export function runResponse(
 		status: run.status,
 		stage: run.stage,
 		progress: run.progress ? redactSecrets(run.progress) : null,
+		// A stage stops when the next stage starts, and the last stage stops
+		// when the run stops.
+		stageHistory: run.stageHistory.map((item, index, history) => ({
+			...item,
+			finishedAt: history[index + 1]?.startedAt ?? run.finishedAt,
+		})),
 		prompt: run.prompt,
 		user: run.user,
 		appName: run.appName,

@@ -814,11 +814,16 @@ input {
 	width: 18%;
 }
 
-.stage-table thead th:nth-child(3) {
-	width: 24%;
+/* The time column is wide enough for "1h 12m 34s". */
+.stage-table thead th:nth-child(2) {
+	width: 104px;
 }
 
 .stage-table thead th:nth-child(4) {
+	width: 24%;
+}
+
+.stage-table thead th:nth-child(5) {
 	width: 14%;
 }
 
@@ -848,6 +853,15 @@ input {
 	color: var(--text-secondary);
 	font-size: 14px;
 	line-height: 20px;
+}
+
+/* All digits have the same width, so the timer does not move as it counts. */
+.stage-table .stage-time {
+	font-family: var(--font-mono);
+	font-size: 13px;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: 0;
+	white-space: nowrap;
 }
 
 .stage-table .stage-where {
@@ -994,10 +1008,12 @@ input {
 		min-height: 44px;
 	}
 
-	/* Each stage is a block: its name, what it does, where it runs, and links. */
+	/*
+	 * Each stage is a block: its name and its time on one line, and then what
+	 * it does, where it runs, and links.
+	 */
 	.stage-table,
 	.stage-table tbody,
-	.stage-table tbody tr,
 	.stage-table th,
 	.stage-table td {
 		display: block;
@@ -1012,6 +1028,8 @@ input {
 	}
 
 	.stage-table tbody tr {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
 		padding: 10px 0;
 		border-bottom: 1px solid var(--border);
 	}
@@ -1023,7 +1041,14 @@ input {
 	}
 
 	.stage-table td {
+		grid-column: 1 / -1;
 		margin-top: 4px;
+	}
+
+	.stage-table .stage-time {
+		grid-column: 2;
+		margin-top: 0;
+		padding-left: 12px;
 	}
 
 	.stage-table tbody th::before {
