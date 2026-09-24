@@ -21,8 +21,9 @@ export const REPO_DIR = factoryConfig.repoDir;
 /**
  * The limit of the files of one app. Each service of each app builds from a
  * clone of the apps repository, so a large app makes every deploy slower. The
- * curator downloads at most 24 MB of photographs, and the builder can copy
- * them one time. publish-app holds the files in memory, on the starter plan.
+ * workflow downloads at most four photographs of 2 MB, and the builder can
+ * copy them one time. publish-app holds the files in memory, on the starter
+ * plan.
  */
 export const MAX_APP_BYTES = 50 * 1024 * 1024;
 

@@ -3,14 +3,13 @@ import { type TaskContext, task } from "@renderinc/sdk/workflows";
 import { factoryConfig } from "../factory.config.js";
 import { type Agent, md, runClaude, zodToJsonSchema } from "./claude.js";
 import {
-	assetManifestSchema,
 	buildOutputSchema,
 	deployDiagnosisSchema,
 	deployPlanSchema,
 } from "./contracts.js";
 import { RENDER_READ_ONLY_TOOLS } from "./policy.js";
 import { connectSandbox } from "./sandbox.js";
-import { allTools, assetTools, readTools } from "./tools.js";
+import { sandboxTools } from "./tools.js";
 
 export const architect: Agent = {
 	id: "architect",
@@ -52,11 +51,11 @@ export const architect: Agent = {
 		those requirements merely because they would make the app more
 		production-like.
 
-		assetQueries are what a photo researcher will search Wikimedia Commons
-		for. Two to four words, concrete and photographable — "walnut dining
-		chair", not "furniture" and not "handcrafted walnut dining chair in a
-		sunlit workshop". Commons requires every word to match, so a sentence
-		finds nothing.
+		assetQueries are what the workflow searches Wikimedia Commons for, one
+		photograph each. Two to four words, concrete and photographable —
+		"walnut dining chair", not "furniture" and not "handcrafted walnut dining
+		chair in a sunlit workshop". Commons requires every word to match, so a
+		sentence finds nothing.
 
 		The brief is what the builder works from. Be specific about pages,
 		features, voice, and real content: product names, prices, materials,
@@ -87,61 +86,11 @@ export const architect: Agent = {
 	`,
 };
 
-export const curator: Agent = {
-	id: "curator",
-	model: "small",
-	// Search and download, plus read access to see where things landed. No
-	// exec, no write_file: the only bytes this agent can create are images
-	// that asset__fetch approved.
-	tools: [...assetTools, ...readTools],
-	// One asset__collect call, then the JSON. The old one-subject-at-a-time
-	// loop cost two round trips per image and nothing else.
-	maxTurns: 8,
-	plan: "standard",
-	prompt: md`
-		You are the photo researcher. Find real, openly licensed photographs for
-		the app being built and download them into it.
-
-		Call asset__collect ONCE with every subject in your instructions and the
-		assets directory you were given. It searches Wikimedia Commons for each
-		subject in parallel, picks the largest usable photograph, and downloads
-		them all. Do not call asset__search or asset__fetch per subject — that is
-		far slower and gets you the same pictures.
-
-		asset__collect returns what actually landed and what it skipped. Report
-		only what landed. If it skipped a subject, leave it out rather than
-		substituting something unrelated — a wrong photograph is worse than one
-		fewer. Retry an individual subject with asset__search plus asset__fetch
-		only if you have a specific reason to think a different search term would
-		do better.
-
-		Your judgment goes into two things: the alt text, which should describe
-		what is actually in the photograph for someone who cannot see it, and the
-		decision to drop a subject that came back wrong.
-
-		Every image must carry the credit line asset__collect gave you; the site
-		publishes it. Paths in your response are relative to the parent of the
-		assets directory, e.g. assets/walnut-dining-chair.jpg.
-
-		Respond ONLY with JSON describing what actually downloaded:
-		{
-		  "assets": [
-		    {
-		      "path": "assets/walnut-dining-chair.jpg",
-		      "subject": "walnut dining chair",
-		      "alt": "descriptive alt text for screen readers",
-		      "credit": "credit line from asset__collect"
-		    }
-		  ]
-		}
-	`,
-};
-
 export const builder: Agent = {
 	id: "builder",
 	model: "medium",
 	effort: "low",
-	tools: allTools,
+	tools: sandboxTools,
 	maxTurns: 80,
 	plan: "standard",
 	prompt: md`
@@ -176,8 +125,9 @@ export const builder: Agent = {
 		- Photographs, when the instructions list any, are already downloaded
 		  into the app's assets/ directory. Use those exact paths, move or copy
 		  them wherever your build needs them, and publish every credit line.
-		  Never invent an image path, and never reference one the instructions
-		  did not give you.
+		  Write the alt text of each one from its subject. Never invent an
+		  image path, and never reference one the instructions did not give
+		  you.
 		- Every web_service must serve a health endpoint that responds without
 		  depending on a database, so Render's health check passes before
 		  traffic arrives.
@@ -298,7 +248,6 @@ export interface AgentTaskInput {
 /** JSON Schema for each agent's structured output, keyed by agent id. */
 const OUTPUT_SCHEMAS: Record<string, Record<string, unknown>> = {
 	architect: zodToJsonSchema(deployPlanSchema),
-	curator: zodToJsonSchema(assetManifestSchema),
 	builder: zodToJsonSchema(buildOutputSchema),
 	"deploy-manager": zodToJsonSchema(deployDiagnosisSchema),
 };
@@ -347,6 +296,5 @@ export function agentTask(agent: Agent) {
 }
 
 export const architectTask = agentTask(architect);
-export const curatorTask = agentTask(curator);
 export const buildTask = agentTask(builder);
 export const deployManagerTask = agentTask(deployManager);

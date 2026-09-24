@@ -52,10 +52,12 @@ cap, and no tenant-level quotas.
   scoped to the app's own project. These are the only Render write API calls
   in the factory. The cost is a second commit and a wait of about a minute.
 - **Capabilities instead of prompt-only restrictions.** The architect gets a
-  read-only Render MCP allowlist, the curator can fetch only validated image
-  assets, and the builder can edit a sandbox that holds only its app, with no
-  credential to publish. Adding a new capability requires code and policy
-  work, which is deliberate friction.
+  read-only Render MCP allowlist, and the builder can edit a sandbox that
+  holds only its app, with no credential to publish. Adding a new capability
+  requires code and policy work, which is deliberate friction.
+- **Workflow code for work that needs no judgment.** Finding photographs is a
+  search and a download, so workflow code does it. An agent that could not see
+  the images added a model call and a download tool, and no judgment.
 - **Build without credentials, and publish from a clean sandbox.** The builder
   can run any command in its sandbox, so that sandbox gets no clone of the apps
   repository and no GitHub token. `publish-app` copies the app's regular files
@@ -84,9 +86,9 @@ cap, and no tenant-level quotas.
 2. A read-only architect chooses supported Render primitives and produces a
    plan; no infrastructure changes occur.
 3. One sandbox receives an empty app directory, with no clone of the apps
-   repository and no credential. A curator supplies constrained media and a
-   builder creates the application from an empty directory or a
-   contract-bearing template.
+   repository and no credential. Workflow code downloads openly licensed
+   photographs into it, and a builder creates the application from an empty
+   directory or a contract-bearing template.
 4. The `verify-app` subtask builds, migrates, boots, and queries the
    generated services. Its checks start from only the files a commit holds, as
    Render's fresh clone does, and it checks that `publish-app` can copy them.
@@ -110,9 +112,9 @@ cap, and no tenant-level quotas.
 
 Each agent, `verify-app`, and `publish-app` is a subtask of `prompt-to-app`.
 In the Render Dashboard, each one is a run of its own under the
-`prompt-to-app` run, with its input, its result, and its logs. The curator,
-the builder, and `verify-app` work in the sandbox of the run, and
-`publish-app` reads the app's files from it. They find it by the `sandboxId`
+`prompt-to-app` run, with its input, its result, and its logs. The builder
+and `verify-app` work in the sandbox of the run, and `publish-app` reads the
+app's files from it. They find it by the `sandboxId`
 in their input. `publish-app` pushes from a sandbox of its own.
 
 | Task | Result | Events |
@@ -438,7 +440,7 @@ Run `npm run doctor` to verify factory and Blueprint wiring before debugging ind
   the tradeoff is committing to a narrower stack.
 - **External assets:** treat each new source as an egress-policy change, not
   just a search integration. Host, content type, size, and destination checks
-  belong in the tool boundary.
+  belong in workflow code, as in `app/images.ts`.
 - **Review:** this demo favors deterministic and deployed checks over model
   reviewers. For higher-risk generation, add review before publishing as
   `render-factory` does, accepting the extra latency and model cost.
@@ -479,9 +481,9 @@ See [AGENTS.md](../AGENTS.md) for checklists when adding agents, primitives, or 
   its own namespace.
 - A delete and a run of the same app take the same Postgres advisory lock, so a
   run cannot build an app while it is being deleted.
-- `asset__fetch` accepts only HTTPS, only allowlisted hosts, only `image/*`
-  responses under the size cap, and only destinations inside an `assets/`
-  directory in the app directory.
+- The image download accepts only HTTPS, only allowlisted hosts, and only
+  `image/*` responses under the size cap. It writes only into the `assets/`
+  directory of the app, under a name that it makes.
 - The push is verified against the remote SHA before the factory waits on a
   deploy, so Render is always building the commit that passed verification.
 - Malformed structured model output fails closed after one repair attempt.

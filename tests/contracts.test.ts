@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentJson } from "../app/claude.js";
 import {
 	appSpecSchema,
-	assetManifestSchema,
 	buildOutputSchema,
 	createAppRequestSchema,
 	deleteAppInputSchema,
@@ -113,31 +112,6 @@ describe("deployPlanSchema", () => {
 				...plan,
 				tiers: [{ kind: "kubernetes", reason: "no" }],
 			}).success,
-		).toBe(false);
-	});
-});
-
-describe("assetManifestSchema", () => {
-	const asset = {
-		path: "assets/walnut-chair.jpg",
-		subject: "walnut chair",
-		alt: "A walnut dining chair",
-		credit: "Someone / Wikimedia Commons (CC BY-SA 4.0)",
-	};
-
-	it("accepts an image inside the assets directory", () => {
-		expect(assetManifestSchema.safeParse({ assets: [asset] }).success).toBe(true);
-	});
-
-	// The manifest path is written into the app, so it cannot wander.
-	it.each([
-		"../../../etc/passwd",
-		"/etc/passwd",
-		"assets/../../secret.jpg",
-		"assets/script.js",
-	])("rejects the path %s", (path) => {
-		expect(
-			assetManifestSchema.safeParse({ assets: [{ ...asset, path }] }).success,
 		).toBe(false);
 	});
 });

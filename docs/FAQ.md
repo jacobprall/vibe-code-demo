@@ -69,7 +69,7 @@ Architecture overview and how Render products fit together: [README.md](README.m
 
 | Cost center | Estimate | Notes |
 |---|---|---|
-| **Anthropic API** | ~$1–5 per run | 4 agents; Architect and Builder use Claude Sonnet, Curator uses Haiku. Builder is the biggest consumer (~80 turns max). |
+| **Anthropic API** | ~$1–5 per run | 3 agents, all on Claude Sonnet. Builder is the biggest consumer (~80 turns max). |
 | **Render Sandbox** | Included in Workflows | Billed as part of the Workflow task runtime. |
 | **Workflow task time** | ~5–10 min on Standard plan | Standard plan tasks; billed per-second. |
 
@@ -146,7 +146,7 @@ A: Claude writes the code, but the factory is the system around it: isolated san
 A: Three reasons: (1) env wiring is declarative — `fromDatabase` and `fromService` mean no connection strings in code, (2) every deploy is a Git diff, (3) agents physically cannot create infrastructure — the only path is a commit.
 
 **Q: What models does it use?**
-A: Configurable in `factory.config.ts`. Defaults: Architect and Builder use `claude-sonnet-5`, Curator uses `claude-haiku-4-5`. There's a `large` tier (`claude-opus-5`) available but not used by default.
+A: Configurable in `factory.config.ts`. Defaults: every agent uses `claude-sonnet-5`. There's a `large` tier (`claude-opus-5`) available but not used by default.
 
 **Q: Does the generated app use the free tier?**
 A: No. Free web services spin down after 15 minutes (bad for a demo), and a workspace gets only one free Postgres. Generated apps use the `starter` web service plan and `0.1c-256mb` Postgres plan — the cheapest paid options.

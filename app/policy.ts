@@ -16,8 +16,6 @@ const PATH_FIELDS: Readonly<Record<string, readonly string[]>> = {
 	sandbox__search: ["path"],
 	sandbox__exec: ["cwd"],
 	sandbox__apply_patch: ["cwd"],
-	asset__fetch: ["path"],
-	asset__collect: ["destDir"],
 };
 
 /** Scratch space an agent may use for things that are not part of the app. */

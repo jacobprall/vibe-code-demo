@@ -53,7 +53,6 @@ describe("checkToolCall", () => {
 		["sandbox__search", { pattern: "token", path: "/home/user/repo" }],
 		["sandbox__exec", { command: "ls", cwd: "../../victim/site" }],
 		["sandbox__apply_patch", { diff: "--- a\n+++ b\n", cwd: "/home/user/repo" }],
-		["asset__collect", { subjects: ["walnut chair"], destDir: "/home/user/repo/apps/victim/site/assets" }],
 	])("blocks %s outside the app directory: %j", (name, input) => {
 		expect(tool(name, input)).toContain("outside the app directory");
 	});
@@ -97,22 +96,6 @@ describe("checkToolCall", () => {
 		);
 		// Absolute paths in the command itself are normal (/usr/bin, /tmp).
 		expect(tool("sandbox__exec", { command: "/usr/bin/env node -v" })).toBeNull();
-	});
-
-	// asset__fetch takes a URL as well as a path; the URL is not a path.
-	it("checks the destination path of an asset fetch without rejecting its URL", () => {
-		expect(
-			tool("asset__fetch", {
-				url: "https://upload.wikimedia.org/a/b.jpg",
-				path: "/home/user/repo/apps/demo/shop/web/public/assets/b.jpg",
-			}),
-		).toBeNull();
-		expect(
-			tool("asset__fetch", {
-				url: "https://upload.wikimedia.org/a/b.jpg",
-				path: "/etc/cron.d/payload",
-			}),
-		).toContain("Blocked");
 	});
 });
 

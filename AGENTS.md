@@ -106,7 +106,7 @@ sandbox → tools → claude → agents → workflow
 
 `policy` is imported by `claude` and defines the MCP allowlist. `render` is
 imported by `claude` (for the MCP URL), by `teardown`, and by `workflow`.
-`blueprint`, `git`, `teardown`, and `store` are used by `workflow`; `teardown`
+`blueprint`, `git`, `images`, `teardown`, and `store` are used by `workflow`; `teardown`
 uses `render` and `blueprint`; `gateway` uses `store`, `policy`, and
 `contracts`. `config` and `contracts` are leaves. Adding an edge that points
 backwards is a design smell.
@@ -117,9 +117,9 @@ app/
   config.ts      Environment parsing and per-process validation
   contracts.ts   Zod schemas for API input, agent output, and the stored spec
   gateway.ts     Bearer auth, body cap, dispatch, health, status
-  agents.ts      The four agents, their prompts, and agentTask()
+  agents.ts      The three agents, their prompts, and agentTask()
   claude.ts      The Agent type, runClaude(), md, agentJson
-  tools.ts       Sandbox tools, asset tools, and the Tool contract
+  tools.ts       Sandbox tools and the Tool contract
   policy.ts      checkToolCall, path rules, MCP allowlist, secret redaction
   sandbox.ts     Render Sandboxes, shellEscape, Postgres in the sandbox
   blueprint.ts   render.yaml generation — the only path that creates resources
@@ -129,6 +129,7 @@ app/
                  commit, push, verify, GitHub credentials
   store.ts       Postgres: one runs table
   templates.ts   Read a template and materialize it into the sandbox
+  images.ts      Photographs from Wikimedia Commons for an app
   workflow.ts    The prompt-to-app and delete-app pipelines and their steps
   schema.sql     Schema, applied by scripts/migrate.ts
   server.ts      Gateway entrypoint
@@ -138,8 +139,8 @@ templates/
   fullstack/     web/ (Vite + React + Tailwind + shadcn/ui), api/ (Hono + pg)
 scripts/         migrate, doctor, demo, support
 tests/           agents, blueprint, contracts, gateway, git, github-auth,
-                 host, policy, render, shell, teardown, templates, tools,
-                 workflow
+                 host, images, policy, render, shell, teardown, templates,
+                 tools, workflow
 ```
 
 There is no `tasks.ts`, `scaffold.ts`, `shell.ts`, `github.ts`, or `format.ts`:
@@ -180,8 +181,7 @@ Do not weaken these without an explicit security-model change:
 - The architect gets no sandbox tools and only Render MCP tools from
   `RENDER_READ_ONLY_TOOLS`. `checkToolCall` denies every other Render tool, so
   the allowlist is enforced twice.
-- The curator gets downloads and reads, never exec or write. Only the builder
- gets write and exec.
+- Only the builder gets sandbox tools.
 - Every agent-supplied path is resolved against the workflow-owned `workDir`
  on `ToolContext`, which is the app directory, and must land inside it or
  `/tmp`. `checkToolCall` and the tool both check it. `sandbox__exec` always
@@ -194,9 +194,9 @@ Do not weaken these without an explicit security-model change:
   No clone of the apps repository and no credential goes into that sandbox:
   the builder can run any command there, leave a process that runs, and change
   git itself.
-- `asset__fetch` accepts HTTPS only, allowlisted hosts only, `image/*` only,
-  under the size cap, and only into an `assets/` directory in the app
-  directory.
+- The image download in `app/images.ts` accepts HTTPS only, allowlisted hosts
+  only, and `image/*` only, under the size cap. It writes only into the
+  `assets/` directory of the app, under a name that it makes.
 - `sandboxId` comes from workflow code, never from the model.
 - The GitHub token never goes into a task input, because the Render Dashboard
   shows the input of every task run, and never into the sandbox of a build.

@@ -20,7 +20,6 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TASKS = [
 	"architect",
 	"builder",
-	"curator",
 	"delete-app",
 	"delete-app-resources",
 	"deploy-manager",

@@ -53,7 +53,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../app/agents.js", () => ({
 	architectTask: { name: "architect", func: mocks.architectTask },
-	curatorTask: { name: "curator", func: vi.fn() },
 	buildTask: { name: "builder", func: mocks.buildTask },
 	deployManagerTask: { name: "deploy-manager", func: mocks.deployManagerTask },
 }));
