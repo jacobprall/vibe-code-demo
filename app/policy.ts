@@ -1,16 +1,19 @@
 /** The one gate between a model and the machine. */
-import { factoryConfig } from "../factory.config.js";
 
-export const PATH_TOOLS = new Set([
-	"sandbox__read_file",
-	"sandbox__write_file",
-	"sandbox__list_dir",
-	"asset__fetch",
-	"asset__collect",
-]);
-
-/** Tools whose `cwd` is a path; their `command` and `diff` are not. */
-export const CWD_TOOLS = new Set(["sandbox__exec", "sandbox__apply_patch"]);
+/**
+ * The input fields of each tool that hold a path. Other fields, such as the
+ * content of a file or a shell command, can hold any text.
+ */
+const PATH_FIELDS: Readonly<Record<string, readonly string[]>> = {
+	sandbox__read_file: ["path"],
+	sandbox__write_file: ["path"],
+	sandbox__list_dir: ["path"],
+	sandbox__search: ["path"],
+	sandbox__exec: ["cwd"],
+	sandbox__apply_patch: ["cwd"],
+	asset__fetch: ["path"],
+	asset__collect: ["destDir"],
+};
 
 /** Scratch space an agent may use for things that are not part of the app. */
 const SCRATCH_DIR = "/tmp";
@@ -91,10 +94,15 @@ export const RULES: Rule[] = [
 	},
 ];
 
-/** Returns a rejection reason, or null to allow. */
+/**
+ * Returns a rejection reason, or null to allow. `workDir` is the app
+ * directory of the agent, and each path in a tool call must resolve inside
+ * it or /tmp.
+ */
 export function checkToolCall(
 	name: string,
 	input: Record<string, unknown>,
+	workDir?: string,
 ): string | null {
 	if (name.startsWith(RENDER_PREFIX)) {
 		const tool = name.slice(RENDER_PREFIX.length);
@@ -103,14 +111,15 @@ export function checkToolCall(
 			: `Blocked Render MCP tool outside the read-only allowlist: ${tool}`;
 	}
 
-	if (PATH_TOOLS.has(name)) {
-		const violation = pathEscape(input);
-		if (violation) return `Blocked path escape in ${name}: ${violation}`;
-	}
-
-	if (CWD_TOOLS.has(name) && typeof input.cwd === "string") {
-		const violation = pathEscape({ cwd: input.cwd });
-		if (violation) return `Blocked path escape in ${name}: ${violation}`;
+	for (const field of PATH_FIELDS[name] ?? []) {
+		const value = input[field];
+		// The tool decides what an omitted or empty path means.
+		if (typeof value !== "string" || value === "") continue;
+		if (!workDir) return `Blocked ${name}: the agent has no app directory.`;
+		const resolved = resolveSandboxPath(workDir, value);
+		if ("error" in resolved) {
+			return `Blocked path escape in ${name}: ${resolved.error}`;
+		}
 	}
 
 	const serialized = JSON.stringify(input);
@@ -126,38 +135,22 @@ export function isRenderReadOnlyTool(name: string): boolean {
 	return (RENDER_READ_ONLY_TOOLS as readonly string[]).includes(name);
 }
 
-/** Returns a reason if any string argument escapes the allowed roots. */
-export function pathEscape(input: Record<string, unknown>): string | null {
-	for (const [key, value] of Object.entries(input)) {
-		if (typeof value !== "string" || key === "url") continue;
-		const normalized = value.replace(/\/+/g, "/");
-
-		if (normalized.includes("/../") || normalized.startsWith("../")) {
-			return "path traversal via ../";
-		}
-		// isInside, not startsWith: a sibling like /home/user/repox shares the
-		// prefix but is not in the checkout.
-		if (
-			normalized.startsWith("/") &&
-			!isInside(factoryConfig.repoDir, normalized) &&
-			!isInside(SCRATCH_DIR, normalized)
-		) {
-			return `absolute path outside the checkout: ${normalized.slice(0, 60)}`;
-		}
-	}
-	return null;
-}
-
 export type ResolvedPath = { path: string } | { error: string };
 
 /**
- * Turn an agent-supplied path into an absolute one inside the checkout.
+ * Turn an agent-supplied path into an absolute one inside the app directory
+ * or /tmp.
  *
  * A relative path is resolved against `workDir`, which workflow code owns —
  * never against whatever directory the exec API happens to start in. Without
- * this, `mkdir -p my-app` from an agent lands outside the clone, the run
- * builds a complete application nobody can commit, and nothing reports a
- * failure until the push finds an empty directory.
+ * this, `mkdir -p my-app` from an agent lands outside the app, the run builds
+ * a complete application nobody can commit, and nothing reports a failure
+ * until the push finds an empty directory.
+ *
+ * These rules keep the file tools on one app, but they do not isolate the
+ * agent: the resolution is lexical, so a symbolic link can point out, and
+ * sandbox__exec runs any command. The sandbox isolates the agent, because it
+ * holds only this app and no credential.
  */
 export function resolveSandboxPath(
 	workDir: string,
@@ -169,14 +162,11 @@ export function resolveSandboxPath(
 		? normalizePosix(path)
 		: normalizePosix(`${workDir}/${path}`);
 
-	if (
-		isInside(factoryConfig.repoDir, absolute) ||
-		isInside(SCRATCH_DIR, absolute)
-	) {
+	if (isInside(workDir, absolute) || isInside(SCRATCH_DIR, absolute)) {
 		return { path: absolute };
 	}
 	return {
-		error: `"${path}" resolves to ${absolute}, outside the checkout (${factoryConfig.repoDir}).`,
+		error: `"${path}" resolves to ${absolute}, outside the app directory (${workDir}) and ${SCRATCH_DIR}.`,
 	};
 }
 
@@ -201,7 +191,11 @@ function normalizePosix(path: string): string {
 	return `${absolute ? "/" : ""}${parts.join("/")}`;
 }
 
-function isInside(root: string, candidate: string): boolean {
+/**
+ * isInside, not startsWith: a sibling like /home/user/repo/apps/demo/shopx
+ * shares the prefix of an app directory but is not in it.
+ */
+export function isInside(root: string, candidate: string): boolean {
 	return candidate === root || candidate.startsWith(`${root}/`);
 }
 

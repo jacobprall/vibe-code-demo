@@ -1,7 +1,7 @@
 /** The tools an agent can be granted, and the Tool contract itself. */
 import { z } from "zod";
 import { factoryConfig } from "../factory.config.js";
-import { type ResolvedPath, resolveSandboxPath } from "./policy.js";
+import { isInside, type ResolvedPath, resolveSandboxPath } from "./policy.js";
 import { type Sandbox, shellEscape } from "./sandbox.js";
 
 export const MAX_OUTPUT_CHARS = 50_000;
@@ -16,9 +16,10 @@ export interface ToolContext {
 	/** Bound by workflow code. A tool can never choose its own sandbox. */
 	readonly sandbox: Sandbox;
 	/**
-	 * Also bound by workflow code: the directory every relative path an agent
-	 * gives is resolved against. The exec API starts in `/`, so without this a
-	 * relative path lands outside the checkout.
+	 * Also bound by workflow code: the app directory. Every relative path an
+	 * agent gives is resolved against it, and every path must land in it or in
+	 * /tmp. The exec API starts in `/`, so without this a relative path lands
+	 * outside the app.
 	 */
 	readonly workDir: string;
 	readonly signal?: AbortSignal;
@@ -284,12 +285,13 @@ const assetFetchSchema = {
 };
 
 /**
- * A download may only land in an `assets/` directory inside the checkout, and
+ * A download may only land in an `assets/` directory inside the app, and
  * only under an image name. Without this, a tool whose whole job is writing
- * bytes from the internet could overwrite a Blueprint or another user's app.
+ * bytes from the internet could overwrite the code or the manifest files of
+ * the app.
  *
  * The builder chooses its own layout, so this cannot pin a framework's
- * convention — it pins the two things that matter: inside the repo, and under
+ * convention — it pins the two things that matter: inside the app, and under
  * a directory named `assets`.
  */
 const ASSET_DESTINATION =
@@ -300,12 +302,13 @@ function assetDestination(workDir: string, path: string): ResolvedPath {
 	const target = resolveSandboxPath(workDir, path);
 	if ("error" in target) {
 		return {
-			error: `Destination must be inside the checkout. ${target.error}`,
+			error: `Destination must be inside the app directory. ${target.error}`,
 		};
 	}
-	if (!target.path.startsWith(`${factoryConfig.repoDir}/`)) {
+	// /tmp is not part of the app.
+	if (!isInside(workDir, target.path)) {
 		return {
-			error: `Destination must be inside the checkout (${factoryConfig.repoDir}).`,
+			error: `Destination must be inside the app directory (${workDir}).`,
 		};
 	}
 	if (!ASSET_DESTINATION.test(target.path)) {
@@ -413,13 +416,13 @@ export const assetCollect: Tool<typeof assetCollectSchema> = {
 		);
 		if ("error" in resolved) {
 			return pathError(
-				`destDir must be inside the checkout. ${resolved.error}`,
+				`destDir must be inside the app directory. ${resolved.error}`,
 			);
 		}
 		const destDir = resolved.path;
-		if (!destDir.startsWith(`${factoryConfig.repoDir}/`)) {
+		if (!isInside(ctx.workDir, destDir)) {
 			return pathError(
-				`destDir must be inside the checkout (${factoryConfig.repoDir}).`,
+				`destDir must be inside the app directory (${ctx.workDir}).`,
 			);
 		}
 		if (!destDir.endsWith("/assets")) {

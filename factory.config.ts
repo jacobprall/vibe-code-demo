@@ -3,7 +3,11 @@
 export type ModelTier = "small" | "medium" | "large";
 
 export interface FactoryConfig {
-	/** Where the apps repository is cloned inside the sandbox. */
+	/**
+	 * Where the apps repository is cloned in a sandbox that pushes. The
+	 * sandbox of a build has the app directory at the same path, in a
+	 * repository with no remote.
+	 */
 	repoDir: string;
 	/** Directory in that repository holding one subdirectory per user. */
 	appsDir: string;

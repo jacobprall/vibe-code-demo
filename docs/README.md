@@ -53,8 +53,16 @@ cap, and no tenant-level quotas.
   in the factory. The cost is a second commit and a wait of about a minute.
 - **Capabilities instead of prompt-only restrictions.** The architect gets a
   read-only Render MCP allowlist, the curator can fetch only validated image
-  assets, and the builder can edit a sandbox but cannot run Git. Adding a new
-  capability requires code and policy work, which is deliberate friction.
+  assets, and the builder can edit a sandbox that holds only its app, with no
+  credential to publish. Adding a new capability requires code and policy
+  work, which is deliberate friction.
+- **Build without credentials, and publish from a clean sandbox.** The builder
+  can run any command in its sandbox, so that sandbox gets no clone of the apps
+  repository and no GitHub token. `publish-app` copies the app's regular files
+  out of it as data, into a new clone in a sandbox of its own, and commits
+  only that app's directory and the root Blueprint. CI systems that build
+  untrusted code without secrets and publish from a different job use the
+  same pattern. The cost is one more sandbox for each push.
 - **Templates encode contracts, not the whole application.** Multi-service
   apps start with known API, CORS, migration, and environment-wiring seams;
   the model still controls product-specific behavior and presentation. This
@@ -75,16 +83,19 @@ cap, and no tenant-level quotas.
    with a prompt, user namespace, and run ID.
 2. A read-only architect chooses supported Render primitives and produces a
    plan; no infrastructure changes occur.
-3. One sandbox receives the apps repository. A curator supplies constrained
-   media and a builder creates the application from an empty directory or a
+3. One sandbox receives an empty app directory, with no clone of the apps
+   repository and no credential. A curator supplies constrained media and a
+   builder creates the application from an empty directory or a
    contract-bearing template.
 4. The `verify-app` subtask builds, migrates, boots, and queries the
    generated services. Its checks start from only the files a commit holds, as
-   Render's fresh clone does. Failures can return to the builder for bounded
-   repair rounds.
-5. The `publish-app` subtask derives `factory.json` and `render.yaml`,
-   commits, pushes, and verifies the remote SHA. Blueprint sync—not an agent
-   API call—creates the infrastructure.
+   Render's fresh clone does, and it checks that `publish-app` can copy them.
+   Failures can return to the builder for bounded repair rounds.
+5. The `publish-app` subtask copies the app's regular files into a new clone
+   in a sandbox of its own. There it derives `factory.json` and `render.yaml`,
+   commits only the app's directory and the root Blueprint, pushes, and
+   verifies the remote SHA. Blueprint sync—not an agent API call—creates the
+   infrastructure.
 6. The workflow waits for deployment. On failure, a deploy manager uses
    read-only Render MCP data to diagnose the deploy and can request bounded
    builder repairs. `verify-app` verifies each repair, and `publish-app`
@@ -100,8 +111,9 @@ cap, and no tenant-level quotas.
 Each agent, `verify-app`, and `publish-app` is a subtask of `prompt-to-app`.
 In the Render Dashboard, each one is a run of its own under the
 `prompt-to-app` run, with its input, its result, and its logs. The curator,
-the builder, `verify-app`, and `publish-app` work in the sandbox of the run.
-They find it by the `sandboxId` in their input.
+the builder, and `verify-app` work in the sandbox of the run, and
+`publish-app` reads the app's files from it. They find it by the `sandboxId`
+in their input. `publish-app` pushes from a sandbox of its own.
 
 | Task | Result | Events |
 | --- | --- | --- |
@@ -444,10 +456,19 @@ See [AGENTS.md](../AGENTS.md) for checklists when adding agents, primitives, or 
   Render, so it goes through the same destructive-command gate as the build
   and start commands before either happens.
 - `checkToolCall` runs as a `PreToolUse` hook and vetoes destructive commands,
-  secret exfiltration, paths outside the clone, and any Render MCP tool that is
-  not on the read-only allowlist.
-- Agents cannot run git, so they cannot publish; the trigger for a deploy is a
-  commit only workflow code can make.
+  secret exfiltration, paths outside the app directory and `/tmp`, and any
+  Render MCP tool that is not on the read-only allowlist.
+- The sandbox that the agents use holds only the app of the run: no clone of
+  the apps repository and no GitHub token. So an agent cannot publish, and it
+  cannot read or change another app. The trigger for a deploy is a commit that
+  only workflow code can make.
+- `publish-app` treats the files of the build as data. It copies only regular
+  files with plain paths below the app directory, up to 50 MB, and pushes
+  from a clone in a sandbox that no agent used. The clone checks out a
+  symbolic link as a plain file.
+- Each commit changes only `apps/<user>/<app>/` and the root `render.yaml`,
+  and the push refuses a commit that changes a different path. The root
+  Blueprint takes a spec only from the directory of the app that it names.
 - The only Render write API calls are the deletes in `app/teardown.ts`. The
   `delete-app-resources` step of the `delete-app` task makes them, never an
   agent, and only when no sync of the Blueprint waits or runs. They delete only
@@ -458,7 +479,7 @@ See [AGENTS.md](../AGENTS.md) for checklists when adding agents, primitives, or 
   run cannot build an app while it is being deleted.
 - `asset__fetch` accepts only HTTPS, only allowlisted hosts, only `image/*`
   responses under the size cap, and only destinations inside an `assets/`
-  directory in the checkout.
+  directory in the app directory.
 - The push is verified against the remote SHA before the factory waits on a
   deploy, so Render is always building the commit that passed verification.
 - Malformed structured model output fails closed after one repair attempt.

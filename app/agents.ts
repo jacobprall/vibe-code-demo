@@ -186,6 +186,9 @@ export const builder: Agent = {
 		  depending on a database, so Render's health check passes before
 		  traffic arrives.
 		- Do not run git — the workflow owns commits and deployment.
+		- Only regular files are published. Do not make a symbolic link or a
+		  .git directory in the app directory; copy a file instead of linking
+		  to it.
 		- When you receive build output or Render deploy logs describing a
 		  failure, fix exactly what the output names and nothing else.
 
@@ -290,7 +293,10 @@ export const deployManager: Agent = {
 export interface AgentTaskInput {
 	message: string;
 	sandboxId?: string;
-	/** Workflow-owned. Relative paths in tool calls resolve against this. */
+	/**
+	 * Workflow-owned: the app directory. Relative paths in tool calls resolve
+	 * against it, and each path must land in it or in /tmp.
+	 */
 	workDir?: string;
 }
 

@@ -1,22 +1,42 @@
 import { execSync } from "node:child_process";
 import {
+	chmodSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
+	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { gzipSync } from "node:zlib";
+import { Header, type HeaderData } from "tar";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Service } from "../app/contracts.js";
-import { appGitignore, pushVerified, removeIgnored } from "../app/git.js";
+import {
+	type AppFile,
+	type AppFiles,
+	appFiles,
+	appGitignore,
+	cloneAppsRepo,
+	commitPaths,
+	MAX_APP_BYTES,
+	pushVerified,
+	REPO_DIR,
+	readAppFiles,
+	removeIgnored,
+	writeAppFiles,
+} from "../app/git.js";
 import { type ExecResult, type Sandbox, shellEscape } from "../app/sandbox.js";
 
 const OK: ExecResult = { output: "", exitCode: 0 };
 const HEAD = "a".repeat(40);
+/** What each commit of the shop app may change. */
+const PATHS = ["apps/demo/shop", "render.yaml"];
 
 /**
  * A sandbox that answers git from a handler and records every command, so a
@@ -48,6 +68,12 @@ const isPush = (command: string) => / 'push' /.test(command);
 const isPull = (command: string) => / 'pull' /.test(command);
 const isConflictList = (command: string) =>
 	command.includes("--diff-filter=U");
+const isChangedPaths = (command: string) => command.includes(" diff-tree ");
+
+/** The answer to the list of the paths that a commit changes. */
+function changes(...paths: string[]): ExecResult {
+	return { output: paths.map((path) => `${path}\0`).join(""), exitCode: 0 };
+}
 
 /** Answers for the verification that follows a successful push. */
 function verified(command: string): ExecResult | undefined {
@@ -61,7 +87,14 @@ function verified(command: string): ExecResult | undefined {
 }
 
 const push = (sandbox: Sandbox, resolve?: () => Promise<readonly string[]>) =>
-	pushVerified(sandbox, "token", "https://github.com/o/r.git", "main", resolve);
+	pushVerified(
+		sandbox,
+		"token",
+		"https://github.com/o/r.git",
+		"main",
+		PATHS,
+		resolve,
+	);
 
 /**
  * The root Blueprint holds every app the factory has built, so a concurrent
@@ -93,6 +126,11 @@ describe("pushVerified rebase conflicts", () => {
 		expect(resolve).toHaveBeenCalledOnce();
 		expect(commands.some((c) => c.includes("rebase --continue"))).toBe(true);
 		expect(commands.some((c) => c.includes("rebase --abort"))).toBe(false);
+		// The rebase already staged the rest of the commit.
+		expect(commands).toContain(
+			`git -c core.hooksPath=/dev/null -C ${shellEscape(REPO_DIR)} add -- 'render.yaml'`,
+		);
+		expect(commands.some((c) => c.includes(" add -A"))).toBe(false);
 	});
 
 	it("names the file and aborts when a real conflict is mixed in", async () => {
@@ -146,6 +184,116 @@ describe("pushVerified rebase conflicts", () => {
 		});
 
 		await expect(push(sandbox)).rejects.toThrow(/does not match/);
+	});
+});
+
+/**
+ * A push of the factory is for one app. It must not change the files of
+ * another app, and the root Blueprint is the only file outside the app that
+ * it changes. The builder once changed apps/<other-user>/ in the clone, and
+ * the push took those changes to GitHub.
+ */
+describe("pushVerified paths", () => {
+	it("pushes a commit that changes the app directory and the root Blueprint", async () => {
+		const { sandbox, commands } = fakeSandbox((command) =>
+			isChangedPaths(command)
+				? changes(
+						"apps/demo/shop/factory.json",
+						"apps/demo/shop/web/index.html",
+						"render.yaml",
+					)
+				: verified(command),
+		);
+
+		await expect(push(sandbox)).resolves.toBe(HEAD);
+		expect(commands.filter(isPush)).toHaveLength(1);
+	});
+
+	it.each([
+		"apps/victim/site/index.html",
+		"apps/victim/site/factory.json",
+		// These share a prefix with an allowed path.
+		"apps/demo/shopx/index.html",
+		"render.yaml.bak",
+		"apps/demo/factory.json",
+		"README.md",
+	])("sends nothing when the commit also changes %s", async (other) => {
+		const { sandbox, commands } = fakeSandbox((command) =>
+			isChangedPaths(command)
+				? changes("apps/demo/shop/index.html", other)
+				: verified(command),
+		);
+
+		await expect(push(sandbox)).rejects.toThrow(
+			`The commit changes paths outside apps/demo/shop and render.yaml, so it was not pushed: ${other}`,
+		);
+		expect(commands.some(isPush)).toBe(false);
+	});
+
+	// Without the NULs, "apps/demo/shop/a.html" and "apps/victim/site/b.html"
+	// join into one path that starts with the app directory.
+	it("sends nothing when the list of paths has no NUL terminators", async () => {
+		const { sandbox, commands } = fakeSandbox((command) =>
+			isChangedPaths(command)
+				? {
+						output: "apps/demo/shop/a.htmlapps/victim/site/b.html",
+						exitCode: 0,
+					}
+				: verified(command),
+		);
+
+		await expect(push(sandbox)).rejects.toThrow(/has no NUL terminators/);
+		expect(commands.some(isPush)).toBe(false);
+	});
+
+	it("lists the changes of the commit at HEAD, also of a first or a merge commit", async () => {
+		const { sandbox, commands } = fakeSandbox((command) =>
+			isChangedPaths(command) ? changes("render.yaml") : verified(command),
+		);
+
+		await push(sandbox);
+
+		expect(commands.find(isChangedPaths)).toBe(
+			`git -c core.hooksPath=/dev/null -C ${shellEscape(REPO_DIR)} diff-tree -m -r -z --root --no-renames --no-commit-id --name-only HEAD`,
+		);
+	});
+
+	// A rebase makes the commit again on the new tip.
+	it("checks the commit again after a rebase", async () => {
+		let rebased = false;
+		const { sandbox, commands } = fakeSandbox((command) => {
+			if (isChangedPaths(command)) {
+				return rebased
+					? changes("render.yaml", "apps/victim/site/index.html")
+					: changes("render.yaml");
+			}
+			if (isPull(command)) {
+				rebased = true;
+				return OK;
+			}
+			if (isPush(command)) return { output: "non-fast-forward", exitCode: 1 };
+			return verified(command);
+		});
+
+		await expect(push(sandbox)).rejects.toThrow(
+			/so it was not pushed: apps\/victim\/site\/index\.html/,
+		);
+		expect(commands.filter(isPush)).toHaveLength(1);
+	});
+});
+
+describe("cloneAppsRepo", () => {
+	// A link that an earlier commit put in the repository could send a write
+	// of the factory out of the clone, for example to put a different git on
+	// the PATH before the push.
+	it("checks out a symbolic link as a plain file", async () => {
+		const { sandbox, commands } = fakeSandbox(() => undefined);
+
+		await cloneAppsRepo(sandbox, "token", { owner: "o", repo: "r" }, "main");
+
+		expect(commands.find((command) => / 'clone' /.test(command))).toContain(
+			"'clone' '--depth=1' '--config' 'core.symlinks=false' 'https://github.com/o/r.git' '/home/user/repo'",
+		);
 	});
 });
 
@@ -307,18 +455,51 @@ describe("what a commit holds, under real git", () => {
 			HOME: root,
 			XDG_CONFIG_HOME: root,
 			GIT_CONFIG_NOSYSTEM: "1",
+			// The tar of macOS adds a ._ file for the metadata of each file.
+			COPYFILE_DISABLE: "1",
 		};
 		const run = (command: string, cwd = root) =>
 			execSync(command, { cwd, env, encoding: "utf8" });
 		run("git init -q");
-		// Runs the command that the workflow sends to the sandbox on this machine.
-		const sandbox = {
-			mustRun: async (command: string) => run(command),
-		} as unknown as Sandbox;
-		return { root, run, sandbox };
+		run("git config user.name test && git config user.email test@example.com");
+		return { root, run, sandbox: localSandbox(root, run) };
 	}
 
-	function write(dir: string, files: Record<string, string>): void {
+	/**
+	 * Runs the commands that the workflow sends to the sandbox on this
+	 * machine. The clone is at REPO_DIR in the sandbox, and in `root` here.
+	 */
+	function localSandbox(
+		root: string,
+		run: (command: string) => string,
+	): Sandbox {
+		const exec = async (command: string): Promise<ExecResult> => {
+			try {
+				return { output: run(command.replaceAll(REPO_DIR, root)), exitCode: 0 };
+			} catch (error) {
+				const failed = error as { status?: number; stdout?: string; stderr?: string };
+				return {
+					output: `${failed.stdout ?? ""}${failed.stderr ?? ""}`,
+					exitCode: failed.status ?? 1,
+				};
+			}
+		};
+		return {
+			run: exec,
+			async mustRun(command: string, label: string): Promise<string> {
+				const result = await exec(command);
+				if (result.exitCode !== 0) {
+					throw new Error(`${label} failed: ${result.output}`);
+				}
+				return result.output;
+			},
+			download: async (path: string) => readFileSync(path),
+			upload: async (path: string, data: string | Buffer) =>
+				writeFileSync(path, data),
+		} as unknown as Sandbox;
+	}
+
+	function write(dir: string, files: Record<string, string | Buffer>): void {
 		for (const [path, contents] of Object.entries(files)) {
 			mkdirSync(dirname(join(dir, path)), { recursive: true });
 			writeFileSync(join(dir, path), contents);
@@ -407,5 +588,372 @@ describe("what a commit holds, under real git", () => {
 			lines(run("git ls-files --cached --others --exclude-standard", app)),
 		).toEqual(kept);
 		expect(filesIn(other)).toEqual([".gitignore", "dist/index.html"]);
+	});
+
+	/* ── commitPaths ─────────────────────────────────────────────────── */
+
+	/** A clone whose last commit holds two apps and the root Blueprint. */
+	function clone() {
+		const repo = repository();
+		write(repo.root, {
+			"apps/demo/shop/index.html": PAGE,
+			"apps/victim/site/index.html": PAGE,
+			"apps/victim/site/factory.json": "{}",
+			"render.yaml": "services: []\n",
+			"README.md": "# Apps\n",
+		});
+		repo.run("git add -A && git commit -q -m base");
+		return repo;
+	}
+
+	const committed = (run: (command: string) => string) =>
+		lines(run("git show --name-only --format= HEAD"));
+
+	// The builder once changed the files of other users in the clone, and
+	// the commit took those changes.
+	it("commits the app directory and the root Blueprint, and nothing else", async () => {
+		const { root, run, sandbox } = clone();
+		write(root, {
+			"apps/demo/shop/index.html": "<!doctype html><title>Shop</title>",
+			"apps/demo/shop/api/index.ts": "export {};",
+			"render.yaml": "projects: []\n",
+			"apps/victim/site/index.html": "defaced",
+			"apps/victim/site/extra.html": "planted",
+			"README.md": "# Changed\n",
+		});
+
+		await expect(commitPaths(sandbox, "demo/shop", PATHS)).resolves.toMatch(
+			/^[0-9a-f]{40}$/,
+		);
+
+		expect(committed(run)).toEqual([
+			"apps/demo/shop/api/index.ts",
+			"apps/demo/shop/index.html",
+			"render.yaml",
+		]);
+		expect(
+			lines(run("git status --porcelain --untracked-files=all")),
+		).toEqual([
+			" M README.md",
+			" M apps/victim/site/index.html",
+			"?? apps/victim/site/extra.html",
+		]);
+	});
+
+	it("makes no commit when only paths outside the app changed", async () => {
+		const { root, run, sandbox } = clone();
+		write(root, { "apps/victim/site/index.html": "defaced" });
+		const base = run("git rev-parse HEAD");
+
+		await expect(commitPaths(sandbox, "demo/shop", PATHS)).resolves.toBeNull();
+		expect(run("git rev-parse HEAD")).toBe(base);
+	});
+
+	// A new attempt of a delete finds the removal that an earlier attempt
+	// pushed. git add fails for a path that matches no file.
+	it("commits the removal of the app directory, and then finds nothing to commit", async () => {
+		const { root, run, sandbox } = clone();
+		rmSync(join(root, "apps/demo/shop"), { recursive: true });
+
+		await expect(
+			commitPaths(sandbox, "Delete demo/shop", PATHS),
+		).resolves.toMatch(/^[0-9a-f]{40}$/);
+		expect(lines(run("git show --name-status --format= HEAD"))).toEqual([
+			"D\tapps/demo/shop/index.html",
+		]);
+
+		await expect(
+			commitPaths(sandbox, "Delete demo/shop", PATHS),
+		).resolves.toBeNull();
+	});
+
+	it("makes the first commit of a new apps repository", async () => {
+		const { root, run, sandbox } = repository();
+		write(root, {
+			"apps/demo/shop/index.html": PAGE,
+			"render.yaml": "projects: []\n",
+			"notes.txt": "not part of the app",
+		});
+
+		await expect(commitPaths(sandbox, "demo/shop", PATHS)).resolves.toMatch(
+			/^[0-9a-f]{40}$/,
+		);
+		expect(committed(run)).toEqual([
+			"apps/demo/shop/index.html",
+			"render.yaml",
+		]);
+	});
+
+	/* ── readAppFiles and writeAppFiles ───────────────────────────────── */
+
+	/** Every byte value, as a photograph can hold them. */
+	const PHOTO = Buffer.from([...Array(256).keys()]);
+
+	function filesOf(read: AppFiles): AppFile[] {
+		if ("error" in read) throw new Error(read.error);
+		return read.files;
+	}
+
+	it("packs the files that a commit of the app holds, and only those", async () => {
+		const { root, run, sandbox } = repository();
+		const app = join(root, "apps/demo/shop");
+		write(app, {
+			".gitignore": appGitignore({ services: [templateWeb, templateApi] }),
+			"web/src/main.tsx": "source",
+			"web/dist/index.html": PAGE,
+			"web/node_modules/vite/index.js": "js",
+			"api/src/index.ts": "api",
+			"assets/chair.jpg": PHOTO,
+			"build.sh": "#!/bin/sh\necho built\n",
+		});
+		chmodSync(join(app, "build.sh"), 0o755);
+		// The builder can write outside its app directory in its sandbox.
+		write(root, { "apps/victim/site/index.html": "defaced" });
+		// The builder is told not to run git. A file that it staged is still
+		// part of the app.
+		run("git add apps/demo/shop/api/src/index.ts");
+
+		const files = filesOf(await readAppFiles(sandbox, app));
+
+		expect(files.map(({ path }) => path).sort()).toEqual([
+			".gitignore",
+			"api/src/index.ts",
+			"assets/chair.jpg",
+			"build.sh",
+			"web/src/main.tsx",
+		]);
+		expect(files.find(({ path }) => path === "assets/chair.jpg")?.data).toEqual(
+			PHOTO,
+		);
+		expect(
+			files.filter(({ executable }) => executable).map(({ path }) => path),
+		).toEqual(["build.sh"]);
+	});
+
+	it("refuses a symbolic link", async () => {
+		const { root, sandbox } = repository();
+		const app = join(root, "apps/demo/shop");
+		write(app, { "index.html": PAGE });
+		symlinkSync("index.html", join(app, "home.html"));
+
+		await expect(readAppFiles(sandbox, app)).resolves.toEqual({
+			error: expect.stringContaining("home.html is a symbolic link."),
+		});
+	});
+
+	// Without the .git directory, the commit holds its files.
+	it("refuses a Git repository in the app, which git lists as one directory", async () => {
+		const { root, run, sandbox } = repository();
+		const app = join(root, "apps/demo/shop");
+		write(app, { "web/index.html": PAGE });
+		run("git init -q", join(app, "web"));
+
+		await expect(readAppFiles(sandbox, app)).resolves.toEqual({
+			error: expect.stringContaining(
+				"web is a Git repository in the app directory. Remove web/.git",
+			),
+		});
+	});
+
+	it("writes the files of the app into a clone, in place of the old ones", async () => {
+		const { root, sandbox } = repository();
+		const app = join(root, "apps/demo/shop");
+		write(app, { "old.html": "from an earlier run" });
+		const files: AppFile[] = [
+			{ path: "index.html", data: Buffer.from(PAGE), executable: false },
+			{ path: "assets/chair.jpg", data: PHOTO, executable: false },
+			{ path: "web/src/it's here.ts", data: Buffer.from("x"), executable: false },
+			{ path: "-rf", data: Buffer.from("a name like an option"), executable: false },
+			{ path: "empty.txt", data: Buffer.alloc(0), executable: false },
+			{ path: "bin/build.sh", data: Buffer.from("#!/bin/sh\n"), executable: true },
+		];
+
+		await writeAppFiles(sandbox, app, files);
+
+		expect(filesIn(app)).toEqual(files.map(({ path }) => path).sort());
+		for (const { path, data } of files) {
+			expect(readFileSync(join(app, path)), path).toEqual(data);
+		}
+		expect(statSync(join(app, "bin/build.sh")).mode & 0o111).toBe(0o111);
+		expect(statSync(join(app, "index.html")).mode & 0o111).toBe(0);
+	});
+
+	// What the sandbox of the build packs is what the clone commits.
+	it("copies an app from one repository into another", async () => {
+		const build = repository();
+		const app = join(build.root, "apps/demo/shop");
+		write(app, {
+			".gitignore": appGitignore({ services: [copyOnlySite] }),
+			"index.html": PAGE,
+			"assets/fog.jpg": PHOTO,
+			"dist/index.html": PAGE,
+		});
+		const target = clone();
+
+		await writeAppFiles(
+			target.sandbox,
+			join(target.root, "apps/demo/shop"),
+			filesOf(await readAppFiles(build.sandbox, app)),
+		);
+		await commitPaths(target.sandbox, "demo/shop", PATHS);
+
+		expect(
+			lines(target.run("git ls-files -- apps/demo/shop")),
+		).toEqual([
+			"apps/demo/shop/.gitignore",
+			"apps/demo/shop/assets/fog.jpg",
+			"apps/demo/shop/index.html",
+		]);
+		expect(
+			readFileSync(join(target.root, "apps/demo/shop/assets/fog.jpg")),
+		).toEqual(PHOTO);
+	});
+});
+
+describe("readAppFiles", () => {
+	/** A sandbox that answers the pack command, and then each rm. */
+	function packing(result: ExecResult) {
+		const download = vi.fn();
+		const run = vi.fn(async () => OK).mockResolvedValueOnce(result);
+		return { sandbox: { run, download } as unknown as Sandbox, download };
+	}
+
+	it("stops an archive over the limit before the download", async () => {
+		const { sandbox, download } = packing({
+			output: `${MAX_APP_BYTES + 1}\n`,
+			exitCode: 0,
+		});
+
+		await expect(
+			readAppFiles(sandbox, "/home/user/repo/apps/demo/shop"),
+		).resolves.toEqual({
+			error: expect.stringContaining("the limit is 50 MB"),
+		});
+		expect(download).not.toHaveBeenCalled();
+	});
+
+	// A problem of the files is for the builder to fix, so it is a result.
+	it("gives the output of a pack that fails", async () => {
+		const { sandbox, download } = packing({
+			output: "tar: web/server.log: file changed as we read it\n",
+			exitCode: 1,
+		});
+
+		await expect(
+			readAppFiles(sandbox, "/home/user/repo/apps/demo/shop"),
+		).resolves.toEqual({
+			error:
+				"The files of the app could not be packed: tar: web/server.log: file changed as we read it\n",
+		});
+		expect(download).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * A tar archive with entries that tar does not make from the app directory.
+ * The builder controls its sandbox, so it can put any archive there.
+ */
+function tarOf(
+	entries: {
+		path: string;
+		type?: HeaderData["type"];
+		data?: string;
+		mode?: number;
+		linkpath?: string;
+	}[],
+): Buffer {
+	const blocks: Buffer[] = [];
+	for (const entry of entries) {
+		const data = Buffer.from(entry.data ?? "");
+		const header = Buffer.alloc(512);
+		new Header({
+			path: entry.path,
+			type: entry.type ?? "File",
+			mode: entry.mode ?? 0o644,
+			size: data.length,
+			mtime: new Date(0),
+			linkpath: entry.linkpath,
+		}).encode(header, 0);
+		blocks.push(header, data, Buffer.alloc((512 - (data.length % 512)) % 512));
+	}
+	return Buffer.concat([...blocks, Buffer.alloc(1024)]);
+}
+
+describe("appFiles", () => {
+	it("reads the regular files of an archive, with the executable bit", async () => {
+		await expect(
+			appFiles(
+				tarOf([
+					{ path: "index.html", data: "<p>Shop</p>" },
+					{ path: "bin/build.sh", data: "#!/bin/sh\n", mode: 0o755 },
+				]),
+			),
+		).resolves.toEqual({
+			files: [
+				{ path: "index.html", data: Buffer.from("<p>Shop</p>"), executable: false },
+				{ path: "bin/build.sh", data: Buffer.from("#!/bin/sh\n"), executable: true },
+			],
+		});
+	});
+
+	// Each of these would write outside the app directory, or into git.
+	it.each([
+		["/etc/cron.d/job", "is not a plain path below the app directory"],
+		["../victim/site/index.html", "is not a plain path below the app directory"],
+		["web/../../victim/site/index.html", "is not a plain path below the app directory"],
+		["./index.html", "is not a plain path below the app directory"],
+		["web//index.html", "is not a plain path below the app directory"],
+		[".git/config", "is in a .git directory"],
+		["web/.GIT/hooks/post-checkout", "is in a .git directory"],
+		["index\n.html", "has a control character in its name"],
+	])("refuses the path %j", async (path, reason) => {
+		await expect(appFiles(tarOf([{ path, data: "x" }]))).resolves.toEqual({
+			error: expect.stringContaining(reason),
+		});
+	});
+
+	it.each<[HeaderData["type"], string | undefined, string]>([
+		["SymbolicLink", "/usr/local/bin/git", "home.html is a symbolic link."],
+		["Link", "index.html", "home.html is a Link entry."],
+		["FIFO", undefined, "home.html is a FIFO entry."],
+		["CharacterDevice", undefined, "home.html is a CharacterDevice entry."],
+		["Directory", undefined, "home.html is a Git repository"],
+	])("refuses a %s entry", async (type, linkpath, reason) => {
+		await expect(
+			appFiles(tarOf([{ path: "home.html", type, linkpath }])),
+		).resolves.toEqual({ error: expect.stringContaining(reason) });
+	});
+
+	it("refuses a path that is in the archive two times", async () => {
+		await expect(
+			appFiles(
+				tarOf([
+					{ path: "index.html", data: "first" },
+					{ path: "index.html", data: "second" },
+				]),
+			),
+		).resolves.toEqual({
+			error: "index.html is in the archive two times.",
+		});
+	});
+
+	// readAppFiles() packs a plain tar. Compressed data can expand in memory
+	// to much more than the limit.
+	it("refuses a compressed archive", async () => {
+		await expect(
+			appFiles(gzipSync(tarOf([{ path: "index.html", data: "x" }]))),
+		).resolves.toEqual({ error: "The archive of the app is compressed." });
+	});
+
+	it("refuses data that is not a tar archive", async () => {
+		await expect(appFiles(Buffer.from("not an archive"))).resolves.toEqual({
+			error: expect.stringContaining("is not a valid tar archive"),
+		});
+	});
+
+	it("refuses an archive over the limit", async () => {
+		await expect(appFiles(Buffer.alloc(MAX_APP_BYTES + 1))).resolves.toEqual({
+			error: expect.stringContaining("the limit is 50 MB"),
+		});
 	});
 });

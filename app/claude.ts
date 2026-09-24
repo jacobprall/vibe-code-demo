@@ -6,7 +6,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { factoryConfig, type ModelTier } from "../factory.config.js";
+import type { ModelTier } from "../factory.config.js";
 import { requireEnv } from "./config.js";
 import { checkToolCall, RENDER_MCP_SERVER } from "./policy.js";
 import { renderMcpUrl } from "./render.js";
@@ -68,7 +68,10 @@ export interface RunClaudeOptions {
 	tools?: readonly Tool[];
 	renderTools?: readonly string[];
 	sandbox?: Sandbox;
-	/** Directory relative paths resolve against. Defaults to the checkout. */
+	/**
+	 * The app directory. Relative paths resolve against it, and a tool path
+	 * must land in it or in /tmp. Required with tools.
+	 */
 	workDir?: string;
 	signal?: AbortSignal;
 	/** When set, the SDK enforces structured JSON output matching this schema. */
@@ -77,9 +80,10 @@ export interface RunClaudeOptions {
 
 export async function runClaude(opts: RunClaudeOptions): Promise<ClaudeRun> {
 	const tools = opts.tools ?? [];
-	if (tools.length > 0 && !opts.sandbox) {
+	const { sandbox, workDir } = opts;
+	if (tools.length > 0 && (!sandbox || !workDir)) {
 		throw new Error(
-			`Agent "${opts.agentId}" declares tools but was given no sandbox`,
+			`Agent "${opts.agentId}" declares tools but was given no sandbox or no app directory`,
 		);
 	}
 
@@ -102,7 +106,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<ClaudeRun> {
 		env: Object.fromEntries(
 			ENV_ALLOWLIST.map((name) => [name, process.env[name]]),
 		),
-		hooks: { PreToolUse: [{ hooks: [enforcePolicy] }] },
+		hooks: { PreToolUse: [{ hooks: [policyHook(workDir)] }] },
 	};
 
 	if (opts.outputSchema) {
@@ -123,9 +127,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<ClaudeRun> {
 		};
 	}
 
-	const sandbox = opts.sandbox;
-	const workDir = opts.workDir ?? factoryConfig.repoDir;
-	if (sandbox && tools.length > 0) {
+	if (sandbox && workDir && tools.length > 0) {
 		servers[MCP_SERVER] = createSdkMcpServer({
 			name: MCP_SERVER,
 			alwaysLoad: true,
@@ -272,29 +274,33 @@ function bareToolName(name: string): string {
 	return name.startsWith(prefix) ? name.slice(prefix.length) : name;
 }
 
-const enforcePolicy = async (input: {
-	hook_event_name: string;
-	tool_name?: string;
-	tool_input?: unknown;
-}) => {
-	if (input.hook_event_name !== "PreToolUse") return {};
-	const reason = checkToolCall(
-		bareToolName(input.tool_name ?? ""),
-		isRecord(input.tool_input) ? input.tool_input : {},
-	);
-	return {
-		hookSpecificOutput: reason
-			? {
-					hookEventName: "PreToolUse" as const,
-					permissionDecision: "deny" as const,
-					permissionDecisionReason: reason,
-				}
-			: {
-					hookEventName: "PreToolUse" as const,
-					permissionDecision: "allow" as const,
-				},
+/** The PreToolUse hook. Tool paths must land in `workDir` or in /tmp. */
+function policyHook(workDir: string | undefined) {
+	return async (input: {
+		hook_event_name: string;
+		tool_name?: string;
+		tool_input?: unknown;
+	}) => {
+		if (input.hook_event_name !== "PreToolUse") return {};
+		const reason = checkToolCall(
+			bareToolName(input.tool_name ?? ""),
+			isRecord(input.tool_input) ? input.tool_input : {},
+			workDir,
+		);
+		return {
+			hookSpecificOutput: reason
+				? {
+						hookEventName: "PreToolUse" as const,
+						permissionDecision: "deny" as const,
+						permissionDecisionReason: reason,
+					}
+				: {
+						hookEventName: "PreToolUse" as const,
+						permissionDecision: "allow" as const,
+					},
+		};
 	};
-};
+}
 
 function toContentBlocks(result: ToolResult) {
 	return {

@@ -13,6 +13,7 @@ The path is: a caller POSTs a prompt, the gateway validates and dispatches it,
 and a workflow designs the app against Render primitives, gathers openly
 licensed imagery, and builds a storefront and an API in an isolated sandbox.
 Then the `verify-app` subtask verifies them, and the `publish-app` subtask
+copies them into a clone of the apps repository in a sandbox of its own, and
 commits them with a Blueprint that Render deploys. A delete goes
 the other way: `DELETE /v1/apps/:runId` claims every run of the run's app, and
 the `delete-app` task runs one subtask for each step: it takes the app out of
@@ -29,7 +30,9 @@ no infrastructure. Agents never write to GitHub and never call a Render write
 API. Only `publish-app`, and the two steps of `delete-app` that push, write to
 GitHub. The only Render write calls are the deletes in `app/teardown.ts`, and
 only `delete-app-resources`, a step of the `delete-app` task, makes them.
-Repository execution happens in a Render Sandbox.
+Repository execution happens in a Render Sandbox. The sandbox that the agents
+use holds only the app of the run: no clone of the apps repository, and no
+credential. Each push clones the repository in a sandbox that no agent uses.
 
 ## Quick start
 
@@ -122,7 +125,8 @@ app/
   blueprint.ts   render.yaml generation — the only path that creates resources
   render.ts      MCP client, service and deploy reads, Blueprint lookup
   teardown.ts    Deletes of a deleted app — the only Render write API calls
-  git.ts         Clone, .gitignore, commit, push, verify, GitHub credentials
+  git.ts         Clone, .gitignore, the copy of an app between sandboxes,
+                 commit, push, verify, GitHub credentials
   store.ts       Postgres: one runs table
   templates.ts   Read a template and materialize it into the sandbox
   workflow.ts    The prompt-to-app and delete-app pipelines and their steps
@@ -179,17 +183,42 @@ Do not weaken these without an explicit security-model change:
 - The curator gets downloads and reads, never exec or write. Only the builder
  gets write and exec.
 - Every agent-supplied path is resolved against the workflow-owned `workDir`
- on `ToolContext` and must land inside the checkout. `sandbox__exec` always
+ on `ToolContext`, which is the app directory, and must land inside it or
+ `/tmp`. `checkToolCall` and the tool both check it. `sandbox__exec` always
  `cd`s there first: the exec API starts in `/`, so an unresolved relative path
- builds an application outside the clone that no commit can ever see.
+ builds an application outside the app directory that no commit can ever see.
+ These rules keep the file tools on one app, but they cannot limit a shell
+ command. The next invariant does that.
+- The sandbox that the agents and `verify-app` use holds only the app of the
+  run. `initAppDir()` makes the app directory in a repository with no remote.
+  No clone of the apps repository and no credential goes into that sandbox:
+  the builder can run any command there, leave a process that runs, and change
+  git itself.
 - `asset__fetch` accepts HTTPS only, allowlisted hosts only, `image/*` only,
-  under the size cap, and only into an `assets/` directory in the checkout.
+  under the size cap, and only into an `assets/` directory in the app
+  directory.
 - `sandboxId` comes from workflow code, never from the model.
 - The GitHub token never goes into a task input, because the Render Dashboard
-  shows the input of every task run. `publish-app` gets the token itself, just
-  before its push.
+  shows the input of every task run, and never into the sandbox of a build.
+  `publish-app` reads the files of the app from that sandbox as data:
+  `readAppFiles()` packs what a commit of the app directory holds, and accepts
+  only regular files with plain paths below it, up to `MAX_APP_BYTES`. Then
+  `publish-app` gets the token itself, and clones, writes the files, commits,
+  and pushes in a sandbox that no agent uses.
+- The clone checks out a symbolic link as a plain file (`core.symlinks=false`),
+  so no write of the factory can follow a link that an earlier commit put in
+  the repository.
+- A commit changes only `apps/<user>/<app>/` and the root `render.yaml`.
+  `commitPaths()` stages only these paths, and `pushVerified()` refuses a
+  commit that changes a different path, also after a rebase. This is true for
+  `publish-app` and for the two steps of `delete-app` that push.
+- The root Blueprint comes from the `factory.json` of each app in the clone of
+  the push. `readAllSpecs()` accepts a spec only in the directory of the app
+  that it names, so a file in one app directory cannot declare the resources
+  of a different app.
 - Infrastructure is created only by committing a Blueprint, and agents cannot
-  run git. The only Render write API calls are the deletes in
+  publish: their sandbox has no clone and no token. The only Render write API
+  calls are the deletes in
   `app/teardown.ts`, and only `delete-app-resources`, a step of `delete-app`,
   makes them. The gateway starts only `delete-app`, and `removeApp()` runs
   that step only after a push has taken the app out of the root Blueprint, and
@@ -287,7 +316,8 @@ next step does not wait for the push event. A retry of
    `tasks.run(<agent>Task, input)`. `tasks` is the `TaskContext` that
    Render Workflows gives to `prompt-to-app`; pass it to the stage. A task
    definition is not a function, so a direct call does not compile. Pass
-   `sandboxId: sandbox.id` only when it declares tools.
+   `sandboxId: sandbox.id` and `workDir: appDir` only when it declares tools.
+   `runClaude()` refuses tools without both.
 4. If it emits JSON, add a schema to `app/contracts.ts`, register it in
    `OUTPUT_SCHEMAS`, and call it through `agentJson()`, which retries once and
    then fails closed.
@@ -347,13 +377,22 @@ code that deploys it, and so CI builds it. If you change it:
 readable — a new stage should read as one call with its detail in a function
 below. Fetch large state inside the workflow rather than passing it through
 dispatch, and keep repeated execution safe: a rerun of the same prompt
-overwrites the app directory and rebases onto the branch.
+replaces the app directory with the files of the new build and rebases onto
+the branch.
 
 Verification and the publish are subtasks of `prompt-to-app`, as the agents
 are. `verify-app` gives its failures as a result, not as an error, and
 `publish-app` gives the commit that it pushed, or null when no file changed.
 Each one connects to the sandbox of the run by the `sandboxId` in its input,
-and the parent terminates that sandbox.
+and the parent terminates that sandbox. `publish-app` only reads the files of
+the app from it. It clones, commits, and pushes in a sandbox of its own, and
+terminates that sandbox itself. The last check of `verify-app` reads the files
+as `publish-app` does, so the builder can fix what `publish-app` would refuse,
+for example a symbolic link.
+
+Do not give a credential to a sandbox that an agent uses, and do not push
+from one. An agent can leave a process that runs, or a changed `git`, for the
+next command that has the token.
 
 Deployment progress distinguishes `waiting_for_services`,
 `waiting_for_deploys`, and `smoke_testing`. Render reporting `live` is not
@@ -419,8 +458,10 @@ that list. The first version of the delete waited for that, and it never
 finished.
 
 The two steps that push each clone the apps repository in their own sandbox.
-Keep task inputs and results small and JSON-serializable: they go through
-Render, and the Dashboard shows them on the run of each step.
+Their commits change only the app's directory and the root Blueprint, as the
+commit of `publish-app` does. Keep task inputs and results small and
+JSON-serializable: they go through Render, and the Dashboard shows them on the
+run of each step.
 
 Each step writes one JSON line to its logs for each thing that it changes or
 waits for: the commits, the syncs that are not finished, and each resource
@@ -429,7 +470,9 @@ deleted, so keep them when you change a step.
 
 ## Checklist
 
-1. Trust boundaries between gateway, workflow, and agents are preserved.
+1. Trust boundaries between gateway, workflow, and agents are preserved. No
+   credential goes into a sandbox that an agent uses, and each commit changes
+   only one app and the root Blueprint.
 2. New agents are registered at the bottom of `app/agents.ts` and task names
    match between definition, dispatch, `doctor`, and tests.
 3. New external input is validated and task values stay JSON-serializable.

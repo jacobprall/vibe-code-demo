@@ -68,20 +68,24 @@ describe("sandbox__exec", () => {
 		);
 	});
 
-	it.each(["/root", "/home/user/repo/../../etc", "../../../../../../root"])(
-		"refuses to run in %s",
-		async (cwd) => {
-			const run = runMock("");
-			const out = await sandboxExec.invoke(
-				{ command: "npm ci", cwd },
-				context({ run }),
-			);
+	it.each([
+		"/root",
+		"/home/user/repo/../../etc",
+		"../../../../../../root",
+		// The rest of the apps repository is not part of the app.
+		"/home/user/repo",
+		"../../victim/site",
+	])("refuses to run in %s", async (cwd) => {
+		const run = runMock("");
+		const out = await sandboxExec.invoke(
+			{ command: "npm ci", cwd },
+			context({ run }),
+		);
 
-			expect(out.isError).toBe(true);
-			expect(out.content).toContain("outside the checkout");
-			expect(run).not.toHaveBeenCalled();
-		},
-	);
+		expect(out.isError).toBe(true);
+		expect(out.content).toContain("outside the app directory");
+		expect(run).not.toHaveBeenCalled();
+	});
 
 	it("reports a non-zero exit as a tool error with its exit code", async () => {
 		const run = runMock("1 failing", 1);
@@ -131,16 +135,19 @@ describe("sandbox file tools", () => {
 		expect(out.content).toContain("Wrote 5 bytes");
 	});
 
-	it("refuses to write outside the checkout", async () => {
-		const writeFile = vi.fn(async () => undefined);
-		const out = await sandboxWriteFile.invoke(
-			{ path: "/root/index.html", content: "hello" },
-			context({ writeFile }),
-		);
+	it.each(["/root/index.html", "../../victim/site/index.html"])(
+		"refuses to write %s, outside the app directory",
+		async (path) => {
+			const writeFile = vi.fn(async () => undefined);
+			const out = await sandboxWriteFile.invoke(
+				{ path, content: "hello" },
+				context({ writeFile }),
+			);
 
-		expect(out.isError).toBe(true);
-		expect(writeFile).not.toHaveBeenCalled();
-	});
+			expect(out.isError).toBe(true);
+			expect(writeFile).not.toHaveBeenCalled();
+		},
+	);
 
 	it("defaults list_dir to the app directory", async () => {
 		const listDir = vi.fn(async () => ["a.ts", "b/"]);
@@ -247,8 +254,10 @@ describe("asset__fetch destinations", () => {
 	});
 
 	it.each([
-		["/etc/cron.d/payload.jpg", "inside the checkout"],
-		["/home/user/repo/render.yaml", "assets/"],
+		["/etc/cron.d/payload.jpg", "inside the app directory"],
+		["/home/user/repo/render.yaml", "inside the app directory"],
+		["/home/user/repo/apps/victim/site/assets/chair.jpg", "inside the app directory"],
+		["/tmp/assets/chair.jpg", "inside the app directory"],
 		["/home/user/repo/apps/demo/shop/assets/script.js", "assets/"],
 		["/home/user/repo/apps/demo/shop/images/chair.jpg", "assets/"],
 	])("rejects %s", async (path, because) => {
@@ -352,14 +361,17 @@ describe("bestCandidate", () => {
 describe("asset__collect", () => {
 	const ctx = () => context({ writeFile: vi.fn(async () => undefined) });
 
-	it("rejects a destDir outside the checkout", async () => {
-		const out = await assetCollect.invoke(
-			{ subjects: ["walnut chair"], destDir: "/tmp/assets" },
-			ctx(),
-		);
-		expect(out.isError).toBe(true);
-		expect(out.content).toContain("inside the checkout");
-	});
+	it.each(["/tmp/assets", "/home/user/repo/apps/victim/site/assets"])(
+		"rejects the destDir %s, outside the app directory",
+		async (destDir) => {
+			const out = await assetCollect.invoke(
+				{ subjects: ["walnut chair"], destDir },
+				ctx(),
+			);
+			expect(out.isError).toBe(true);
+			expect(out.content).toContain("inside the app directory");
+		},
+	);
 
 	it("rejects a destDir that is not an assets directory", async () => {
 		const out = await assetCollect.invoke(

@@ -278,10 +278,11 @@ export const verifyAppInputSchema = z.object({
 export type VerifyAppInput = z.infer<typeof verifyAppInputSchema>;
 
 /**
- * The input of publish-app. The spec gives factory.json and both
- * Blueprints. The repository and the GitHub token come from the
- * configuration of the workflow, never from the input: the Render Dashboard
- * shows the input of each task run.
+ * The input of publish-app. `sandboxId` is the sandbox of the build, which
+ * publish-app reads the files of the app from. It pushes from a sandbox of
+ * its own. The spec gives factory.json and both Blueprints. The repository
+ * and the GitHub token come from the configuration of the workflow, never
+ * from the input: the Render Dashboard shows the input of each task run.
  */
 export const publishAppInputSchema = z.object({
 	sandboxId: z.string().min(1),

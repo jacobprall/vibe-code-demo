@@ -51,12 +51,14 @@ import {
 import {
 	appGitignore,
 	cloneAppsRepo,
-	commitAll,
-	githubRemoteUrl,
+	commitPaths,
 	githubToken,
+	initAppDir,
 	pushVerified,
+	readAppFiles,
 	removeIgnored,
 	runVerification,
+	writeAppFiles,
 } from "./git.js";
 import { checkManifestCommands } from "./policy.js";
 import {
@@ -158,6 +160,9 @@ export const promptToApp = task(
  * `tasks`, the context that Render Workflows gives to prompt-to-app. So do
  * the verification of the app and its publish. On Render, each subtask has
  * its own run, with its input, its result, and its logs.
+ *
+ * The agents and verify-app work in the sandbox of the run. publish-app
+ * copies the files of the app out of it.
  */
 async function run(
 	tasks: TaskContext,
@@ -193,18 +198,12 @@ async function run(
 		timeoutSeconds: SANDBOX_TIMEOUT_SECONDS,
 	});
 	try {
-		await cloneAppsRepo(
-			sandbox,
-			await githubToken(),
-			repo,
-			factoryConfig.branch,
-		);
 		const appDir = appPath(user, appName);
 		// Every agent path resolves against this, so it has to exist first.
-		await sandbox.mustRun(
-			`mkdir -p ${shellEscape(appDir)}`,
-			"Create app directory",
-		);
+		// The agents can run any command in this sandbox, so it gets no clone
+		// of the apps repository and no GitHub token: it holds only this app.
+		// publish-app pushes from a sandbox of its own.
+		await initAppDir(sandbox, appDir);
 
 		// ── Database and skeleton ───────────────────────────────────────
 		// A real Postgres, before the builder starts, so the schema and the
@@ -508,6 +507,9 @@ export const verifyAppTask = task(
  * - For web services with a dataCheckPath: migrate, boot against the sandbox's
  *   Postgres, and require the endpoint to answer with data
  * - Check for placeholder content in built output
+ *
+ * Last, it reads the files as publish-app does, so that the builder can fix
+ * what publish-app would refuse: a symbolic link, for example.
  */
 async function verify(
 	sandbox: Sandbox,
@@ -580,6 +582,9 @@ async function verify(
 			);
 		}
 	}
+
+	const publishable = await readAppFiles(sandbox, appDir);
+	if ("error" in publishable) failures.push(publishable.error);
 
 	return failures;
 }
@@ -788,10 +793,17 @@ function runBuilder(
 /* ── Publish ──────────────────────────────────────────────────────────── */
 
 /**
- * Write factory.json, the app's render.yaml and README, and the root
- * Blueprint from the spec, commit them with the app, and push. Render deploys
- * the push, so the parent starts this only after verify-app passes. Returns
- * the pushed commit, or null when no file changed.
+ * Copy the files of the app out of the sandbox of the run, into a new clone
+ * of the apps repository in a sandbox of its own. There, write factory.json,
+ * the app's render.yaml and README, and the root Blueprint from the spec,
+ * commit them with the app, and push. Render deploys the push, so the parent
+ * starts this only after verify-app passes. Returns the pushed commit, or
+ * null when no file changed.
+ *
+ * The builder can run any command in the sandbox of the run. A process that
+ * it starts stays after the command, and it can change git itself. So the
+ * GitHub token never goes into that sandbox, and publish-app reads the files
+ * of the app from it only as data.
  *
  * Render does not retry it. A retry after the push finds nothing to commit,
  * and the run then ends as if the push changed no files.
@@ -808,24 +820,19 @@ export const publishAppTask = task(
 		input: PublishAppInput,
 	): Promise<{ commit: string | null }> {
 		const { sandboxId, spec, message } = publishAppInputSchema.parse(input);
-		const repo = appsRepo();
-		const sandbox = connectSandbox(sandboxId);
-		await writeBlueprints(
-			sandbox,
-			spec,
-			appPath(spec.user, spec.appName),
-			repo.url,
-		);
-		const commit = await commitAndPush(
-			{
-				sandbox,
-				// Get the token here, not at the start of the run: an installation
-				// token expires after an hour, and a run can take two hours.
-				token: await githubToken(),
-				remoteUrl: githubRemoteUrl(repo.owner, repo.repo),
-			},
-			message,
-		);
+		const repoUrl = appsRepo().url;
+		const appDir = appPath(spec.user, spec.appName);
+		// verify-app read the same files. An error here means that they
+		// changed after it.
+		const built = await readAppFiles(connectSandbox(sandboxId), appDir);
+		if ("error" in built) {
+			throw new Error(`publish-app did not copy the app. ${built.error}`);
+		}
+		const commit = await inAppsClone(PUBLISH_TIMEOUT_SECONDS, async (clone) => {
+			await writeAppFiles(clone.sandbox, appDir, built.files);
+			await writeBlueprints(clone.sandbox, spec, appDir, repoUrl);
+			return commitAndPush(clone, spec, message);
+		});
 		console.log(
 			JSON.stringify({
 				event: "app_published",
@@ -844,8 +851,8 @@ async function writeBlueprints(
 	appDir: string,
 	repoUrl: string,
 ): Promise<void> {
-	// The .gitignore is already in place: verify() writes it, because it must
-	// build from the same files that this commit holds.
+	// The .gitignore comes with the files of the app. verify() writes it,
+	// because it must build from the same files that this commit holds.
 	await sandbox.writeFile(
 		`${appDir}/factory.json`,
 		`${JSON.stringify(spec, null, 2)}\n`,
@@ -862,6 +869,10 @@ async function writeBlueprints(
  * Derived state, never merged: a concurrent run appends its own app to the
  * same file, so this is also what resolves a rebase conflict on it. Returns
  * the paths it owns, which is the contract pushVerified's resolver expects.
+ *
+ * It reads the specs from a clone that no agent used. In it, the builder
+ * wrote only the files of its own app, and publish-app wrote its
+ * factory.json.
  */
 async function writeRootBlueprint(sandbox: Sandbox): Promise<string[]> {
 	const specs = await readAllSpecs(sandbox);
@@ -872,6 +883,11 @@ async function writeRootBlueprint(sandbox: Sandbox): Promise<string[]> {
 	return [factoryConfig.blueprintPath];
 }
 
+/**
+ * A spec counts only in the directory of the app that it names. The builder
+ * writes the files of its app directory, and one of them can be an airo.json
+ * that names a different app, with resources that no run verified.
+ */
 async function readAllSpecs(sandbox: Sandbox): Promise<AppSpec[]> {
 	const root = `${factoryConfig.repoDir}/${factoryConfig.appsDir}`;
 	const found = await sandbox.run(
@@ -880,11 +896,22 @@ async function readAllSpecs(sandbox: Sandbox): Promise<AppSpec[]> {
 
 	const specs = new Map<string, { spec: AppSpec; current: boolean }>();
 	for (const path of found.output.split("\n").map((line) => line.trim())) {
-		if (!path) continue;
+		if (!path.startsWith(`${root}/`)) continue;
 		const raw = await sandbox.run(`cat ${shellEscape(path)}`);
 		if (raw.exitCode !== 0) continue;
 		try {
 			const spec = appSpecSchema.parse(JSON.parse(raw.output));
+			const [user, appName] = path.slice(root.length + 1).split("/");
+			if (spec.user !== user || spec.appName !== appName) {
+				console.warn(
+					JSON.stringify({
+						event: "skipped_app_spec",
+						path,
+						reason: `it names ${spec.user}/${spec.appName}`,
+					}),
+				);
+				continue;
+			}
 			const key = `${spec.user}/${spec.appName}`;
 			const current = path.endsWith("/factory.json");
 			if (current || !specs.has(key)) specs.set(key, { spec, current });
@@ -903,19 +930,57 @@ interface AppsClone {
 }
 
 /**
- * A commit that changes nothing is not made, and there is nothing to push.
- * Returns the commit that it pushed, or null.
+ * Clone the apps repository in a new sandbox, do the work, and terminate the
+ * sandbox. No agent uses this sandbox, so the GitHub token can go into it.
+ * The token comes just before the clone: an installation token expires after
+ * an hour, and a run can take two hours.
+ *
+ * Each push makes its own clone, so it starts from the newest commit, and no
+ * sandbox stays up while a run or the steps of a delete wait.
+ */
+async function inAppsClone<T>(
+	timeoutSeconds: number,
+	work: (clone: AppsClone) => Promise<T>,
+): Promise<T> {
+	const repo = appsRepo();
+	const sandbox = await createSandbox({ timeoutSeconds });
+	try {
+		const token = await githubToken();
+		const remoteUrl = await cloneAppsRepo(
+			sandbox,
+			token,
+			repo,
+			factoryConfig.branch,
+		);
+		return await work({ sandbox, token, remoteUrl });
+	} finally {
+		await sandbox
+			.terminate()
+			.catch((error) => console.error("Failed to terminate sandbox:", error));
+	}
+}
+
+/**
+ * Commit and push the changes of one app: its directory and the root
+ * Blueprint. A commit that changes nothing is not made, and there is nothing
+ * to push. Returns the commit that it pushed, or null.
  */
 async function commitAndPush(
 	clone: AppsClone,
+	app: { user: string; appName: string },
 	message: string,
 ): Promise<string | null> {
-	if (!(await commitAll(clone.sandbox, message))) return null;
+	const paths = [
+		appRelativePath(app.user, app.appName),
+		factoryConfig.blueprintPath,
+	];
+	if (!(await commitPaths(clone.sandbox, message, paths))) return null;
 	return pushVerified(
 		clone.sandbox,
 		clone.token,
 		clone.remoteUrl,
 		factoryConfig.branch,
+		paths,
 		() => writeRootBlueprint(clone.sandbox),
 	);
 }
@@ -1463,7 +1528,7 @@ export const removeFromBlueprintTask = task(
 			"Removing the app from the Blueprint",
 		);
 
-		return inAppsClone(async (clone) => {
+		return inAppsClone(DELETE_STEP_TIMEOUT_SECONDS, async (clone) => {
 			const spec = await readSpec(clone.sandbox, user, appName);
 			if (!spec) {
 				console.log(
@@ -1483,6 +1548,7 @@ export const removeFromBlueprintTask = task(
 			await writeRootBlueprint(clone.sandbox);
 			const commit = await commitAndPush(
 				clone,
+				{ user, appName },
 				`Delete ${user}/${appName}: remove it from the Blueprint`,
 			);
 			const pushedAt = commit ? Date.now() : null;
@@ -1564,12 +1630,16 @@ export const removeFilesTask = task(
 			"Removing the app's files from the apps repository",
 		);
 
-		return inAppsClone(async (clone) => {
+		return inAppsClone(DELETE_STEP_TIMEOUT_SECONDS, async (clone) => {
 			await clone.sandbox.mustRun(
 				`rm -rf ${shellEscape(appPath(user, appName))}`,
 				"Remove the app directory",
 			);
-			const commit = await commitAndPush(clone, `Delete ${user}/${appName}`);
+			const commit = await commitAndPush(
+				clone,
+				{ user, appName },
+				`Delete ${user}/${appName}`,
+			);
 			console.log(
 				JSON.stringify({ event: "app_files_removed", user, appName, commit }),
 			);
@@ -1577,34 +1647,6 @@ export const removeFilesTask = task(
 		});
 	},
 );
-
-/**
- * Git runs in a sandbox, as it does for a build. Each step that pushes makes
- * its own clone, so it starts from the newest commit, and no sandbox stays up
- * while the other steps wait.
- */
-async function inAppsClone<T>(
-	work: (clone: AppsClone) => Promise<T>,
-): Promise<T> {
-	const repo = appsRepo();
-	const sandbox = await createSandbox({
-		timeoutSeconds: DELETE_STEP_TIMEOUT_SECONDS,
-	});
-	try {
-		const token = await githubToken();
-		const remoteUrl = await cloneAppsRepo(
-			sandbox,
-			token,
-			repo,
-			factoryConfig.branch,
-		);
-		return await work({ sandbox, token, remoteUrl });
-	} finally {
-		await sandbox
-			.terminate()
-			.catch((error) => console.error("Failed to terminate sandbox:", error));
-	}
-}
 
 /**
  * The spec of one app in the clone, or null when the repository has no spec
